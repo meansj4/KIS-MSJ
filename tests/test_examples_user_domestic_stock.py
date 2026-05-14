@@ -1,9 +1,18 @@
 from pathlib import Path
 import sys
 
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SRC_PATH = PROJECT_ROOT / "src"
+DOMESTIC_STOCK_EXAMPLES_PATH = PROJECT_ROOT / "examples_user" / "domestic_stock"
+
+for path in (SRC_PATH, DOMESTIC_STOCK_EXAMPLES_PATH):
+    path_text = str(path)
+    if path_text not in sys.path:
+        sys.path.insert(0, path_text)
+
 from test_kospi_master import build_line
 
-sys.path.append(str(Path(__file__).resolve().parents[1] / "examples_user" / "domestic_stock"))
 from domestic_stock_functions import get_kospi_master
 
 

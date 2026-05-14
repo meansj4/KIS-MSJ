@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import sys
 import tempfile
 import urllib.request
 import zipfile
@@ -19,6 +20,8 @@ from typing import Iterable, Literal, Sequence
 
 KOSPI_MASTER_URL = "https://new.real.download.dws.co.kr/common/master/kospi_code.mst.zip"
 KOSPI_MASTER_FILE_NAME = "kospi_code.mst"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "data" / "kospi_common_stocks.csv"
 
 PART2_WIDTHS: tuple[int, ...] = (
     2,
@@ -166,81 +169,8 @@ PART2_COLUMNS: tuple[str, ...] = (
     "stock_loan_available_yn",
 )
 
-KOREAN_COLUMN_LABELS: dict[str, str] = {
-    "short_code": "단축코드",
-    "standard_code": "표준코드",
-    "korean_name": "한글명",
-    "group_code": "그룹코드",
-    "market_cap_scale": "시가총액규모",
-    "sector_large_code": "지수업종대분류",
-    "sector_middle_code": "지수업종중분류",
-    "sector_small_code": "지수업종소분류",
-    "manufacturing_yn": "제조업",
-    "low_liquidity_yn": "저유동성",
-    "governance_index_yn": "지배구조지수종목",
-    "kospi200_sector_code": "KOSPI200섹터업종",
-    "kospi100_yn": "KOSPI100",
-    "kospi50_yn": "KOSPI50",
-    "krx_yn": "KRX",
-    "etp_yn": "ETP",
-    "elw_issue_yn": "ELW발행",
-    "krx100_yn": "KRX100",
-    "krx_auto_yn": "KRX자동차",
-    "krx_semiconductor_yn": "KRX반도체",
-    "krx_bio_yn": "KRX바이오",
-    "krx_bank_yn": "KRX은행",
-    "spac_yn": "SPAC",
-    "krx_energy_chemical_yn": "KRX에너지화학",
-    "krx_steel_yn": "KRX철강",
-    "short_term_overheat_yn": "단기과열",
-    "krx_media_telecom_yn": "KRX미디어통신",
-    "krx_construction_yn": "KRX건설",
-    "reserved_1": "Non1",
-    "krx_securities_yn": "KRX증권",
-    "krx_shipbuilding_yn": "KRX선박",
-    "krx_insurance_yn": "KRX섹터_보험",
-    "krx_transport_yn": "KRX섹터_운송",
-    "sri_yn": "SRI",
-    "base_price": "기준가",
-    "trading_unit": "매매수량단위",
-    "after_hours_trading_unit": "시간외수량단위",
-    "trading_halt_yn": "거래정지",
-    "liquidation_trading_yn": "정리매매",
-    "administrative_issue_yn": "관리종목",
-    "market_alert_code": "시장경고",
-    "alert_notice_yn": "경고예고",
-    "unfaithful_disclosure_yn": "불성실공시",
-    "backdoor_listing_yn": "우회상장",
-    "lock_type_code": "락구분",
-    "par_value_change_code": "액면변경",
-    "capital_increase_code": "증자구분",
-    "margin_rate": "증거금비율",
-    "credit_available_yn": "신용가능",
-    "credit_period": "신용기간",
-    "previous_day_volume": "전일거래량",
-    "par_value": "액면가",
-    "listing_date": "상장일자",
-    "listed_shares": "상장주수",
-    "capital": "자본금",
-    "settlement_month": "결산월",
-    "public_offering_price": "공모가",
-    "preferred_stock_yn": "우선주",
-    "short_sale_overheat_yn": "공매도과열",
-    "abnormal_surge_yn": "이상급등",
-    "krx300_yn": "KRX300",
-    "kospi_yn": "KOSPI",
-    "sales": "매출액",
-    "operating_profit": "영업이익",
-    "ordinary_profit": "경상이익",
-    "net_income": "당기순이익",
-    "roe": "ROE",
-    "base_year_month": "기준년월",
-    "market_cap": "시가총액",
-    "group_company_code": "그룹사코드",
-    "company_credit_limit_exceeded_yn": "회사신용한도초과",
-    "collateral_loan_available_yn": "담보대출가능",
-    "stock_loan_available_yn": "대주가능",
-}
+COLUMN_LABELS: dict[str, str] = {column: column for column in ("short_code", "standard_code", "korean_name", *PART2_COLUMNS)}
+KOREAN_COLUMN_LABELS = COLUMN_LABELS
 
 NUMERIC_COLUMNS = {
     "base_price",
@@ -314,7 +244,7 @@ def split_fixed_width(text: str, widths: Sequence[int]) -> list[str]:
     return values
 
 
-def normalize_value(column: str, value: str) -> str | int:
+def normalize_value(column: str, value: str) -> str | int | float:
     """Convert blank-padded numeric fields to integers while preserving dates."""
 
     cleaned = value.strip()
@@ -322,6 +252,8 @@ def normalize_value(column: str, value: str) -> str | int:
         return cleaned
     if cleaned in {"", "-"}:
         return ""
+    if "." in cleaned:
+        return float(cleaned)
     return int(cleaned)
 
 
@@ -378,13 +310,13 @@ def write_rows(rows: Iterable[dict[str, str | int]], output_path: Path, output_f
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="KIS KOSPI 종목 마스터를 다운로드하고 CSV/JSON으로 저장합니다.")
-    parser.add_argument("--output", type=Path, default=Path("data/kospi_stocks.csv"), help="저장할 파일 경로")
-    parser.add_argument("--format", choices=("csv", "json"), default="csv", help="출력 포맷")
-    parser.add_argument("--include-etp-elw-spac", action="store_true", help="ETF/ETN/ELW/SPAC 행도 포함")
-    parser.add_argument("--common-stock-only", action="store_true", help="우선주 제외")
-    parser.add_argument("--active-only", action="store_true", help="거래정지/정리매매 종목 제외")
-    parser.add_argument("--keep-master", type=Path, help="원본 kospi_code.mst 파일을 보관할 디렉터리")
+    parser = argparse.ArgumentParser(description="Download KIS KOSPI master data and save it as CSV/JSON.")
+    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_PATH, help="Output file path")
+    parser.add_argument("--format", choices=("csv", "json"), default="csv", help="Output format")
+    parser.add_argument("--include-etp-elw-spac", action="store_true", help="Include ETF/ETN, ELW, and SPAC rows")
+    parser.add_argument("--include-preferred-stocks", action="store_true", help="Include preferred stocks")
+    parser.add_argument("--active-only", action="store_true", help="Exclude trading-halt and liquidation-trading rows")
+    parser.add_argument("--keep-master", type=Path, help="Directory where the raw kospi_code.mst file is kept")
     return parser
 
 
@@ -392,10 +324,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     kospi_filter = KospiFilter(
         individual_only=not args.include_etp_elw_spac,
-        common_stock_only=args.common_stock_only,
+        common_stock_only=not args.include_preferred_stocks,
         active_only=args.active_only,
     )
 
+    print("Downloading KIS KOSPI master data...")
     if args.keep_master:
         master_path = download_kospi_master(args.keep_master)
         rows = read_kospi_master(master_path, kospi_filter)
@@ -408,4 +341,4 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))
