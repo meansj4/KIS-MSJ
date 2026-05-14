@@ -1,0 +1,21 @@
+[project]
+name = "kis-msj"
+version = "0.1.0"
+description = "KIS API helpers for Korean stock automation."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "KIS-MSJ" }]
+dependencies = []
+
+[project.scripts]
+kis-kospi-master = "kis_msj.kospi_master:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
