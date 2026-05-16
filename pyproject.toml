@@ -12,6 +12,7 @@ dependencies = []
 kis-kospi-master = "kis_msj.kospi_master:main"
 kis-domestic-quotes = "kis_msj.domestic_quote:main"
 kis-open-trading-api-status = "kis_msj.upstream:main"
+kis-lot-auto-trader = "kis_msj.main:main"
 
 [dependency-groups]
 dev = [

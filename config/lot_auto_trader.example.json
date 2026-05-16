@@ -1,0 +1,65 @@
+{
+  "stocks": [
+    {"code": "005930", "name": "Samsung Electronics", "enabled": true, "trading_halted": false, "administrative_issue": false, "investment_alert": false},
+    {"code": "000660", "name": "SK hynix", "enabled": true},
+    {"code": "005380", "name": "Hyundai Motor", "enabled": true},
+    {"code": "035420", "name": "NAVER", "enabled": true},
+    {"code": "051910", "name": "LG Chem", "enabled": true},
+    {"code": "006400", "name": "Samsung SDI", "enabled": true},
+    {"code": "068270", "name": "Celltrion", "enabled": true},
+    {"code": "105560", "name": "KB Financial", "enabled": true},
+    {"code": "055550", "name": "Shinhan Financial", "enabled": true},
+    {"code": "012330", "name": "Hyundai Mobis", "enabled": true}
+  ],
+  "strategy": {
+    "initial_buy_amount": 300000,
+    "auto_buy_limit": 3000000,
+    "absolute_max_investment": 5000000,
+    "review_loss_pct": -20.0,
+    "max_open_lots_before_review": 12,
+    "high_exposure_partial_sell_pct": 50.0,
+    "estimated_fee_tax_pct": 0.25
+  },
+  "risk": {
+    "market_risk_mode": false,
+    "daily_account_loss_limit_pct": -1.5,
+    "total_account_loss_limit_pct": -5.0,
+    "max_review_positions": 3,
+    "min_cash_available": 300000,
+    "max_consecutive_api_errors": 5,
+    "max_price_sample_volatility_pct": 1.0,
+    "block_on_lot_mismatch": true
+  },
+  "order": {
+    "live_trading": false,
+    "emergency_market_order": false,
+    "buy_limit_markup_pct": 0.3,
+    "sell_limit_markdown_pct": 0.3,
+    "price_sample_count": 5,
+    "price_sample_interval_seconds": 2.0,
+    "limit_order_timeout_seconds": 60,
+    "order_cooldown_seconds": 300,
+    "cancel_unfilled_on_start": false
+  },
+  "market_hours": {
+    "open_time": "09:00",
+    "close_time": "15:30",
+    "block_after_open_minutes": 5,
+    "block_before_close_minutes": 10
+  },
+  "kis_account": {
+    "account_number_env": "KIS_ACCOUNT_NUMBER",
+    "account_product_code_env": "KIS_ACCOUNT_PRODUCT_CODE",
+    "customer_type": "P"
+  },
+  "upstream_watch": {
+    "enabled": true,
+    "interval_seconds": 3600,
+    "repo_path": "C:\\MSJ\\open-trading-api",
+    "fetch": false
+  },
+  "storage_path": "data/lot_auto_trader_state.sqlite3",
+  "log_path": "logs/lot_auto_trader.log",
+  "loop_interval_seconds": 15.0,
+  "max_loop_count": 1
+}
