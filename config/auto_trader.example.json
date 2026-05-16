@@ -1,0 +1,85 @@
+{
+  "stocks": [
+    {
+      "code": "005930",
+      "name": "Samsung Electronics",
+      "enabled": true
+    },
+    {
+      "code": "000660",
+      "name": "SK hynix",
+      "enabled": true
+    }
+  ],
+  "strategy": {
+    "initial_buy_amount": 300000,
+    "max_position_amount": 5000000,
+    "grid_interval_pct": 4.0,
+    "reference_price_mode": "last_fill",
+    "add_buy_amounts": [
+      300000,
+      500000,
+      700000
+    ],
+    "add_buy_drop_pcts": [
+      4.0,
+      8.0,
+      12.0
+    ],
+    "sell_rise_pcts": [
+      4.0,
+      8.0,
+      12.0
+    ],
+    "sell_portion_pct": 30.0,
+    "final_sell_portion_pct": 100.0
+  },
+  "risk": {
+    "market_risk_mode": false,
+    "daily_account_loss_limit_pct": -1.5,
+    "total_account_loss_limit_pct": -5.0,
+    "warning_loss_pct": -8.0,
+    "block_add_buy_loss_pct": -12.0,
+    "half_stop_loss_pct": -15.0,
+    "full_stop_loss_pct": -20.0,
+    "max_stop_waiting_positions": 3,
+    "max_total_exposure": 20000000,
+    "max_total_exposure_pct": 70.0,
+    "max_consecutive_api_errors": 5,
+    "max_price_sample_volatility_pct": 1.0,
+    "block_on_state_mismatch": true
+  },
+  "order": {
+    "live_trading": false,
+    "allow_market_order": false,
+    "buy_limit_markup_pct": 0.3,
+    "sell_limit_markdown_pct": 0.3,
+    "price_sample_count": 5,
+    "price_sample_interval_seconds": 2.0,
+    "limit_order_timeout_seconds": 60,
+    "order_cooldown_seconds": 300,
+    "cancel_unfilled_on_start": false
+  },
+  "market_hours": {
+    "open_time": "09:00",
+    "close_time": "15:30",
+    "block_after_open_minutes": 5,
+    "block_before_close_minutes": 10,
+    "timezone": "Asia/Seoul"
+  },
+  "kis_account": {
+    "account_number_env": "KIS_ACCOUNT_NUMBER",
+    "account_product_code_env": "KIS_ACCOUNT_PRODUCT_CODE",
+    "customer_type": "P"
+  },
+  "upstream_watch": {
+    "enabled": true,
+    "interval_seconds": 3600,
+    "repo_path": "C:\\MSJ\\open-trading-api",
+    "fetch": false
+  },
+  "storage_path": "data/auto_trader_state.sqlite3",
+  "log_path": "logs/auto_trader.log",
+  "loop_interval_seconds": 15.0,
+  "max_loop_count": 1
+}
