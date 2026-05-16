@@ -19,6 +19,7 @@ from kis_msj.kospi_master import (
     read_kospi_master,
     write_rows,
 )
+from kis_msj.domestic_quote import fetch_current_quote, fetch_quotes_from_master
 
 OutputFormat = Literal["csv", "json"]
 
@@ -65,3 +66,20 @@ def get_kospi_master(
         write_rows(rows, output_path, output_format)
 
     return rows
+
+
+def get_current_price(short_code: str, *, korean_name: str = "") -> dict[str, str | int | float]:
+    """Fetch current price and accumulated volume for one domestic stock."""
+
+    return fetch_current_quote(short_code, korean_name=korean_name)
+
+
+def get_kospi_current_prices(
+    *,
+    master_path: Path,
+    output_path: Path,
+    limit: int | None = None,
+) -> list[dict[str, str | int | float]]:
+    """Fetch current quotes for stocks listed in a KOSPI master CSV."""
+
+    return fetch_quotes_from_master(master_path, output_path=output_path, limit=limit)

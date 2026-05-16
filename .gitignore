@@ -2,6 +2,8 @@ __pycache__/
 .pytest_cache/
 .venv/
 *.egg-info/
+.env
+.kis/
 data/*.csv
 data/*.json
 data/*.mst
