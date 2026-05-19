@@ -56,21 +56,47 @@ class OrderManager:
             return result, None
         deadline = datetime.now() + timedelta(seconds=self.config.order.limit_order_timeout_seconds)
         while datetime.now() < deadline:
-            for fill in self.client.executions():
-                if fill.order_id == result.order_id and fill.code == request.code:
-                    matched = TradeFill(fill.code, fill.name, fill.side, fill.quantity, fill.price, fill.order_id, fill.filled_at, request.lot_id)
-                    filled = OrderResult(request, result.order_id, OrderStatus.FILLED, result.message)
-                    self.store.record_order(filled)
-                    self.store.record_fill(matched)
-                    return filled, matched
+            fill = self._find_matching_fill(result)
+            if fill:
+                return self._record_filled(result, fill)
             time.sleep(2)
-        status = self.client.cancel_order(result.order_id, request.quantity)
+        try:
+            status = self.client.cancel_order(result.order_id, request.quantity)
+        except RuntimeError as error:
+            fill = self._find_matching_fill(result)
+            if fill:
+                return self._record_filled(result, fill)
+            if "40330000" in str(error):
+                unconfirmed = OrderResult(request, result.order_id, OrderStatus.REQUESTED, "cancel_failed_no_cancelable_quantity")
+                self.store.record_order(unconfirmed)
+                self.logger.warning("order_unconfirmed code=%s order_id=%s reason=cancel_failed_no_cancelable_quantity", request.code, result.order_id)
+                return unconfirmed, None
+            raise
         canceled = OrderResult(request, result.order_id, status, "unfilled_limit_order_timeout")
         self.store.record_order(canceled)
         return canceled, None
+
+    def _find_matching_fill(self, result: OrderResult) -> TradeFill | None:
+        request = result.request
+        order_id = _normalize_order_id(result.order_id)
+        for fill in self.client.executions():
+            if _normalize_order_id(fill.order_id) == order_id and fill.code == request.code:
+                return TradeFill(fill.code, fill.name, fill.side, fill.quantity, fill.price, fill.order_id, fill.filled_at, request.lot_id)
+        return None
+
+    def _record_filled(self, result: OrderResult, fill: TradeFill) -> tuple[OrderResult, TradeFill]:
+        filled = OrderResult(result.request, result.order_id, OrderStatus.FILLED, result.message)
+        self.store.record_order(filled)
+        self.store.record_fill(fill)
+        return filled, fill
 
     def buy_limit_price(self, current_price: int) -> int:
         return round_price(current_price * (1.0 + self.config.order.buy_limit_markup_pct / 100.0))
 
     def sell_limit_price(self, current_price: int) -> int:
         return round_price(current_price * (1.0 - self.config.order.sell_limit_markdown_pct / 100.0))
+
+
+def _normalize_order_id(order_id: str) -> str:
+    normalized = str(order_id).strip()
+    return normalized.lstrip("0") or normalized

@@ -50,7 +50,14 @@ class AutoTrader:
             self.risk_manager.data_mismatch_detected = self.position_manager.account_mismatch_detected
             if self.position_manager.account_mismatch_detected:
                 self.notifier.notify("lot/account mismatch", "Lot quantity differs from KIS account balance. New buys are blocked.")
-            open_orders = self.client.open_orders()
+            try:
+                open_orders = self.client.open_orders()
+            except RuntimeError as error:
+                if getattr(self.client, "is_demo", False) and "90000000" in str(error):
+                    self.logger.warning("open_orders skipped reason=demo_api_unsupported")
+                    open_orders = ()
+                else:
+                    raise
             if open_orders:
                 self.logger.warning("open_orders count=%s buy_orders_blocked=true", len(open_orders))
                 self.risk_manager.data_mismatch_detected = True
@@ -99,6 +106,7 @@ class AutoTrader:
             return
         result, fill = self.order_manager.submit_and_confirm(request)
         self.position_manager.mark_order_requested(position.code, result.order_id, result.status.value)
+        self.store.save_position(self.position_manager.get(position.code))
         if fill is None:
             self.logger.info("order_not_filled code=%s order_id=%s status=%s", position.code, result.order_id, result.status.value)
             return
