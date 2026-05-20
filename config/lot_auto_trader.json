@@ -305,6 +305,7 @@
     "price_sample_interval_seconds": 2.0,
     "limit_order_timeout_seconds": 30,
     "order_cooldown_seconds": 600,
+    "min_order_request_interval_seconds": 10,
     "cancel_unfilled_on_start": false
   },
   "market_hours": {

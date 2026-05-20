@@ -17,6 +17,7 @@ class OrderStatus(str, Enum):
     REQUESTED = "REQUESTED"
     FILLED = "FILLED"
     PARTIAL = "PARTIAL"
+    PARTIAL_CANCELED = "PARTIAL_CANCELED"
     CANCELED = "CANCELED"
     REJECTED = "REJECTED"
 
@@ -91,6 +92,8 @@ class PositionState:
     last_update_time: str = ""
     last_order_time: str = ""
     lot_quantity_mismatch: bool = False
+    sync_status: str = "OK"
+    trading_paused: bool = False
 
 
 @dataclass
@@ -148,3 +151,4 @@ class TradeFill:
     order_id: str
     filled_at: datetime
     lot_id: str = ""
+    execution_id: str = ""

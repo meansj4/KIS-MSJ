@@ -60,12 +60,18 @@ class PositionManager:
             position.name = item.name or position.name
             if position.quantity != item.quantity:
                 position.lot_quantity_mismatch = True
+                position.sync_status = "SYNC_REQUIRED"
+                position.trading_paused = True
+                position.auto_buy_enabled = False
                 self.account_mismatch_detected = True
                 position.quantity = item.quantity
                 position.average_price = item.average_price
         for code, position in self.positions.items():
             if code not in actual and position.quantity > 0:
                 position.lot_quantity_mismatch = True
+                position.sync_status = "SYNC_REQUIRED"
+                position.trading_paused = True
+                position.auto_buy_enabled = False
                 self.account_mismatch_detected = True
 
     def apply_fill(self, fill: TradeFill) -> PositionState:

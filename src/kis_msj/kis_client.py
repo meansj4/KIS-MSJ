@@ -130,7 +130,20 @@ class KisClient:
                 continue
             side_text = str(row.get("sll_buy_dvsn_cd_name") or row.get("trad_dvsn_name") or "")
             side = OrderSide.SELL if "매도" in side_text or "sell" in side_text.lower() else OrderSide.BUY
-            fills.append(TradeFill(str(row.get("pdno") or "").zfill(6), str(row.get("prdt_name") or ""), side, quantity, price, str(row.get("odno") or ""), datetime.now()))
+            order_id = str(row.get("odno") or "").strip()
+            execution_id = _execution_id(row, order_id)
+            fills.append(
+                TradeFill(
+                    str(row.get("pdno") or "").zfill(6),
+                    str(row.get("prdt_name") or ""),
+                    side,
+                    quantity,
+                    price,
+                    order_id,
+                    datetime.now(),
+                    execution_id=execution_id,
+                )
+            )
         return tuple(fills)
 
     def open_orders(self) -> tuple[dict[str, Any], ...]:
@@ -220,3 +233,15 @@ def _load_prices(path: Path) -> dict[str, int]:
             if code and str(value).strip():
                 prices[code] = int(float(value))
         return prices
+
+
+def _execution_id(row: dict[str, Any], order_id: str) -> str:
+    for key in ("exec_no", "ccld_no", "odno_seq", "ord_seq", "orgn_odno", "odno"):
+        value = str(row.get(key) or "").strip()
+        if value:
+            return f"EXEC:{value}" if key != "odno" else ""
+    code = str(row.get("pdno") or "").zfill(6)
+    quantity = str(row.get("tot_ccld_qty") or row.get("ccld_qty") or "").strip()
+    price = str(row.get("avg_prvs") or row.get("ord_unpr") or "").strip()
+    time_text = str(row.get("ord_tmd") or row.get("ccld_dtime") or row.get("ord_dt") or "").strip()
+    return f"AGG:{order_id}:{code}:{quantity}:{price}:{time_text}" if order_id and code and quantity and price else ""

@@ -101,6 +101,7 @@ class OrderConfig:
     price_sample_interval_seconds: float = 2.0
     limit_order_timeout_seconds: int = 60
     order_cooldown_seconds: int = 300
+    min_order_request_interval_seconds: int = 10
     cancel_unfilled_on_start: bool = False
 
 

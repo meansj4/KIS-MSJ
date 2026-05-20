@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
-from .models import LotState, OrderResult, PositionState, TradeFill
+from .models import LotState, OrderRequest, OrderResult, OrderSide, OrderStatus, PositionState, TradeFill
 
 
 POSITION_COLUMNS = tuple(PositionState.__dataclass_fields__.keys())
 LOT_COLUMNS = tuple(LotState.__dataclass_fields__.keys())
+OPEN_ORDER_STATUSES = (OrderStatus.REQUESTED.value, OrderStatus.PARTIAL.value)
+SYNC_REQUIRED = "SYNC_REQUIRED"
 
 
 class StateStore:
@@ -55,10 +58,14 @@ class StateStore:
                     daily_sell_amount INTEGER NOT NULL,
                     last_update_time TEXT NOT NULL,
                     last_order_time TEXT NOT NULL,
-                    lot_quantity_mismatch INTEGER NOT NULL
+                    lot_quantity_mismatch INTEGER NOT NULL,
+                    sync_status TEXT NOT NULL DEFAULT 'OK',
+                    trading_paused INTEGER NOT NULL DEFAULT 0
                 )
                 """
             )
+            _ensure_column(connection, "positions", "sync_status", "TEXT NOT NULL DEFAULT 'OK'")
+            _ensure_column(connection, "positions", "trading_paused", "INTEGER NOT NULL DEFAULT 0")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS lots (
@@ -91,10 +98,12 @@ class StateStore:
                     order_id TEXT NOT NULL,
                     filled_at TEXT NOT NULL,
                     lot_id TEXT NOT NULL,
+                    execution_id TEXT NOT NULL DEFAULT '',
                     UNIQUE(order_id, code, side, quantity, price, filled_at, lot_id)
                 )
                 """
             )
+            _ensure_column(connection, "fills", "execution_id", "TEXT NOT NULL DEFAULT ''")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS orders (
@@ -107,10 +116,12 @@ class StateStore:
                     reason TEXT NOT NULL,
                     lot_id TEXT NOT NULL,
                     message TEXT NOT NULL,
+                    requested_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
+            _ensure_column(connection, "orders", "requested_at", "TEXT NOT NULL DEFAULT ''")
 
     def load_positions(self) -> dict[str, PositionState]:
         with self._connect() as connection:
@@ -118,7 +129,9 @@ class StateStore:
         positions = {}
         for row in rows:
             data = dict(row)
-            for key in ("needs_review", "auto_buy_enabled", "danger_state", "lot_quantity_mismatch"):
+            data.setdefault("sync_status", "OK")
+            data.setdefault("trading_paused", 0)
+            for key in ("needs_review", "auto_buy_enabled", "danger_state", "lot_quantity_mismatch", "trading_paused"):
                 data[key] = bool(data[key])
             positions[data["code"]] = PositionState(**data)
         return positions
@@ -164,11 +177,12 @@ class StateStore:
 
     def record_order(self, result: OrderResult) -> None:
         request = result.request
+        requested_at = datetime.now().isoformat(timespec="seconds")
         with self._connect() as connection:
             connection.execute(
                 """
-                INSERT INTO orders (order_id, code, side, quantity, limit_price, status, reason, lot_id, message)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO orders (order_id, code, side, quantity, limit_price, status, reason, lot_id, message, requested_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(order_id) DO UPDATE SET status=excluded.status, message=excluded.message, updated_at=CURRENT_TIMESTAMP
                 """,
                 (
@@ -181,19 +195,151 @@ class StateStore:
                     request.reason,
                     request.lot_id,
                     result.message,
+                    requested_at,
                 ),
             )
 
-    def record_fill(self, fill: TradeFill) -> None:
+    def record_fill(self, fill: TradeFill) -> bool:
         with self._connect() as connection:
-            connection.execute(
+            if fill.execution_id:
+                existing = connection.execute(
+                    "SELECT 1 FROM fills WHERE execution_id = ? LIMIT 1",
+                    (fill.execution_id,),
+                ).fetchone()
+                if existing is not None:
+                    return False
+            cursor = connection.execute(
                 """
-                INSERT OR IGNORE INTO fills (code, name, side, quantity, price, order_id, filled_at, lot_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT OR IGNORE INTO fills (code, name, side, quantity, price, order_id, filled_at, lot_id, execution_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (fill.code, fill.name, fill.side.value, fill.quantity, fill.price, fill.order_id, fill.filled_at.isoformat(), fill.lot_id),
+                (
+                    fill.code,
+                    fill.name,
+                    fill.side.value,
+                    fill.quantity,
+                    fill.price,
+                    fill.order_id,
+                    fill.filled_at.isoformat(),
+                    fill.lot_id,
+                    fill.execution_id,
+                ),
             )
+        return cursor.rowcount > 0
+
+    def open_orders(self) -> tuple[OrderResult, ...]:
+        placeholders = ", ".join("?" for _ in OPEN_ORDER_STATUSES)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM orders WHERE status IN ({placeholders}) ORDER BY requested_at ASC, updated_at ASC",
+                OPEN_ORDER_STATUSES,
+            ).fetchall()
+        orders = []
+        for row in rows:
+            request = OrderRequest(
+                str(row["code"]),
+                "",
+                OrderSide(str(row["side"])),
+                int(row["quantity"]),
+                int(row["limit_price"]),
+                str(row["reason"]),
+                str(row["lot_id"]),
+            )
+            orders.append(OrderResult(request, str(row["order_id"]), OrderStatus(str(row["status"])), str(row["message"])))
+        return tuple(orders)
+
+    def filled_quantity_for_order(self, order_id: str) -> int:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT COALESCE(SUM(quantity), 0) AS quantity FROM fills WHERE order_id = ?",
+                (order_id,),
+            ).fetchone()
+        return int(row["quantity"] or 0)
+
+    def has_open_order(self, code: str, side: OrderSide, lot_id: str = "") -> bool:
+        placeholders = ", ".join("?" for _ in OPEN_ORDER_STATUSES)
+        params: list[object] = [code, side.value, *OPEN_ORDER_STATUSES]
+        lot_filter = ""
+        if side is OrderSide.SELL:
+            lot_filter = " AND lot_id = ?"
+            params.append(lot_id)
+        with self._connect() as connection:
+            row = connection.execute(
+                f"SELECT 1 FROM orders WHERE code = ? AND side = ? AND status IN ({placeholders}){lot_filter} LIMIT 1",
+                params,
+            ).fetchone()
+        return row is not None
+
+    def has_partial_order(self, code: str, lot_id: str = "") -> bool:
+        params: list[object] = [code, OrderStatus.PARTIAL.value]
+        lot_filter = ""
+        if lot_id:
+            lot_filter = " AND lot_id = ?"
+            params.append(lot_id)
+        with self._connect() as connection:
+            row = connection.execute(
+                f"SELECT 1 FROM orders WHERE code = ? AND status = ?{lot_filter} LIMIT 1",
+                params,
+            ).fetchone()
+        return row is not None
+
+    def seconds_since_oldest_partial_order(self, code: str) -> float | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT requested_at FROM orders WHERE code = ? AND status = ? ORDER BY requested_at ASC LIMIT 1",
+                (code, OrderStatus.PARTIAL.value),
+            ).fetchone()
+        if row is None:
+            return None
+        requested_at = str(row["requested_at"]).strip()
+        if not requested_at:
+            return None
+        return (datetime.now() - _parse_timestamp(requested_at)).total_seconds()
+
+    def seconds_since_recent_order_request(self, code: str, side: OrderSide | None = None) -> float | None:
+        params: list[object] = [code]
+        side_filter = ""
+        if side is not None:
+            side_filter = " AND side = ?"
+            params.append(side.value)
+        with self._connect() as connection:
+            row = connection.execute(
+                f"SELECT requested_at FROM orders WHERE code = ?{side_filter} ORDER BY requested_at DESC LIMIT 1",
+                params,
+            ).fetchone()
+        if row is None:
+            return None
+        if not str(row["requested_at"]).strip():
+            return None
+        requested_at = _parse_timestamp(str(row["requested_at"]))
+        return (datetime.now() - requested_at).total_seconds()
+
+    def seconds_since_recent_fill(self, code: str, side: OrderSide | None = None) -> float | None:
+        params: list[object] = [code]
+        side_filter = ""
+        if side is not None:
+            side_filter = " AND side = ?"
+            params.append(side.value)
+        with self._connect() as connection:
+            row = connection.execute(
+                f"SELECT filled_at FROM fills WHERE code = ?{side_filter} ORDER BY filled_at DESC LIMIT 1",
+                params,
+            ).fetchone()
+        if row is None:
+            return None
+        filled_at = _parse_timestamp(str(row["filled_at"]))
+        return (datetime.now() - filled_at).total_seconds()
 
 
 def _bools(data: dict[str, object]) -> dict[str, object]:
     return {key: int(value) if isinstance(value, bool) else value for key, value in data.items()}
+
+
+def _ensure_column(connection: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    columns = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
+    if column not in columns:
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def _parse_timestamp(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)

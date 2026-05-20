@@ -49,7 +49,7 @@ class AutoTrader:
             self.position_manager.sync_account(snapshot)
             self.risk_manager.data_mismatch_detected = self.position_manager.account_mismatch_detected
             if self.position_manager.account_mismatch_detected:
-                self.notifier.notify("lot/account mismatch", "Lot quantity differs from KIS account balance. New buys are blocked.")
+                self.notifier.notify("SYNC_REQUIRED", "Lot quantity differs from KIS account balance. Trading is paused for mismatched symbols.")
             try:
                 open_orders = self.client.open_orders()
             except RuntimeError as error:
@@ -67,6 +67,7 @@ class AutoTrader:
 
     def run_once(self) -> None:
         self.upstream_watcher.tick()
+        self.reconcile_open_orders()
         snapshot = self.startup_sync()
         account_risk = self.risk_manager.account_buy_allowed(snapshot, self.position_manager.positions)
         for stock in self.config.stocks:
@@ -80,10 +81,25 @@ class AutoTrader:
         self.store.save_positions(self.position_manager.positions.values())
         self.store.save_lots(self.lot_manager.lots.values())
 
+    def reconcile_open_orders(self) -> None:
+        for fill in self.order_manager.reconcile_open_orders():
+            updated = self.position_manager.apply_fill(fill)
+            self.store.save_position(updated)
+            self.store.save_lots(self.lot_manager.lots.values())
+            self.logger.info(
+                "reconcile_fill_applied code=%s side=%s qty=%s price=%s lot_id=%s order_id=%s execution_id=%s",
+                fill.code,
+                fill.side.value,
+                fill.quantity,
+                fill.price,
+                fill.lot_id,
+                fill.order_id,
+                fill.execution_id,
+            )
+
     def evaluate(self, position: PositionState, snapshot: AccountSnapshot, account_risk) -> None:
-        ban = self.trade_ban_reason(position)
-        if ban:
-            self.logger.info("trade_blocked code=%s name=%s reason=%s", position.code, position.name, ban)
+        if not in_trade_window(self.config):
+            self.logger.info("trade_blocked code=%s name=%s reason=outside_trade_window", position.code, position.name)
             return
         samples = self.price_sampler.sample(position.code, position.name)
         stable, stable_reason = self.price_sampler.stable(samples, self.config.risk.max_price_sample_volatility_pct)
@@ -97,6 +113,28 @@ class AutoTrader:
         self.log_symbol_decision(position, current_price, account_risk, symbol_risk, action.reason if action else "NONE")
         if action is None:
             return
+        sync_block = self.sync_required_block_reason(position)
+        if sync_block:
+            self.logger.info("trade_blocked code=%s name=%s reason=%s", position.code, position.name, sync_block)
+            self.notifier.notify("SYNC_REQUIRED", f"{position.code} {position.name}: manual reconciliation required before trading resumes.")
+            return
+        partial = self.partial_order_block_reason(position)
+        if partial:
+            self.logger.info("trade_blocked code=%s name=%s reason=%s", position.code, position.name, partial)
+            return
+        duplicate = self.open_order_block_reason(position, action)
+        if duplicate:
+            self.logger.info("trade_blocked code=%s name=%s reason=%s", position.code, position.name, duplicate)
+            return
+        request_gap = self.recent_order_request_block_reason(position)
+        if request_gap:
+            self.logger.info("trade_blocked code=%s name=%s reason=%s", position.code, position.name, request_gap)
+            return
+        if action.side is OrderSide.BUY:
+            cooldown = self.order_cooldown_reason(position)
+            if cooldown:
+                self.logger.info("trade_blocked code=%s name=%s reason=%s", position.code, position.name, cooldown)
+                return
         request = self.order_manager.build_request(position, action, current_price)
         if request is None:
             self.logger.info("trade_blocked code=%s reason=quantity_below_one", position.code)
@@ -105,8 +143,6 @@ class AutoTrader:
             self.logger.info("trade_blocked code=%s reason=insufficient_cash", position.code)
             return
         result, fill = self.order_manager.submit_and_confirm(request)
-        self.position_manager.mark_order_requested(position.code, result.order_id, result.status.value)
-        self.store.save_position(self.position_manager.get(position.code))
         if fill is None:
             self.logger.info("order_not_filled code=%s order_id=%s status=%s", position.code, result.order_id, result.status.value)
             return
@@ -144,16 +180,39 @@ class AutoTrader:
             action=action,
         )
 
-    def trade_ban_reason(self, position: PositionState) -> str:
-        if not in_trade_window(self.config):
-            return "outside_trade_window"
-        if position.last_order_time:
-            try:
-                elapsed = (datetime.now() - datetime.fromisoformat(position.last_order_time)).total_seconds()
-            except ValueError:
-                elapsed = self.config.order.order_cooldown_seconds
-            if elapsed < self.config.order.order_cooldown_seconds:
-                return "order_cooldown"
+    def order_cooldown_reason(self, position: PositionState) -> str:
+        elapsed = self.store.seconds_since_recent_fill(position.code, OrderSide.BUY)
+        if elapsed is not None and elapsed < self.config.order.order_cooldown_seconds:
+            return "buy_fill_cooldown"
+        return ""
+
+    def sync_required_block_reason(self, position: PositionState) -> str:
+        if position.trading_paused:
+            return "trading_paused"
+        if position.sync_status == "SYNC_REQUIRED":
+            return "sync_required"
+        return ""
+
+    def partial_order_block_reason(self, position: PositionState) -> str:
+        if not self.store.has_partial_order(position.code):
+            return ""
+        elapsed = self.store.seconds_since_oldest_partial_order(position.code)
+        if elapsed is not None and elapsed >= self.config.order.limit_order_timeout_seconds:
+            return "partial_order_cancel_or_requery"
+        return "partial_order_exists"
+
+    def open_order_block_reason(self, position: PositionState, action) -> str:
+        if action.side is OrderSide.BUY and self.store.has_open_order(position.code, OrderSide.BUY):
+            return "open_buy_order_exists"
+        if action.side is OrderSide.SELL and self.store.has_open_order(position.code, OrderSide.SELL, action.lot_id):
+            return "open_sell_order_exists"
+        return ""
+
+    def recent_order_request_block_reason(self, position: PositionState) -> str:
+        elapsed = self.store.seconds_since_recent_order_request(position.code)
+        minimum = self.config.order.min_order_request_interval_seconds
+        if elapsed is not None and elapsed < minimum:
+            return "recent_order_request"
         return ""
 
 

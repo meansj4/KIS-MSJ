@@ -43,6 +43,10 @@ class RiskManager:
         reasons: list[str] = []
         if position.danger_state:
             reasons.append("danger_state")
+        if position.trading_paused:
+            reasons.append("trading_paused")
+        if position.sync_status == "SYNC_REQUIRED":
+            reasons.append("sync_required")
         if position.needs_review:
             reasons.append("needs_review")
         if not position.auto_buy_enabled:
