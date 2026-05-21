@@ -25,6 +25,18 @@ class LotManager:
             return None
         return max(lots, key=lambda lot: lot.buy_filled_at)
 
+    def lowest_open_buy_lot(self, code: str) -> LotState | None:
+        lots = self.open_lots(code)
+        if not lots:
+            return None
+        return min(lots, key=lambda lot: lot.buy_price)
+
+    def highest_open_buy_lot(self, code: str) -> LotState | None:
+        lots = self.open_lots(code)
+        if not lots:
+            return None
+        return max(lots, key=lambda lot: lot.buy_price)
+
     def target_profit_pct(self, exposure: int) -> float:
         for band in self.config.exposure_sell_bands:
             if band.min_exposure <= exposure <= band.max_exposure:
@@ -37,8 +49,8 @@ class LotManager:
                 return band.drop_pct, band.amount
         return None
 
-    def sellable_lots(self, code: str, current_price: int, exposure: int) -> list[LotState]:
-        target_pct = self.target_profit_pct(exposure)
+    def sellable_lots(self, code: str, current_price: int, exposure: int, target_pct: float | None = None) -> list[LotState]:
+        target_pct = self.target_profit_pct(exposure) if target_pct is None else target_pct
         lots = [lot for lot in self.open_lots(code) if lot.profit_pct_at(current_price) >= target_pct]
         return sorted(
             lots,
@@ -58,7 +70,7 @@ class LotManager:
         lot = LotState(
             lot_id=lot_id,
             code=fill.code,
-            buy_filled_at=fill.filled_at.isoformat(timespec="seconds"),
+            buy_filled_at=fill.filled_at.isoformat(timespec="microseconds"),
             buy_price=fill.price,
             buy_quantity=fill.quantity,
             buy_amount=fill.quantity * fill.price,

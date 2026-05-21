@@ -6,7 +6,7 @@ from datetime import datetime
 
 from .config import StrategyConfig
 from .lot_manager import LotManager
-from .models import AccountSnapshot, OrderSide, PositionState, TradeFill
+from .models import AccountSnapshot, OrderSide, PositionLifecycle, PositionState, TradeFill
 
 
 class PositionManager:
@@ -24,6 +24,9 @@ class PositionManager:
                 auto_buy_limit=self.config.auto_buy_limit,
                 absolute_max_investment=self.config.absolute_max_investment,
             )
+        else:
+            self.positions[code].auto_buy_limit = self.config.auto_buy_limit
+            self.positions[code].absolute_max_investment = self.config.absolute_max_investment
         if name and not self.positions[code].name:
             self.positions[code].name = name
         return self.positions[code]
@@ -50,8 +53,22 @@ class PositionManager:
         if exposure > self.config.auto_buy_limit or position.profit_loss_pct <= self.config.review_loss_pct or len(lots) > self.config.max_open_lots_before_review:
             position.needs_review = True
             position.auto_buy_enabled = False
+        position.position_state = self._lifecycle_for(position, bool(lots))
         position.last_update_time = datetime.now().isoformat(timespec="seconds")
         return position
+
+    def _lifecycle_for(self, position: PositionState, has_open_lots: bool) -> str:
+        if position.sync_status == PositionLifecycle.SYNC_REQUIRED.value or position.trading_paused:
+            return PositionLifecycle.SYNC_REQUIRED.value
+        if position.danger_state:
+            return PositionLifecycle.RISK_BLOCKED.value
+        if position.needs_review:
+            return PositionLifecycle.REVIEW_REQUIRED.value
+        if has_open_lots:
+            return PositionLifecycle.HOLDING.value
+        if position.last_fill_side == OrderSide.SELL.value or any(lot.code == position.code for lot in self.lot_manager.lots.values()):
+            return PositionLifecycle.WAIT_REENTRY.value
+        return PositionLifecycle.NEVER_BOUGHT.value
 
     def sync_account(self, snapshot: AccountSnapshot) -> None:
         actual = {item.code: item for item in snapshot.positions}
@@ -60,7 +77,8 @@ class PositionManager:
             position.name = item.name or position.name
             if position.quantity != item.quantity:
                 position.lot_quantity_mismatch = True
-                position.sync_status = "SYNC_REQUIRED"
+                position.sync_status = PositionLifecycle.SYNC_REQUIRED.value
+                position.position_state = PositionLifecycle.SYNC_REQUIRED.value
                 position.trading_paused = True
                 position.auto_buy_enabled = False
                 self.account_mismatch_detected = True
@@ -69,7 +87,8 @@ class PositionManager:
         for code, position in self.positions.items():
             if code not in actual and position.quantity > 0:
                 position.lot_quantity_mismatch = True
-                position.sync_status = "SYNC_REQUIRED"
+                position.sync_status = PositionLifecycle.SYNC_REQUIRED.value
+                position.position_state = PositionLifecycle.SYNC_REQUIRED.value
                 position.trading_paused = True
                 position.auto_buy_enabled = False
                 self.account_mismatch_detected = True
@@ -83,6 +102,9 @@ class PositionManager:
         else:
             lot = self.lot_manager.apply_sell_fill(fill)
             position.daily_sell_amount += fill.quantity * fill.price
+            position.last_sell_price = fill.price
+            if not self.lot_manager.open_lots(fill.code):
+                position.reentry_anchor_price = fill.price
         position.last_fill_price = fill.price
         position.last_fill_side = fill.side.value
         position.last_order_id = fill.order_id
@@ -100,12 +122,12 @@ class PositionManager:
 def _stage_for_exposure(exposure: int) -> int:
     if exposure <= 0:
         return 0
-    if exposure <= 600_000:
+    if exposure <= 60_000:
         return 1
-    if exposure <= 1_200_000:
+    if exposure <= 120_000:
         return 2
-    if exposure <= 2_000_000:
+    if exposure <= 200_000:
         return 3
-    if exposure <= 3_000_000:
+    if exposure <= 300_000:
         return 4
     return 5

@@ -14,6 +14,7 @@ from .kis_client import KisClient, MockKisClient
 from .logger import configure_trade_logger, log_decision
 from .lot_manager import LotManager
 from .models import AccountSnapshot, OrderSide, PositionState
+from .models import PositionLifecycle
 from .notifier import LogNotifier
 from .order_manager import OrderManager
 from .position_manager import PositionManager
@@ -76,6 +77,7 @@ class AutoTrader:
             position = self.position_manager.get(stock.code, stock.name)
             if stock.danger_state:
                 position.danger_state = True
+                position.position_state = PositionLifecycle.RISK_BLOCKED.value
                 position.auto_buy_enabled = False
             self.evaluate(position, snapshot, account_risk)
         self.store.save_positions(self.position_manager.positions.values())
@@ -155,6 +157,7 @@ class AutoTrader:
         last_lot = self.lot_manager.last_buy_lot(position.code)
         last_lot_drop = (current_price - last_lot.buy_price) / last_lot.buy_price * 100.0 if last_lot else 0.0
         lots = self.lot_manager.open_lots(position.code)
+        context = self.strategy.context(position, current_price)
         lot_summary = ";".join(
             f"{lot.lot_id}:{lot.buy_price}->{lot.target_sell_price}:{lot.profit_pct_at(current_price):.2f}%:{lot.remaining_quantity}"
             for lot in lots
@@ -165,8 +168,22 @@ class AutoTrader:
             code=position.code,
             name=position.name,
             current_price=current_price,
+            position_state=context.position_state,
+            position_pnl_rate=f"{context.position_pnl_rate:.4f}",
+            pnl_mode=context.pnl_mode,
             average_price=f"{position.average_price:.2f}",
             exposure=position.cumulative_invested_amount,
+            accumulated_invested_amount=position.cumulative_invested_amount,
+            lowest_open_buy_lot_price=context.lowest_open_buy_lot_price,
+            highest_open_buy_lot_price=context.highest_open_buy_lot_price,
+            reference_buy_price=context.reference_buy_price,
+            reference_sell_price=context.reference_sell_price,
+            target_buy_drop_rate=f"{context.target_buy_drop_rate:.4f}",
+            target_profit_rate=f"{context.target_profit_rate:.4f}",
+            buy_condition_met=context.buy_condition_met,
+            sell_signal_met=context.sell_signal_met,
+            profitable_lots=context.profitable_lots,
+            selected_sell_lot_id=context.selected_sell_lot_id,
             last_buy_lot_price=last_lot.buy_price if last_lot else 0,
             last_buy_lot_drop_pct=f"{last_lot_drop:.2f}",
             lot_profit_targets=lot_summary or "NONE",
@@ -177,6 +194,12 @@ class AutoTrader:
             realized_pnl=position.realized_profit_loss,
             unrealized_pnl=position.unrealized_profit_loss,
             total_pnl=position.total_profit_loss,
+            last_sell_price=position.last_sell_price,
+            reentry_anchor_price=position.reentry_anchor_price,
+            reentry_condition_met=context.reentry_condition_met,
+            skip_reason=context.skip_reason,
+            open_order_exists=self.store.has_any_open_order(position.code),
+            sync_status=position.sync_status,
             action=action,
         )
 

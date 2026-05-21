@@ -60,12 +60,18 @@ class StateStore:
                     last_order_time TEXT NOT NULL,
                     lot_quantity_mismatch INTEGER NOT NULL,
                     sync_status TEXT NOT NULL DEFAULT 'OK',
-                    trading_paused INTEGER NOT NULL DEFAULT 0
+                    trading_paused INTEGER NOT NULL DEFAULT 0,
+                    position_state TEXT NOT NULL DEFAULT 'NEVER_BOUGHT',
+                    last_sell_price INTEGER NOT NULL DEFAULT 0,
+                    reentry_anchor_price INTEGER NOT NULL DEFAULT 0
                 )
                 """
             )
             _ensure_column(connection, "positions", "sync_status", "TEXT NOT NULL DEFAULT 'OK'")
             _ensure_column(connection, "positions", "trading_paused", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "positions", "position_state", "TEXT NOT NULL DEFAULT 'NEVER_BOUGHT'")
+            _ensure_column(connection, "positions", "last_sell_price", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "positions", "reentry_anchor_price", "INTEGER NOT NULL DEFAULT 0")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS lots (
@@ -131,6 +137,9 @@ class StateStore:
             data = dict(row)
             data.setdefault("sync_status", "OK")
             data.setdefault("trading_paused", 0)
+            data.setdefault("position_state", "NEVER_BOUGHT")
+            data.setdefault("last_sell_price", 0)
+            data.setdefault("reentry_anchor_price", 0)
             for key in ("needs_review", "auto_buy_enabled", "danger_state", "lot_quantity_mismatch", "trading_paused"):
                 data[key] = bool(data[key])
             positions[data["code"]] = PositionState(**data)
@@ -266,6 +275,16 @@ class StateStore:
         with self._connect() as connection:
             row = connection.execute(
                 f"SELECT 1 FROM orders WHERE code = ? AND side = ? AND status IN ({placeholders}){lot_filter} LIMIT 1",
+                params,
+            ).fetchone()
+        return row is not None
+
+    def has_any_open_order(self, code: str) -> bool:
+        placeholders = ", ".join("?" for _ in OPEN_ORDER_STATUSES)
+        params: list[object] = [code, *OPEN_ORDER_STATUSES]
+        with self._connect() as connection:
+            row = connection.execute(
+                f"SELECT 1 FROM orders WHERE code = ? AND status IN ({placeholders}) LIMIT 1",
                 params,
             ).fetchone()
         return row is not None

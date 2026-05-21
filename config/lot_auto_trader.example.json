@@ -12,11 +12,27 @@
     {"code": "012330", "name": "Hyundai Mobis", "enabled": true}
   ],
   "strategy": {
-    "initial_buy_amount": 300000,
-    "auto_buy_limit": 3000000,
-    "absolute_max_investment": 5000000,
+    "initial_buy_amount": 30000,
+    "auto_buy_limit": 300000,
+    "absolute_max_investment": 500000,
     "review_loss_pct": -20.0,
     "max_open_lots_before_review": 12,
+    "pnl_minus_threshold": -0.01,
+    "pnl_plus_threshold": 0.01,
+    "reentry_drop_rate": 0.04,
+    "exposure_buy_bands": [
+      {"min_exposure": 1, "max_exposure": 60000, "drop_pct": 4.0, "amount": 30000},
+      {"min_exposure": 60001, "max_exposure": 120000, "drop_pct": 5.0, "amount": 30000},
+      {"min_exposure": 120001, "max_exposure": 200000, "drop_pct": 6.0, "amount": 40000},
+      {"min_exposure": 200001, "max_exposure": 300000, "drop_pct": 8.0, "amount": 50000}
+    ],
+    "exposure_sell_bands": [
+      {"min_exposure": 1, "max_exposure": 60000, "target_profit_pct": 6.0},
+      {"min_exposure": 60001, "max_exposure": 120000, "target_profit_pct": 5.0},
+      {"min_exposure": 120001, "max_exposure": 200000, "target_profit_pct": 4.0},
+      {"min_exposure": 200001, "max_exposure": 300000, "target_profit_pct": 3.0},
+      {"min_exposure": 300001, "max_exposure": 500000, "target_profit_pct": 2.5}
+    ],
     "high_exposure_partial_sell_pct": 50.0,
     "estimated_fee_tax_pct": 0.25
   },

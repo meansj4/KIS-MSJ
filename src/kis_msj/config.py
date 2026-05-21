@@ -57,23 +57,26 @@ class SellBand:
 
 @dataclass(frozen=True)
 class StrategyConfig:
-    initial_buy_amount: int = 300_000
-    auto_buy_limit: int = 3_000_000
-    absolute_max_investment: int = 5_000_000
+    initial_buy_amount: int = 30_000
+    auto_buy_limit: int = 300_000
+    absolute_max_investment: int = 500_000
     review_loss_pct: float = -20.0
     max_open_lots_before_review: int = 12
+    pnl_minus_threshold: float = -0.01
+    pnl_plus_threshold: float = 0.01
+    reentry_drop_rate: float = 0.04
     exposure_buy_bands: tuple[BuyBand, ...] = (
-        BuyBand(1, 600_000, 4.0, 300_000),
-        BuyBand(600_001, 1_200_000, 5.0, 300_000),
-        BuyBand(1_200_001, 2_000_000, 6.0, 400_000),
-        BuyBand(2_000_001, 3_000_000, 8.0, 500_000),
+        BuyBand(1, 60_000, 4.0, 30_000),
+        BuyBand(60_001, 120_000, 5.0, 30_000),
+        BuyBand(120_001, 200_000, 6.0, 40_000),
+        BuyBand(200_001, 300_000, 8.0, 50_000),
     )
     exposure_sell_bands: tuple[SellBand, ...] = (
-        SellBand(1, 600_000, 6.0),
-        SellBand(600_001, 1_200_000, 5.0),
-        SellBand(1_200_001, 2_000_000, 4.0),
-        SellBand(2_000_001, 3_000_000, 3.0),
-        SellBand(3_000_001, 5_000_000, 2.5),
+        SellBand(1, 60_000, 6.0),
+        SellBand(60_001, 120_000, 5.0),
+        SellBand(120_001, 200_000, 4.0),
+        SellBand(200_001, 300_000, 3.0),
+        SellBand(300_001, 500_000, 2.5),
     )
     high_exposure_partial_sell_pct: float = 50.0
     estimated_fee_tax_pct: float = 0.25

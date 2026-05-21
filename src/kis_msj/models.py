@@ -28,6 +28,15 @@ class LotStatus(str, Enum):
     CLOSED = "CLOSED"
 
 
+class PositionLifecycle(str, Enum):
+    NEVER_BOUGHT = "NEVER_BOUGHT"
+    HOLDING = "HOLDING"
+    WAIT_REENTRY = "WAIT_REENTRY"
+    REVIEW_REQUIRED = "REVIEW_REQUIRED"
+    RISK_BLOCKED = "RISK_BLOCKED"
+    SYNC_REQUIRED = "SYNC_REQUIRED"
+
+
 @dataclass(frozen=True)
 class Quote:
     code: str
@@ -94,6 +103,9 @@ class PositionState:
     lot_quantity_mismatch: bool = False
     sync_status: str = "OK"
     trading_paused: bool = False
+    position_state: str = PositionLifecycle.NEVER_BOUGHT.value
+    last_sell_price: int = 0
+    reentry_anchor_price: int = 0
 
 
 @dataclass
