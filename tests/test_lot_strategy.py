@@ -186,8 +186,8 @@ def test_minus_mode_add_buy_uses_lowest_open_buy_lot() -> None:
 
 def test_plus_mode_add_buy_uses_highest_open_buy_lot() -> None:
     _, _, positions, strategy, risk, snapshot = setup_strategy()
-    add_lot(positions, "005930", 9000, 3)
-    add_lot(positions, "005930", 10000, 3)
+    add_lot(positions, "005930", 9100, 5)
+    add_lot(positions, "005930", 10000, 1)
     position = positions.refresh_from_lots("005930", 9600)
 
     action = strategy.decide(position, 9600, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
@@ -199,21 +199,38 @@ def test_plus_mode_add_buy_uses_highest_open_buy_lot() -> None:
     assert action.reason == "add_buy_drop_4%"
 
 
-def test_plus_mode_sell_signal_uses_highest_lot_but_sells_profitable_lot_only() -> None:
+def test_plus_mode_sells_profitable_lot_even_if_highest_lot_is_below_target() -> None:
     _, _, positions, strategy, risk, snapshot = setup_strategy()
-    low = add_lot(positions, "005930", 9000, 1)
-    high = add_lot(positions, "005930", 10000, 1)
-    position = positions.refresh_from_lots("005930", 10600)
+    low = add_lot(positions, "005930", 9000, 10)
+    add_lot(positions, "005930", 10000, 1)
+    position = positions.refresh_from_lots("005930", 9540)
 
-    action = strategy.decide(position, 10600, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
-    context = strategy.context(position, 10600)
+    action = strategy.decide(position, 9540, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    context = strategy.context(position, 9540)
 
     assert context.pnl_mode == "PLUS"
     assert context.reference_sell_price == 10000
     assert context.sell_signal_met
     assert action is not None
     assert action.side is OrderSide.SELL
-    assert action.lot_id in {low.lot_id, high.lot_id}
+    assert action.lot_id == low.lot_id
+
+
+def test_lx_like_plus_mode_sells_low_lot_above_target_before_high_lot_target() -> None:
+    _, _, positions, strategy, risk, snapshot = setup_strategy()
+    add_lot(positions, "383800", 9510, 3)
+    low = add_lot(positions, "383800", 9150, 3)
+    position = positions.refresh_from_lots("383800", 9800)
+
+    action = strategy.decide(position, 9800, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    context = strategy.context(position, 9800)
+
+    assert context.pnl_mode == "PLUS"
+    assert context.reference_sell_price == 9510
+    assert context.sell_signal_met
+    assert action is not None
+    assert action.side is OrderSide.SELL
+    assert action.lot_id == low.lot_id
 
 
 def test_neutral_mode_buy_uses_lowest_and_sell_uses_individual_lot_profit() -> None:

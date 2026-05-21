@@ -94,8 +94,6 @@ class LotGridStrategy:
     def _sell_action(self, position: PositionState, current_price: int) -> StrategyAction | None:
         exposure = position.cumulative_invested_amount
         target_pct = self.lot_manager.target_profit_pct(exposure)
-        if not self._sell_signal_met(position, current_price, target_pct):
-            return None
         sellable = self.lot_manager.sellable_lots(position.code, current_price, exposure, target_pct)
         if not sellable:
             return None
@@ -176,13 +174,7 @@ class LotGridStrategy:
     def _sell_signal_met(self, position: PositionState, current_price: int, target_pct: float) -> bool:
         if position.cumulative_invested_amount <= 0:
             return False
-        mode = self._pnl_mode(position)
-        if mode == "NEUTRAL":
-            return bool(self.lot_manager.sellable_lots(position.code, current_price, position.cumulative_invested_amount, target_pct))
-        reference = self._reference_sell_lot(position)
-        if not reference:
-            return False
-        return current_price >= reference.buy_price * (1.0 + target_pct / 100.0)
+        return bool(self.lot_manager.sellable_lots(position.code, current_price, position.cumulative_invested_amount, target_pct))
 
     def _reentry_condition_met(self, position: PositionState, current_price: int) -> bool:
         anchor = position.reentry_anchor_price or position.last_sell_price

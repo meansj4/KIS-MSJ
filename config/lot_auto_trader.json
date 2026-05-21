@@ -227,6 +227,66 @@
       "delisting_risk": false,
       "accounting_issue": false,
       "liquidity_warning": false
+    },
+    {
+      "code": "123890",
+      "name": "Korea Asset In Trust",
+      "enabled": true,
+      "trading_halted": false,
+      "administrative_issue": false,
+      "investment_alert": false,
+      "audit_opinion_issue": false,
+      "delisting_risk": false,
+      "accounting_issue": false,
+      "liquidity_warning": false
+    },
+    {
+      "code": "044450",
+      "name": "KSS Line",
+      "enabled": true,
+      "trading_halted": false,
+      "administrative_issue": false,
+      "investment_alert": false,
+      "audit_opinion_issue": false,
+      "delisting_risk": false,
+      "accounting_issue": false,
+      "liquidity_warning": false
+    },
+    {
+      "code": "025860",
+      "name": "Namhae Chemical",
+      "enabled": true,
+      "trading_halted": false,
+      "administrative_issue": false,
+      "investment_alert": false,
+      "audit_opinion_issue": false,
+      "delisting_risk": false,
+      "accounting_issue": false,
+      "liquidity_warning": false
+    },
+    {
+      "code": "001520",
+      "name": "Tongyang",
+      "enabled": true,
+      "trading_halted": false,
+      "administrative_issue": false,
+      "investment_alert": false,
+      "audit_opinion_issue": false,
+      "delisting_risk": false,
+      "accounting_issue": false,
+      "liquidity_warning": false
+    },
+    {
+      "code": "145270",
+      "name": "K-TOP REITS",
+      "enabled": true,
+      "trading_halted": false,
+      "administrative_issue": false,
+      "investment_alert": false,
+      "audit_opinion_issue": false,
+      "delisting_risk": false,
+      "accounting_issue": false,
+      "liquidity_warning": false
     }
   ],
   "strategy": {
