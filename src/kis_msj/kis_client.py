@@ -26,6 +26,46 @@ OPEN_ORDER_PATH = "/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl"
 HASHKEY_PATH = "/uapi/hashkey"
 
 
+class KisApiError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        method: str,
+        path: str,
+        tr_id: str,
+        status_code: int | None = None,
+        body: str = "",
+    ) -> None:
+        details = [f"method={method}", f"path={path}", f"tr_id={tr_id}"]
+        if status_code is not None:
+            details.append(f"status={status_code}")
+        if body:
+            details.append(f"body={_compact_error_body(body)}")
+        super().__init__(f"{message} ({' '.join(details)})")
+        self.method = method
+        self.path = path
+        self.tr_id = tr_id
+        self.status_code = status_code
+        self.body = body
+
+
+def _compact_error_body(body: str, limit: int = 500) -> str:
+    compact = " ".join(body.split())
+    return compact if len(compact) <= limit else f"{compact[:limit]}..."
+
+
+def _http_error_body(error: urllib.error.HTTPError) -> str:
+    body = error.read()
+    if isinstance(body, bytes):
+        return body.decode("utf-8", errors="replace")
+    return str(body)
+
+
+def _is_transient_http_status(status_code: int | None) -> bool:
+    return status_code is not None and (status_code == 429 or 500 <= status_code <= 599)
+
+
 class KisClient:
     def __init__(self, account_config: KisAccountConfig | None = None) -> None:
         self.credentials = load_credentials()
@@ -170,22 +210,57 @@ class KisClient:
                 with urllib.request.urlopen(request, timeout=20) as response:
                     payload = json.loads(response.read().decode("utf-8"))
                 if payload.get("rt_cd") != "0":
-                    raise RuntimeError(f"KIS API failed: {payload.get('msg_cd')} {payload.get('msg1')}")
+                    raise KisApiError(
+                        f"KIS API failed: {payload.get('msg_cd')} {payload.get('msg1')}",
+                        method=method,
+                        path=path,
+                        tr_id=tr_id,
+                        body=json.dumps({"rt_cd": payload.get("rt_cd"), "msg_cd": payload.get("msg_cd"), "msg1": payload.get("msg1")}, ensure_ascii=False),
+                    )
                 self.consecutive_errors = 0
                 return payload
-            except (urllib.error.HTTPError, RuntimeError) as error:
+            except urllib.error.HTTPError as error:
                 self.consecutive_errors += 1
-                wrapped = RuntimeError(str(error))
-                if attempt >= 2 or not is_rate_limit_error(wrapped):
+                error_body = _http_error_body(error)
+                wrapped = KisApiError(
+                    f"KIS HTTP request failed: {error.reason}",
+                    method=method,
+                    path=path,
+                    tr_id=tr_id,
+                    status_code=error.code,
+                    body=error_body,
+                )
+                if attempt >= 2 or not _is_transient_http_status(error.code):
                     raise wrapped from error
+                time.sleep(2**attempt)
+            except urllib.error.URLError as error:
+                self.consecutive_errors += 1
+                wrapped = KisApiError(f"KIS network request failed: {error.reason}", method=method, path=path, tr_id=tr_id)
+                if attempt >= 2:
+                    raise wrapped from error
+                time.sleep(2**attempt)
+            except KisApiError as error:
+                self.consecutive_errors += 1
+                if attempt >= 2 or not is_rate_limit_error(error):
+                    raise
                 time.sleep(2**attempt)
         raise RuntimeError("KIS API failed after retries")
 
     def _hashkey(self, body: dict[str, Any]) -> str:
         headers = {"Content-Type": "application/json; charset=utf-8", "appkey": self.credentials.app_key, "appsecret": self.credentials.app_secret}
         request = urllib.request.Request(f"{self.credentials.base_url}{HASHKEY_PATH}", data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
-        with urllib.request.urlopen(request, timeout=20) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            raise KisApiError(
+                f"KIS HTTP request failed: {error.reason}",
+                method="POST",
+                path=HASHKEY_PATH,
+                tr_id="HASHKEY",
+                status_code=error.code,
+                body=_http_error_body(error),
+            ) from error
         return str(payload.get("HASH") or payload.get("hash") or "")
 
     def _require_account(self) -> None:
