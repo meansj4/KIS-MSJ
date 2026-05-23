@@ -189,6 +189,73 @@ def test_profit_take_full_exit_sets_wait_reentry() -> None:
     assert position.exit_anchor_price == 10600
 
 
+def test_multi_fill_profit_exit_sets_vwap_median_reentry_anchors() -> None:
+    _, _, positions, _, _, _ = setup_strategy()
+    high_fill_lot = add_lot(positions, "005930", 9000, 1)
+    low_fill_lot = add_lot(positions, "005930", 9000, 3)
+
+    positions.apply_fill(TradeFill("005930", "Test", OrderSide.SELL, 1, 12000, "SELL-1", datetime.now(), high_fill_lot.lot_id, sell_reason=SellReason.PROFIT_TAKE.value))
+    position = positions.apply_fill(TradeFill("005930", "Test", OrderSide.SELL, 3, 10000, "SELL-2", datetime.now(), low_fill_lot.lot_id, sell_reason=SellReason.PROFIT_TAKE.value))
+
+    assert position.position_state == PositionLifecycle.WAIT_REENTRY.value
+    assert position.cycle_highest_sell_price == 12000
+    assert position.cycle_last_sell_price == 10000
+    assert position.cycle_sell_vwap_price == 10500
+    assert position.cycle_sell_median_price == 11000
+    assert position.normal_exit_anchor_price == 10500
+    assert position.trailing_exit_anchor_price == 11000
+    assert position.exit_anchor_price == 10500
+    assert position.cycle_sell_fill_count == 2
+    assert not position.anchor_single_fill
+    assert position.anchor_confidence == "NORMAL"
+
+
+def test_normal_reentry_uses_normal_exit_anchor_not_cycle_highest() -> None:
+    _, _, positions, strategy, risk, snapshot = setup_strategy()
+    position = positions.get("005930", "Test")
+    position.position_state = PositionLifecycle.WAIT_REENTRY.value
+    position.cycle_highest_sell_price = 12000
+    position.normal_exit_anchor_price = 10500
+    position.trailing_exit_anchor_price = 11000
+    position.post_exit_high_price = 11000
+    position.exit_time = (datetime.now() - timedelta(minutes=61)).isoformat(timespec="seconds")
+
+    assert strategy.decide(position, 10090, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position)) is None
+    action = strategy.decide(position, 10080, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+
+    assert action is not None
+    assert action.reentry_type == ReentryType.NORMAL_REENTRY.value
+
+
+def test_trailing_reentry_activation_uses_trailing_exit_anchor_not_cycle_highest() -> None:
+    _, _, positions, strategy, risk, snapshot = setup_strategy()
+    position = positions.get("005930", "Test")
+    position.position_state = PositionLifecycle.WAIT_REENTRY.value
+    position.cycle_highest_sell_price = 12000
+    position.normal_exit_anchor_price = 10500
+    position.trailing_exit_anchor_price = 11000
+    position.post_exit_high_price = 11600
+    position.exit_time = (datetime.now() - timedelta(minutes=61)).isoformat(timespec="seconds")
+
+    action = strategy.decide(position, 10672, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+
+    assert action is not None
+    assert action.reentry_type == ReentryType.TRAILING_REENTRY.value
+
+
+def test_single_sell_fill_anchor_confidence_low() -> None:
+    _, _, positions, _, _, _ = setup_strategy()
+    lot = add_lot(positions, "005930", 10000, 1)
+
+    position = positions.apply_fill(TradeFill("005930", "Test", OrderSide.SELL, 1, 10600, "SELL-1", datetime.now(), lot.lot_id, sell_reason=SellReason.PROFIT_TAKE.value))
+
+    assert position.normal_exit_anchor_price == 10600
+    assert position.trailing_exit_anchor_price == 10600
+    assert position.cycle_sell_fill_count == 1
+    assert position.anchor_single_fill
+    assert position.anchor_confidence == "LOW"
+
+
 def test_breakeven_old_lot_is_profit_take_when_net_nonnegative() -> None:
     strategy_config = StrategyConfig(estimated_fee_tax_pct=0)
     _, _, positions, strategy, risk, snapshot = setup_strategy(strategy_config)
@@ -345,32 +412,40 @@ def test_cleanup_loss_budget_blocks_large_loss() -> None:
     assert action is None
 
 
-def test_minus_mode_add_buy_uses_lowest_open_buy_lot() -> None:
+def test_minus_mode_add_buy_uses_min_vwap_median_not_lowest_extreme() -> None:
     _, _, positions, strategy, risk, snapshot = setup_strategy()
-    add_lot(positions, "005930", 10000, 3)
-    add_lot(positions, "005930", 9500, 3)
-    position = positions.refresh_from_lots("005930", 9120)
+    add_lot(positions, "005930", 6000, 1)
+    add_lot(positions, "005930", 10000, 10)
+    position = positions.refresh_from_lots("005930", 5900)
 
-    action = strategy.decide(position, 9120, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
-    context = strategy.context(position, 9120)
+    action = strategy._add_buy_action(position, 5900, snapshot)
+    context = strategy.context(position, 5900)
 
     assert context.pnl_mode == "MINUS"
-    assert context.reference_buy_price == 9500
+    assert context.lowest_open_buy_lot_price == 6000
+    assert context.open_lot_vwap_buy_price == 9636
+    assert context.median_open_buy_price == 8000
+    assert context.reference_buy_price == 8000
+    assert context.reference_buy_source == "min_vwap_median_for_minus"
     assert action is not None
     assert action.side is OrderSide.BUY
 
 
-def test_plus_mode_add_buy_uses_highest_open_buy_lot() -> None:
+def test_plus_mode_add_buy_uses_max_vwap_median_not_highest_extreme() -> None:
     _, _, positions, strategy, risk, snapshot = setup_strategy()
-    add_lot(positions, "005930", 9100, 5)
+    add_lot(positions, "005930", 5000, 10)
     add_lot(positions, "005930", 10000, 1)
-    position = positions.refresh_from_lots("005930", 9600)
+    position = positions.refresh_from_lots("005930", 7000)
 
-    action = strategy.decide(position, 9600, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
-    context = strategy.context(position, 9600)
+    action = strategy._add_buy_action(position, 7000, snapshot)
+    context = strategy.context(position, 7000)
 
     assert context.pnl_mode == "PLUS"
-    assert context.reference_buy_price == 10000
+    assert context.highest_open_buy_lot_price == 10000
+    assert context.open_lot_vwap_buy_price == 5455
+    assert context.median_open_buy_price == 7500
+    assert context.reference_buy_price == 7500
+    assert context.reference_buy_source == "max_vwap_median_for_plus"
     assert action is not None
     assert action.reason == "add_buy_drop_4%"
 
@@ -409,7 +484,7 @@ def test_lx_like_plus_mode_sells_low_lot_above_target_before_high_lot_target() -
     assert action.lot_id == low.lot_id
 
 
-def test_neutral_mode_buy_uses_lowest_and_sell_uses_individual_lot_profit() -> None:
+def test_neutral_mode_buy_uses_min_vwap_median_and_sell_uses_individual_lot_profit() -> None:
     _, _, positions, strategy, risk, snapshot = setup_strategy()
     low = add_lot(positions, "005930", 9000, 1)
     add_lot(positions, "005930", 10000, 1)
@@ -419,11 +494,26 @@ def test_neutral_mode_buy_uses_lowest_and_sell_uses_individual_lot_profit() -> N
     context = strategy.context(position, 9540)
 
     assert context.pnl_mode == "NEUTRAL"
-    assert context.reference_buy_price == 9000
+    assert context.open_lot_vwap_buy_price == 9500
+    assert context.median_open_buy_price == 9500
+    assert context.reference_buy_price == 9500
+    assert context.reference_buy_source == "min_vwap_median_for_neutral"
     assert context.sell_signal_met
     assert action is not None
     assert action.side is OrderSide.SELL
     assert action.lot_id == low.lot_id
+
+
+def test_single_open_lot_reference_buy_price_equals_lot_price() -> None:
+    _, _, positions, strategy, _, _ = setup_strategy()
+    add_lot(positions, "005930", 10000, 3)
+    position = positions.refresh_from_lots("005930", 9700)
+
+    context = strategy.context(position, 9700)
+
+    assert context.open_lot_vwap_buy_price == 10000
+    assert context.median_open_buy_price == 10000
+    assert context.reference_buy_price == 10000
 
 
 def test_minus_mode_does_not_sell_loss_lot_even_when_signal_exists() -> None:

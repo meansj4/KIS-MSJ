@@ -79,6 +79,16 @@ class StateStore:
             _ensure_column(connection, "positions", "exit_anchor_price", "INTEGER NOT NULL DEFAULT 0")
             _ensure_column(connection, "positions", "cycle_highest_sell_price", "INTEGER NOT NULL DEFAULT 0")
             _ensure_column(connection, "positions", "cycle_last_sell_price", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "positions", "cycle_sell_vwap_price", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "positions", "cycle_sell_median_price", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "positions", "normal_exit_anchor_price", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "positions", "trailing_exit_anchor_price", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "positions", "cycle_sell_fill_count", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "positions", "cycle_sell_quantity", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "positions", "cycle_sell_value_amount", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "positions", "cycle_sell_prices", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "positions", "anchor_single_fill", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "positions", "anchor_confidence", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(connection, "positions", "post_exit_high_price", "INTEGER NOT NULL DEFAULT 0")
             _ensure_column(connection, "positions", "exit_time", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(connection, "positions", "cleanup_sell_price", "INTEGER NOT NULL DEFAULT 0")
@@ -180,6 +190,16 @@ class StateStore:
                 "exit_anchor_price",
                 "cycle_highest_sell_price",
                 "cycle_last_sell_price",
+                "cycle_sell_vwap_price",
+                "cycle_sell_median_price",
+                "normal_exit_anchor_price",
+                "trailing_exit_anchor_price",
+                "cycle_sell_fill_count",
+                "cycle_sell_quantity",
+                "cycle_sell_value_amount",
+                "cycle_sell_prices",
+                "anchor_single_fill",
+                "anchor_confidence",
                 "post_exit_high_price",
                 "exit_time",
                 "cleanup_sell_price",
@@ -225,7 +245,7 @@ class StateStore:
             data.setdefault("last_reentry_type", "NONE")
             data.setdefault("review_reason", "")
             data.setdefault("skip_reason", "")
-            for key in ("needs_review", "auto_buy_enabled", "danger_state", "lot_quantity_mismatch", "trading_paused"):
+            for key in ("needs_review", "auto_buy_enabled", "danger_state", "lot_quantity_mismatch", "trading_paused", "anchor_single_fill"):
                 data[key] = bool(data[key])
             positions[data["code"]] = PositionState(**data)
         return positions

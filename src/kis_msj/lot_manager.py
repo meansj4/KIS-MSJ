@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from statistics import median
 
 from .config import StrategyConfig
 from .models import LotState, LotStatus, SellReason, TradeFill
@@ -36,6 +37,19 @@ class LotManager:
         if not lots:
             return None
         return max(lots, key=lambda lot: lot.buy_price)
+
+    def open_lot_vwap_buy_price(self, code: str) -> int:
+        lots = self.open_lots(code)
+        quantity = sum(lot.remaining_quantity for lot in lots)
+        if quantity <= 0:
+            return 0
+        return int(round(sum(lot.buy_price * lot.remaining_quantity for lot in lots) / quantity))
+
+    def median_open_buy_price(self, code: str) -> int:
+        lots = self.open_lots(code)
+        if not lots:
+            return 0
+        return int(round(median(lot.buy_price for lot in lots)))
 
     def target_profit_pct(self, exposure: int) -> float:
         for band in self.config.exposure_sell_bands:

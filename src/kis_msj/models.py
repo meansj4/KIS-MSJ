@@ -124,6 +124,16 @@ class PositionState:
     exit_anchor_price: int = 0
     cycle_highest_sell_price: int = 0
     cycle_last_sell_price: int = 0
+    cycle_sell_vwap_price: int = 0
+    cycle_sell_median_price: int = 0
+    normal_exit_anchor_price: int = 0
+    trailing_exit_anchor_price: int = 0
+    cycle_sell_fill_count: int = 0
+    cycle_sell_quantity: int = 0
+    cycle_sell_value_amount: int = 0
+    cycle_sell_prices: str = ""
+    anchor_single_fill: bool = False
+    anchor_confidence: str = ""
     post_exit_high_price: int = 0
     exit_time: str = ""
     cleanup_sell_price: int = 0

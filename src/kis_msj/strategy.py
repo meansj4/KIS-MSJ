@@ -34,7 +34,10 @@ class StrategyContext:
     position_pnl_rate: float
     lowest_open_buy_lot_price: int = 0
     highest_open_buy_lot_price: int = 0
+    open_lot_vwap_buy_price: int = 0
+    median_open_buy_price: int = 0
     reference_buy_price: int = 0
+    reference_buy_source: str = ""
     reference_sell_price: int = 0
     target_buy_drop_rate: float = 0.0
     target_profit_rate: float = 0.0
@@ -52,6 +55,13 @@ class StrategyContext:
     exit_anchor_price: int = 0
     cycle_highest_sell_price: int = 0
     cycle_last_sell_price: int = 0
+    cycle_sell_vwap_price: int = 0
+    cycle_sell_median_price: int = 0
+    normal_exit_anchor_price: int = 0
+    trailing_exit_anchor_price: int = 0
+    cycle_sell_fill_count: int = 0
+    anchor_single_fill: bool = False
+    anchor_confidence: str = ""
     post_exit_high_price: int = 0
     cleanup_candidate: bool = False
     cleanup_loss_budget: int = 0
@@ -121,9 +131,9 @@ class LotGridStrategy:
             position.auto_buy_enabled = False
             position.position_state = PositionLifecycle.REVIEW_REQUIRED.value
             return None
-        reference_lot = self._reference_buy_lot(position)
         plan = self.lot_manager.buy_plan(exposure)
-        if not reference_lot or not plan:
+        reference_price, _ = self._reference_buy_price(position)
+        if not reference_price or not plan:
             return None
         drop_pct, amount = plan
         if exposure + amount > self.config.strategy.auto_buy_limit:
@@ -132,7 +142,7 @@ class LotGridStrategy:
             return None
         if snapshot.cash_available < amount:
             return None
-        decline = (current_price - reference_lot.buy_price) / reference_lot.buy_price * 100.0
+        decline = (current_price - reference_price) / reference_price * 100.0
         if decline <= -drop_pct:
             return StrategyAction(OrderSide.BUY, amount, None, f"add_buy_drop_{drop_pct:g}%")
         return None
@@ -221,9 +231,11 @@ class LotGridStrategy:
         exposure = position.cumulative_invested_amount
         lowest = self.lot_manager.lowest_open_buy_lot(position.code)
         highest = self.lot_manager.highest_open_buy_lot(position.code)
+        open_lot_vwap = self.lot_manager.open_lot_vwap_buy_price(position.code)
+        median_open = self.lot_manager.median_open_buy_price(position.code)
         target_profit = self.lot_manager.target_profit_pct(exposure) if exposure > 0 else 0.0
         buy_plan = self.lot_manager.buy_plan(exposure)
-        reference_buy = self._reference_buy_lot(position)
+        reference_buy_price, reference_buy_source = self._reference_buy_price(position)
         reference_sell = self._reference_sell_lot(position)
         profit_take_lots = self.lot_manager.profit_take_lots(position.code, current_price, exposure, target_profit) if exposure > 0 else []
         cleanup_candidate_lots = self.lot_manager.cleanup_candidate_lots(position.code, current_price) if exposure > 0 else []
@@ -232,15 +244,18 @@ class LotGridStrategy:
         sell_candidate = self._sell_candidate(position, current_price, snapshot) if exposure > 0 else None
         cleanup_budget = self.cleanup_loss_budget(snapshot)
         buy_condition = False
-        if reference_buy and buy_plan:
-            buy_condition = current_price <= reference_buy.buy_price * (1.0 - buy_plan[0] / 100.0)
+        if reference_buy_price and buy_plan:
+            buy_condition = current_price <= reference_buy_price * (1.0 - buy_plan[0] / 100.0)
         return StrategyContext(
             position_state=self._position_state(position),
             pnl_mode=self._pnl_mode(position),
             position_pnl_rate=position.profit_loss_pct / 100.0,
             lowest_open_buy_lot_price=lowest.buy_price if lowest else 0,
             highest_open_buy_lot_price=highest.buy_price if highest else 0,
-            reference_buy_price=reference_buy.buy_price if reference_buy else 0,
+            open_lot_vwap_buy_price=open_lot_vwap,
+            median_open_buy_price=median_open,
+            reference_buy_price=reference_buy_price,
+            reference_buy_source=reference_buy_source,
             reference_sell_price=reference_sell.buy_price if reference_sell else 0,
             target_buy_drop_rate=(buy_plan[0] / 100.0) if buy_plan else 0.0,
             target_profit_rate=target_profit / 100.0,
@@ -258,6 +273,13 @@ class LotGridStrategy:
             exit_anchor_price=position.exit_anchor_price,
             cycle_highest_sell_price=position.cycle_highest_sell_price,
             cycle_last_sell_price=position.cycle_last_sell_price,
+            cycle_sell_vwap_price=position.cycle_sell_vwap_price,
+            cycle_sell_median_price=position.cycle_sell_median_price,
+            normal_exit_anchor_price=position.normal_exit_anchor_price,
+            trailing_exit_anchor_price=position.trailing_exit_anchor_price,
+            cycle_sell_fill_count=position.cycle_sell_fill_count,
+            anchor_single_fill=position.anchor_single_fill,
+            anchor_confidence=position.anchor_confidence,
             post_exit_high_price=position.post_exit_high_price,
             cleanup_candidate=bool(cleanup_candidate_lots),
             cleanup_loss_budget=cleanup_budget,
@@ -303,6 +325,18 @@ class LotGridStrategy:
             return self.lot_manager.highest_open_buy_lot(position.code)
         return self.lot_manager.lowest_open_buy_lot(position.code)
 
+    def _reference_buy_price(self, position: PositionState) -> tuple[int, str]:
+        vwap = self.lot_manager.open_lot_vwap_buy_price(position.code)
+        median_price = self.lot_manager.median_open_buy_price(position.code)
+        if not vwap or not median_price:
+            return 0, ""
+        mode = self._pnl_mode(position)
+        if mode == "PLUS":
+            return max(vwap, median_price), "max_vwap_median_for_plus"
+        if mode == "NEUTRAL":
+            return min(vwap, median_price), "min_vwap_median_for_neutral"
+        return min(vwap, median_price), "min_vwap_median_for_minus"
+
     def _reference_sell_lot(self, position: PositionState) -> LotState | None:
         mode = self._pnl_mode(position)
         if mode == "PLUS":
@@ -316,7 +350,7 @@ class LotGridStrategy:
 
     def update_reentry_tracking(self, position: PositionState, current_price: int, now: datetime | None = None) -> bool:
         now = now or datetime.now()
-        anchor = position.exit_anchor_price or position.reentry_anchor_price or position.last_sell_price
+        anchor = self._trailing_exit_anchor(position)
         if self._position_state(position) != PositionLifecycle.WAIT_REENTRY.value or anchor <= 0:
             return False
         previous_high = position.post_exit_high_price
@@ -332,21 +366,28 @@ class LotGridStrategy:
 
     def check_reentry_conditions(self, position: PositionState, current_price: int, now: datetime | None = None) -> tuple[bool, bool]:
         now = now or datetime.now()
-        anchor = position.exit_anchor_price or position.reentry_anchor_price or position.last_sell_price
-        if self._position_state(position) != PositionLifecycle.WAIT_REENTRY.value or anchor <= 0:
+        normal_anchor = self._normal_exit_anchor(position)
+        trailing_anchor = self._trailing_exit_anchor(position)
+        if self._position_state(position) != PositionLifecycle.WAIT_REENTRY.value or normal_anchor <= 0 or trailing_anchor <= 0:
             return False, False
-        post_exit_high = position.post_exit_high_price if position.post_exit_high_price > 0 else anchor
-        normal = current_price <= anchor * (1.0 - self.config.strategy.normal_reentry_drop_rate)
+        post_exit_high = position.post_exit_high_price if position.post_exit_high_price > 0 else trailing_anchor
+        normal = current_price <= normal_anchor * (1.0 - self.config.strategy.normal_reentry_drop_rate)
         exit_time = _parse_time(position.exit_time)
         waited = exit_time is not None and now - exit_time >= timedelta(minutes=self.config.strategy.min_reentry_wait_minutes)
         count_today = position.trailing_reentry_count_today if position.trailing_reentry_count_date == now.date().isoformat() else 0
         trailing = (
-            post_exit_high >= anchor * (1.0 + self.config.strategy.trailing_activation_gain)
+            post_exit_high >= trailing_anchor * (1.0 + self.config.strategy.trailing_activation_gain)
             and current_price <= post_exit_high * (1.0 - self.config.strategy.trailing_reentry_drop_rate)
             and waited
             and count_today < self.config.strategy.max_trailing_reentry_per_day
         )
         return normal, trailing
+
+    def _normal_exit_anchor(self, position: PositionState) -> int:
+        return position.normal_exit_anchor_price or position.exit_anchor_price or position.reentry_anchor_price or position.last_sell_price
+
+    def _trailing_exit_anchor(self, position: PositionState) -> int:
+        return position.trailing_exit_anchor_price or position.exit_anchor_price or position.reentry_anchor_price or position.last_sell_price
 
     def _skip_reason(self, position: PositionState, current_price: int) -> str:
         if position.skip_reason:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from statistics import median
 
 from .config import StrategyConfig
 from .lot_manager import LotManager
@@ -125,6 +126,16 @@ class PositionManager:
             if starts_new_cycle:
                 position.cycle_highest_sell_price = 0
                 position.cycle_last_sell_price = 0
+                position.cycle_sell_vwap_price = 0
+                position.cycle_sell_median_price = 0
+                position.normal_exit_anchor_price = 0
+                position.trailing_exit_anchor_price = 0
+                position.cycle_sell_fill_count = 0
+                position.cycle_sell_quantity = 0
+                position.cycle_sell_value_amount = 0
+                position.cycle_sell_prices = ""
+                position.anchor_single_fill = False
+                position.anchor_confidence = ""
                 position.exit_anchor_price = 0
                 position.reentry_anchor_price = 0
                 position.exit_time = ""
@@ -147,6 +158,15 @@ class PositionManager:
             sell_reason = lot.last_sell_reason or fill.sell_reason or SellReason.UNKNOWN.value
             position.cycle_last_sell_price = fill.price
             position.cycle_highest_sell_price = max(position.cycle_highest_sell_price, fill.price)
+            sell_prices = _append_sell_price(position.cycle_sell_prices, fill.price)
+            position.cycle_sell_prices = ",".join(str(price) for price in sell_prices)
+            position.cycle_sell_fill_count = len(sell_prices)
+            position.cycle_sell_quantity += fill.quantity
+            position.cycle_sell_value_amount += fill.price * fill.quantity
+            position.cycle_sell_vwap_price = int(round(position.cycle_sell_value_amount / position.cycle_sell_quantity)) if position.cycle_sell_quantity else fill.price
+            position.cycle_sell_median_price = int(round(median(sell_prices)))
+            position.anchor_single_fill = position.cycle_sell_fill_count == 1
+            position.anchor_confidence = "LOW" if position.anchor_single_fill else "NORMAL"
             if sell_reason == SellReason.CLEANUP_SELL.value:
                 # Cleanup cooldowns are intentionally calendar-day based. A trading-day
                 # calendar can replace this later if holiday/weekend precision matters.
@@ -161,10 +181,15 @@ class PositionManager:
                     position.skip_reason = "cleanup_cooldown"
                 else:
                     position.position_state = PositionLifecycle.WAIT_REENTRY.value
-                    position.exit_anchor_price = position.cycle_highest_sell_price or fill.price
-                    position.reentry_anchor_price = position.exit_anchor_price
+                    normal_anchor, trailing_anchor = _cycle_reentry_anchors(position, fill.price)
+                    position.normal_exit_anchor_price = normal_anchor
+                    position.trailing_exit_anchor_price = trailing_anchor
+                    # Deprecated compatibility field: keep it equal to the conservative
+                    # normal reentry anchor, but do not use it as the primary condition.
+                    position.exit_anchor_price = normal_anchor
+                    position.reentry_anchor_price = normal_anchor
                     position.cycle_last_sell_price = fill.price
-                    position.post_exit_high_price = position.exit_anchor_price
+                    position.post_exit_high_price = trailing_anchor
                     position.exit_time = fill.filled_at.isoformat(timespec="seconds")
                     position.skip_reason = "wait_reentry"
         position.last_fill_price = fill.price
@@ -199,3 +224,15 @@ def _parse_time(value: str) -> datetime | None:
     if not value:
         return None
     return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
+
+
+def _append_sell_price(raw: str, price: int) -> list[int]:
+    prices = [int(value) for value in raw.split(",") if value.strip()]
+    prices.append(price)
+    return prices
+
+
+def _cycle_reentry_anchors(position: PositionState, fallback_price: int) -> tuple[int, int]:
+    vwap = position.cycle_sell_vwap_price or fallback_price
+    median_price = position.cycle_sell_median_price or fallback_price
+    return min(vwap, median_price), max(vwap, median_price)
