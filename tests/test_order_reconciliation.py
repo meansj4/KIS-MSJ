@@ -190,6 +190,41 @@ def test_duplicate_fill_count_is_logged_for_repeated_execution(tmp_path, caplog)
 
     assert fills == ()
     assert any("duplicate_fill_count=1" in message for message in caplog.messages)
+    assert any("dedupe_key_type=execution_id" in message for message in caplog.messages)
+
+
+def test_record_filled_returns_no_fill_when_record_fill_is_duplicate(tmp_path, caplog) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    result = order(quantity=10)
+    fill = TradeFill("005930", "Test", OrderSide.BUY, 10, 10000, "000001", datetime.now().replace(microsecond=0), execution_id="E-RECORDED")
+    assert store.record_fill(fill)
+    logger = logging.getLogger("test_record_filled_duplicate")
+    manager = OrderManager(BotConfig(), ReconcileClient(()), store, logger)
+
+    with caplog.at_level(logging.WARNING, logger="test_record_filled_duplicate"):
+        recorded, returned_fill = manager._record_filled(result, fill)
+
+    assert recorded.status is OrderStatus.FILLED
+    assert returned_fill is None
+    assert any("record_fill_failed" in message and "dedupe_key_type=execution_id" in message for message in caplog.messages)
+
+
+def test_fallback_dedupe_key_type_is_logged_for_duplicate_without_execution_id(tmp_path, caplog) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    result = order(quantity=10)
+    store.record_order(result)
+    fill_time = datetime.now().replace(microsecond=0)
+    fill = TradeFill("005930", "Test", OrderSide.BUY, 10, 10000, "000001", fill_time)
+    assert store.record_fill(fill)
+    client = ReconcileClient((fill,))
+    logger = logging.getLogger("test_reconcile_fallback_duplicate")
+    manager = OrderManager(BotConfig(order=OrderConfig(limit_order_timeout_seconds=999)), client, store, logger)
+
+    with caplog.at_level(logging.WARNING, logger="test_reconcile_fallback_duplicate"):
+        fills = manager.reconcile_open_orders()
+
+    assert fills == ()
+    assert any("record_fill_failed" in message and "dedupe_key_type=fallback" in message for message in caplog.messages)
 
 
 def test_startup_recent_reconcile_applies_known_order_fill(tmp_path) -> None:

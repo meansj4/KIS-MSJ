@@ -62,7 +62,8 @@ class OrderManager:
             lot_id = request.lot_id or f"{request.code}-{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
             fill = TradeFill(request.code, request.name, request.side, request.quantity, request.limit_price, result.order_id, datetime.now(), lot_id, result.order_id, request.sell_reason, request.reentry_type)
             self.store.record_order(result)
-            self.store.record_fill(fill)
+            if not self._record_new_fill(fill, "paper_submit"):
+                return result, None
             return result, fill
 
         result = self.client.place_order(request)
@@ -109,12 +110,13 @@ class OrderManager:
             )
         for result in open_orders:
             fills = self._matching_fills(result, fetched_fills)
-            for fill in fills:
-                fill = self._dedupe_or_delta_fill(fill)
+            for original_fill in fills:
+                fill = self._dedupe_or_delta_fill(original_fill)
                 if fill is None:
                     duplicate_fill_count += 1
+                    self._log_duplicate_fill(original_fill, "reconcile_open_orders_delta")
                     continue
-                if self.store.record_fill(fill):
+                if self._record_new_fill(fill, "reconcile_open_orders"):
                     applied.append(fill)
                 else:
                     duplicate_fill_count += 1
@@ -133,12 +135,13 @@ class OrderManager:
                 self.logger.warning("order_cancel_or_requery_failed code=%s order_id=%s error=%s", result.request.code, result.order_id, error)
                 continue
             fills_after_cancel = self._matching_fills(result, fetched_fills)
-            for fill in fills_after_cancel:
-                fill = self._dedupe_or_delta_fill(fill)
+            for original_fill in fills_after_cancel:
+                fill = self._dedupe_or_delta_fill(original_fill)
                 if fill is None:
                     duplicate_fill_count += 1
+                    self._log_duplicate_fill(original_fill, "reconcile_after_cancel_delta")
                     continue
-                if self.store.record_fill(fill):
+                if self._record_new_fill(fill, "reconcile_after_cancel"):
                     applied.append(fill)
                 else:
                     duplicate_fill_count += 1
@@ -180,11 +183,13 @@ class OrderManager:
                 order.request.sell_reason,
                 order.request.reentry_type,
             )
+            original_matched = matched
             matched = self._dedupe_or_delta_fill(matched)
             if matched is None:
                 duplicate_fill_count += 1
+                self._log_duplicate_fill(original_matched, "startup_reconcile_delta")
                 continue
-            if self.store.record_fill(matched):
+            if self._record_new_fill(matched, "startup_reconcile"):
                 applied.append(matched)
             else:
                 duplicate_fill_count += 1
@@ -247,11 +252,12 @@ class OrderManager:
             query_start = min(query_start, previous_day_start)
         return query_start
 
-    def _record_filled(self, result: OrderResult, fill: TradeFill) -> tuple[OrderResult, TradeFill]:
+    def _record_filled(self, result: OrderResult, fill: TradeFill) -> tuple[OrderResult, TradeFill | None]:
         status = OrderStatus.FILLED if fill.quantity >= result.request.quantity else OrderStatus.PARTIAL
         recorded = OrderResult(result.request, result.order_id, status, result.message)
         self.store.record_order(recorded)
-        self.store.record_fill(fill)
+        if not self._record_new_fill(fill, "submit_confirm"):
+            return recorded, None
         if status is OrderStatus.PARTIAL:
             self.logger.warning(
                 "order_partial code=%s order_id=%s filled_qty=%s order_qty=%s",
@@ -261,6 +267,48 @@ class OrderManager:
                 result.request.quantity,
             )
         return recorded, fill
+
+    def _record_new_fill(self, fill: TradeFill, source: str) -> bool:
+        dedupe_key_type = _dedupe_key_type(fill)
+        recorded = self.store.record_fill(fill)
+        if recorded:
+            self.logger.info(
+                "fill_recorded source=%s code=%s side=%s qty=%s price=%s order_id=%s execution_id=%s dedupe_key_type=%s",
+                source,
+                fill.code,
+                fill.side.value,
+                fill.quantity,
+                fill.price,
+                fill.order_id,
+                fill.execution_id,
+                dedupe_key_type,
+            )
+            return True
+        self.logger.warning(
+            "record_fill_failed source=%s code=%s side=%s qty=%s price=%s order_id=%s execution_id=%s dedupe_key_type=%s reason=duplicate_or_existing_fill",
+            source,
+            fill.code,
+            fill.side.value,
+            fill.quantity,
+            fill.price,
+            fill.order_id,
+            fill.execution_id,
+            dedupe_key_type,
+        )
+        return False
+
+    def _log_duplicate_fill(self, fill: TradeFill, source: str) -> None:
+        self.logger.info(
+            "duplicate_fill_ignored source=%s code=%s side=%s qty=%s price=%s order_id=%s execution_id=%s dedupe_key_type=%s",
+            source,
+            fill.code,
+            fill.side.value,
+            fill.quantity,
+            fill.price,
+            fill.order_id,
+            fill.execution_id,
+            _dedupe_key_type(fill),
+        )
 
     def buy_limit_price(self, current_price: int) -> int:
         return round_price(current_price * (1.0 + self.config.order.buy_limit_markup_pct / 100.0))
@@ -276,3 +324,7 @@ def _normalize_order_id(order_id: str) -> str:
 
 def _parse_timestamp(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
+
+
+def _dedupe_key_type(fill: TradeFill) -> str:
+    return "fallback" if not fill.execution_id or fill.execution_id.startswith("AGG:") else "execution_id"
