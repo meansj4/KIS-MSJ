@@ -131,38 +131,25 @@ class AutoTrader:
         symbol_risk = self.risk_manager.symbol_buy_allowed(position)
         action = self.strategy.decide(position, current_price, snapshot, account_risk, symbol_risk)
         portfolio_preview = self.portfolio_buy_block_reason(position, action) if action else ""
-        if portfolio_preview:
-            position.skip_reason = portfolio_preview
-        self.log_symbol_decision(position, current_price, snapshot, account_risk, symbol_risk, action.reason if action else "NONE", portfolio_preview)
+        final_block_reason = self.pre_request_block_reason(position, action, portfolio_preview) if action else ""
+        if portfolio_preview or final_block_reason:
+            position.skip_reason = final_block_reason or portfolio_preview
+        self.log_symbol_decision(
+            position,
+            current_price,
+            snapshot,
+            account_risk,
+            symbol_risk,
+            action.reason if action else "NONE",
+            portfolio_preview,
+            final_block_reason,
+            bool(action),
+        )
         if action is None:
             return
-        sync_block = self.sync_required_block_reason(position)
-        if sync_block:
-            self.logger.info("trade_blocked code=%s name=%s reason=%s", position.code, position.name, sync_block)
-            self.notifier.notify("SYNC_REQUIRED", f"{position.code} {position.name}: manual reconciliation required before trading resumes.")
+        if final_block_reason:
+            self.log_pre_request_block(position, final_block_reason)
             return
-        partial = self.partial_order_block_reason(position)
-        if partial:
-            self.logger.info("trade_blocked code=%s name=%s reason=%s", position.code, position.name, partial)
-            return
-        duplicate = self.open_order_block_reason(position, action)
-        if duplicate:
-            self.logger.info("trade_blocked code=%s name=%s reason=%s", position.code, position.name, duplicate)
-            return
-        portfolio_block = portfolio_preview or self.portfolio_buy_block_reason(position, action)
-        if portfolio_block:
-            position.skip_reason = portfolio_block
-            self.logger.info("trade_blocked code=%s name=%s reason=%s", position.code, position.name, portfolio_block)
-            return
-        request_gap = self.recent_order_request_block_reason(position)
-        if request_gap:
-            self.logger.info("trade_blocked code=%s name=%s reason=%s", position.code, position.name, request_gap)
-            return
-        if action.side is OrderSide.BUY:
-            cooldown = self.order_cooldown_reason(position)
-            if cooldown:
-                self.logger.info("trade_blocked code=%s name=%s reason=%s", position.code, position.name, cooldown)
-                return
         request = self.order_manager.build_request(position, action, current_price)
         if request is None:
             self.logger.info("trade_blocked code=%s reason=quantity_below_one", position.code)
@@ -179,7 +166,18 @@ class AutoTrader:
         self.store.save_lots(self.lot_manager.lots.values())
         self.logger.info("fill_applied code=%s side=%s qty=%s price=%s lot_id=%s order_id=%s", fill.code, fill.side.value, fill.quantity, fill.price, fill.lot_id, fill.order_id)
 
-    def log_symbol_decision(self, position: PositionState, current_price: int, snapshot: AccountSnapshot | None, account_risk, symbol_risk, action: str, portfolio_risk_block_reason: str = "") -> None:
+    def log_symbol_decision(
+        self,
+        position: PositionState,
+        current_price: int,
+        snapshot: AccountSnapshot | None,
+        account_risk,
+        symbol_risk,
+        action: str,
+        portfolio_risk_block_reason: str = "",
+        final_block_reason: str = "",
+        action_created: bool = False,
+    ) -> None:
         last_lot = self.lot_manager.last_buy_lot(position.code)
         last_lot_drop = (current_price - last_lot.buy_price) / last_lot.buy_price * 100.0 if last_lot else 0.0
         lots = self.lot_manager.open_lots(position.code)
@@ -259,9 +257,42 @@ class AutoTrader:
             max_total_open_lots=self.config.risk.max_total_open_lots,
             max_total_invested_amount=self.config.risk.max_total_invested_amount,
             portfolio_risk_block_reason=portfolio_risk_block_reason or self.portfolio_buy_block_reason(position, None),
+            final_block_reason=final_block_reason,
+            action_created=action_created,
+            action_blocked_before_request=bool(final_block_reason),
+            action_execution_state="blocked_before_request" if final_block_reason else ("pending_request" if action_created else "no_action"),
+            risk_block_reasons=self.risk_block_reasons(position),
             sync_status=position.sync_status,
             action=action,
         )
+
+    def pre_request_block_reason(self, position: PositionState, action, portfolio_preview: str = "") -> str:
+        """Return the final guard reason that blocks an action before any order request."""
+        sync_block = self.sync_required_block_reason(position)
+        if sync_block:
+            return sync_block
+        partial = self.partial_order_block_reason(position)
+        if partial:
+            return partial
+        duplicate = self.open_order_block_reason(position, action)
+        if duplicate:
+            return duplicate
+        portfolio_block = portfolio_preview or self.portfolio_buy_block_reason(position, action)
+        if portfolio_block:
+            return portfolio_block
+        request_gap = self.recent_order_request_block_reason(position)
+        if request_gap:
+            return request_gap
+        if action.side is OrderSide.BUY:
+            cooldown = self.order_cooldown_reason(position)
+            if cooldown:
+                return cooldown
+        return ""
+
+    def log_pre_request_block(self, position: PositionState, reason: str) -> None:
+        self.logger.info("trade_blocked code=%s name=%s reason=%s", position.code, position.name, reason)
+        if reason in {"sync_required", "trading_paused"}:
+            self.notifier.notify("SYNC_REQUIRED", f"{position.code} {position.name}: manual reconciliation required before trading resumes.")
 
     def order_cooldown_reason(self, position: PositionState) -> str:
         elapsed = self.store.seconds_since_recent_fill(position.code, OrderSide.BUY)
@@ -343,6 +374,22 @@ class AutoTrader:
 
     def total_invested_amount(self) -> int:
         return sum(lot.open_amount for lot in self.lot_manager.lots.values() if lot.remaining_quantity > 0)
+
+    def risk_block_reasons(self, position: PositionState) -> str:
+        flag_names = (
+            "trading_halted",
+            "administrative_issue",
+            "investment_alert",
+            "audit_opinion_issue",
+            "delisting_risk",
+            "accounting_issue",
+            "liquidity_warning",
+        )
+        for stock in self.config.stocks:
+            if stock.code == position.code:
+                reasons = [name for name in flag_names if getattr(stock, name)]
+                return ",".join(reasons) or ("danger_state" if position.danger_state else "")
+        return "danger_state" if position.danger_state else ""
 
 
 def in_trade_window(config: BotConfig) -> bool:

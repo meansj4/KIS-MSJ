@@ -148,12 +148,15 @@ class PositionManager:
             position.cycle_last_sell_price = fill.price
             position.cycle_highest_sell_price = max(position.cycle_highest_sell_price, fill.price)
             if sell_reason == SellReason.CLEANUP_SELL.value:
+                # Cleanup cooldowns are intentionally calendar-day based. A trading-day
+                # calendar can replace this later if holiday/weekend precision matters.
                 position.cleanup_buy_cooldown_until = (fill.filled_at + timedelta(days=self.config.cleanup_buy_cooldown_days)).isoformat(timespec="seconds")
                 position.cleanup_sell_price = fill.price
                 position.cleanup_time = fill.filled_at.isoformat(timespec="seconds")
             if not self.lot_manager.open_lots(fill.code):
                 if sell_reason == SellReason.CLEANUP_SELL.value:
                     position.position_state = PositionLifecycle.COOLDOWN_AFTER_CLEANUP.value
+                    # Calendar-day cooldown; see cleanup_buy_cooldown_until above.
                     position.cleanup_reentry_cooldown_until = (fill.filled_at + timedelta(days=self.config.cleanup_reentry_cooldown_days)).isoformat(timespec="seconds")
                     position.skip_reason = "cleanup_cooldown"
                 else:

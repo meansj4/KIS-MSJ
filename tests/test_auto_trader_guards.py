@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from kis_msj.config import BotConfig, OrderConfig, RiskConfig, StrategyConfig
+from kis_msj.config import BotConfig, OrderConfig, RiskConfig, StockConfig, StrategyConfig
 from kis_msj.main import AutoTrader
 from kis_msj.models import AccountSnapshot, OrderRequest, OrderResult, OrderSide, OrderStatus, PositionLifecycle, PositionState, ReentryType, SellReason, TradeFill
 from kis_msj.risk_manager import RiskDecision
@@ -40,6 +40,17 @@ def test_cleanup_sell_blocked_when_requested_buy_exists(tmp_path) -> None:
     action = StrategyAction(OrderSide.SELL, 0, 1, "cleanup_sell_lot", "LOT-1", sell_reason=SellReason.CLEANUP_SELL.value)
 
     assert bot.open_order_block_reason(PositionState(code="005930", name="Test"), action) == "open_order_exists_for_cleanup"
+
+
+def test_pre_request_block_exposes_cleanup_open_order_reason(tmp_path) -> None:
+    bot = trader(tmp_path)
+    request = OrderRequest("005930", "Test", OrderSide.BUY, 1, 10000, "test")
+    bot.store.record_order(OrderResult(request, "BUY-1", OrderStatus.REQUESTED, "requested"))
+    action = StrategyAction(OrderSide.SELL, 0, 1, "cleanup_sell_lot", "LOT-1", sell_reason=SellReason.CLEANUP_SELL.value)
+    position = PositionState(code="005930", name="Test")
+
+    assert bot.pre_request_block_reason(position, action) == "open_order_exists_for_cleanup"
+    assert position.skip_reason == "open_order_exists_for_cleanup"
 
 
 def test_cleanup_sell_blocked_when_partial_order_exists(tmp_path) -> None:
@@ -114,3 +125,16 @@ def test_max_total_invested_blocks_buy(tmp_path) -> None:
     action = StrategyAction(OrderSide.BUY, 30_000, None, "add_buy_drop_4%")
 
     assert bot.portfolio_buy_block_reason(PositionState(code="005930", name="Test"), action) == "max_total_invested_amount_reached"
+
+
+def test_risk_block_reasons_reports_stock_config_flags(tmp_path) -> None:
+    config = BotConfig(
+        stocks=(StockConfig("005930", "Test", trading_halted=True, investment_alert=True),),
+        order=OrderConfig(price_sample_interval_seconds=0),
+        strategy=StrategyConfig(cleanup_enabled=True, estimated_fee_tax_pct=0),
+        storage_path=str(tmp_path / "state.sqlite3"),
+        log_path=str(tmp_path / "trader.log"),
+    )
+    bot = AutoTrader(config, use_mock_client=True)
+
+    assert bot.risk_block_reasons(PositionState(code="005930", name="Test", danger_state=True)) == "trading_halted,investment_alert"
