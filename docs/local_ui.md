@@ -338,6 +338,7 @@ UI 로그 표시는 아래 키 또는 계좌번호처럼 보이는 긴 숫자를
 
 - 실제 주문 취소 버튼
 - DB 직접 수정 maintenance mode
+- 수동 매수/매도 요청 생성
 - reconciliation apply
 - 차트
 - 알림 연동
@@ -346,3 +347,54 @@ UI 로그 표시는 아래 키 또는 계좌번호처럼 보이는 긴 숫자를
 - Windows tray launcher 구현
 
 이 기능들은 실거래 안전성 검토 후 별도 작업으로 추가하는 편이 안전합니다.
+
+## 수동 주문 요청 설계
+
+현재 UI에는 실거래 주문 버튼이 없습니다. 수동 매수/매도는 바로 구현하지 않고, 다음 구조로 별도 단계에서 추가하는 것이 안전합니다.
+
+원칙:
+
+- UI 서버는 KIS 주문 API를 직접 호출하지 않습니다.
+- UI는 `manual order request` 또는 `operator request` 만 생성합니다.
+- Bot Core가 해당 요청을 읽고 기존 `order_manager`, runtime pause, risk guard, open order guard, live trading guard를 거쳐 주문을 생성합니다.
+- 체결은 기존 reconciliation 또는 즉시 체결 확인 경로에서 `fills` 로 저장합니다.
+- `lots` 와 `positions` 는 기존 원칙대로 fill insert 성공 후에만 갱신합니다.
+
+권장 request 모델:
+
+```json
+{
+  "request_id": "MANUAL-...",
+  "source": "local_ui_manual",
+  "requested_by": "operator",
+  "requested_at": "ISO timestamp",
+  "code": "005930",
+  "side": "BUY",
+  "amount": 30000,
+  "quantity": 1,
+  "lot_id": "",
+  "preview": {},
+  "runtime_snapshot": {},
+  "live_trading": true,
+  "confirm_text_verified": true,
+  "status": "REQUESTED"
+}
+```
+
+기본 정책:
+
+- `ui_manual_trading_enabled=false` 를 기본값으로 둡니다.
+- 비활성 상태에서도 버튼은 보이되 disabled 처리합니다.
+- live trading에서는 사용자가 확인 문구를 직접 입력해야 요청 생성이 가능하게 합니다.
+- paper mode에서 request 생성, audit log, Bot Core 소비, reconciliation 반영까지 먼저 검증합니다.
+
+차단 조건:
+
+- `SYNC_REQUIRED`
+- `RISK_BLOCKED`
+- runtime pause 상태
+- 동일 종목 또는 동일 LOT open order 존재
+- CLOSED LOT 매도 요청
+- 수량 0 또는 예산 부족
+
+감사 로그에는 `requested_by`, `requested_at`, `source`, `code`, `side`, `quantity`, `amount`, `lot_id`, `preview`, `runtime_snapshot`, `live_trading`, `confirm_text_verified` 를 남기는 것을 권장합니다.

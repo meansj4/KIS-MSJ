@@ -188,6 +188,13 @@ def test_config_form_and_table_sorting_scripts_are_present():
     assert "decimal_rate" in INDEX_HTML
     assert "danger_confirm_required" in INDEX_HTML
     assert "고급 / 원본 JSON 보기" in INDEX_HTML
+    assert "보유 상태" in INDEX_HTML
+    assert "position_state" in INDEX_HTML
+    assert "전체 주문 일시정지" in INDEX_HTML
+    assert "Emergency Stop 비상정지" in INDEX_HTML
+    assert "수동 주문 요청 구조 검토" in INDEX_HTML
+    assert "UI 서버는 KIS 주문 API를 직접 호출하지" in INDEX_HTML
+    assert "manual order request" in INDEX_HTML
 
 
 def test_runtime_controls_are_readable_and_block_actions(tmp_path):

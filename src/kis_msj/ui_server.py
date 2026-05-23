@@ -35,9 +35,24 @@ INDEX_HTML = r"""<!doctype html>
     .metric { border: 1px solid #e2e7ec; padding: 10px; border-radius: 6px; }
     .metric strong { display: block; font-size: 12px; color: #59636e; }
     table { border-collapse: collapse; width: 100%; font-size: 13px; }
-    th, td { border-bottom: 1px solid #e6ebf0; padding: 7px; text-align: left; white-space: nowrap; }
-    th { background: #f1f4f7; position: sticky; top: 0; cursor: pointer; user-select: none; }
+    th, td { border-bottom: 1px solid #e6ebf0; padding: 7px; text-align: left; white-space: nowrap; vertical-align: top; }
+    th { background: #e8eef5; position: sticky; top: 0; cursor: pointer; user-select: none; font-weight: 800; }
     th:hover { background: #e5ebf1; }
+    tr:hover td { background: #f8fbff; }
+    .num { text-align: right; font-variant-numeric: tabular-nums; }
+    .key { display: block; color: #7b8794; font-family: ui-monospace, Consolas, monospace; font-size: 11px; font-weight: 400; margin-top: 2px; }
+    .empty { color: #9aa5b1; }
+    .badge { display: inline-block; border-radius: 999px; padding: 2px 8px; font-size: 12px; font-weight: 700; background: #edf2f7; color: #334155; }
+    .badge.good { background: #dcfce7; color: #166534; }
+    .badge.warn { background: #ffedd5; color: #9a3412; }
+    .badge.bad { background: #fee2e2; color: #991b1b; }
+    .badge.neutral { background: #e0f2fe; color: #075985; }
+    .pos { color: #15803d; font-weight: 700; }
+    .neg { color: #b91c1c; font-weight: 700; }
+    .muted { color: #7b8794; }
+    .controlCard { border: 1px solid #d7dde3; border-radius: 8px; padding: 12px; background: #fbfcfe; }
+    .controlCard.dangerZone { border-color: #ef9a9a; background: #fff5f5; }
+    .manualBox { border: 1px dashed #b8c2cc; border-radius: 8px; padding: 12px; background: #fbfcfe; margin: 10px 0; }
     .warn { color: #a15c00; font-weight: 700; }
     .bad { color: #b42318; font-weight: 700; }
     .field { display: grid; grid-template-columns: minmax(180px, 260px) 1fr minmax(80px, 120px); gap: 10px; align-items: start; border-bottom: 1px solid #e6ebf0; padding: 10px 0; }
@@ -68,6 +83,7 @@ INDEX_HTML = r"""<!doctype html>
     <button onclick="loadConfig()">Config</button>
     <button onclick="loadExecution()">Execution Check</button>
     <button onclick="loadRuntime()">Runtime Control</button>
+    <button onclick="loadManualOrders()">수동 주문 설계</button>
   </div>
   <section id="content">Loading...</section>
 </main>
@@ -79,6 +95,65 @@ async function api(path, options={}) {
   return data;
 }
 function esc(v) { return String(v ?? '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+const LABELS = {
+  code:'종목코드', name:'종목명', enabled:'사용 여부', position_state:'보유 상태',
+  current_price:'현재가', open_lot_count:'OPEN LOT 수', invested_amount:'투입금',
+  profit_loss_pct:'평가손익률', risk_block_reasons:'위험 사유', last_decision:'최근 판단',
+  skip_reason:'스킵 사유', final_block_reason:'최종 차단 사유',
+  lot_id:'LOT ID', status:'상태', buy_price:'매수가', buy_quantity:'매수 수량',
+  remaining_quantity:'잔여 수량', buy_amount:'매수 금액', buy_filled_at:'매수 체결시각',
+  lot_age_days:'LOT 나이(일)', age_weeks:'LOT 나이(주)', unrealized_pnl:'평가손익',
+  unrealized_pnl_rate:'평가손익률', base_target_profit_rate:'기본 목표수익률',
+  effective_target_profit_rate:'실효 목표수익률', cleanup_candidate:'Cleanup 후보',
+  stale_lot:'STALE LOT', last_sell_reason:'최근 매도 사유', order_id:'주문 ID',
+  side:'매수/매도', quantity:'수량', limit_price:'지정가', reason:'사유',
+  requested_at:'요청시각', updated_at:'갱신시각', cleanup_flag:'Cleanup 여부',
+  fill_id:'체결 ID', execution_id:'KIS 체결번호', price:'체결가', filled_at:'체결시각',
+  dedupe_key_type:'중복방지 키', is_duplicate:'중복 여부', apply_fill:'체결 반영 여부',
+  position_lots_reflected:'포지션/LOT 반영 여부',
+  all_orders_paused:'전체 주문 일시정지', buy_paused:'매수 일시정지', sell_paused:'매도 일시정지',
+  cleanup_paused:'Cleanup 일시정지', reentry_paused:'재진입 일시정지', updated_at:'갱신시각',
+  updated_by:'수정자', expires_at:'만료시각'
+};
+const VALUE_LABELS = {
+  HOLDING:'보유 중', NEVER_BOUGHT:'미매수', WAIT_REENTRY:'재진입 대기',
+  COOLDOWN_AFTER_CLEANUP:'Cleanup 후 쿨다운', REVIEW_REQUIRED:'수동 검토 필요',
+  RISK_BLOCKED:'위험 차단', SYNC_REQUIRED:'동기화 필요',
+  PROFIT_TAKE:'본전/수익 매도', CLEANUP_SELL:'손실 정리 매도', UNKNOWN:'알 수 없음',
+  BUY:'매수', SELL:'매도', REQUESTED:'요청됨', PARTIAL:'부분체결', FILLED:'체결완료',
+  CANCELED:'취소됨', REJECTED:'거절됨', execution_id:'체결번호 기준', fallback:'보조 키 기준',
+  runtime_all_orders_paused:'전체 주문 일시정지로 차단', runtime_buy_paused:'매수 일시정지로 차단',
+  runtime_sell_paused:'매도 일시정지로 차단', runtime_cleanup_paused:'Cleanup 일시정지로 차단',
+  runtime_reentry_paused:'재진입 일시정지로 차단', open_order_exists_for_cleanup:'미체결 주문이 있어 cleanup 매도 차단',
+  risk_blocked_buy_sell_blocked:'위험 차단 상태라 매수/매도 모두 차단', sync_required:'동기화 필요로 차단',
+  review_required:'수동 검토 필요로 매수 차단'
+};
+function labelFor(key) { return LABELS[key] || key; }
+function valueLabel(v) { return VALUE_LABELS[String(v)] || String(v); }
+function headerLabel(key) { return `${esc(labelFor(key))}<span class="key">${esc(key)}</span>`; }
+function isNumericKey(key) { return /(price|amount|quantity|count|pct|rate|pnl|loss|profit|age|limit|total|cash|value)/i.test(key); }
+function cellClass(key, value) {
+  const classes = [];
+  if (isNumericKey(key)) classes.push('num');
+  if (Number(value) > 0 && /(pnl|profit|loss|rate|pct)/i.test(key)) classes.push('pos');
+  if (Number(value) < 0 && /(pnl|profit|loss|rate|pct)/i.test(key)) classes.push('neg');
+  return classes.join(' ');
+}
+function badgeClass(value) {
+  const v = String(value);
+  if (/PROFIT|FILLED|HOLDING|true/i.test(v)) return 'good';
+  if (/WAIT|REVIEW|PARTIAL|REQUESTED|fallback/i.test(v)) return 'warn';
+  if (/RISK|SYNC|CLEANUP|REJECTED|CANCELED|BLOCKED|false/i.test(v)) return 'bad';
+  return 'neutral';
+}
+function displayCell(key, value) {
+  if (value === null || value === undefined || value === '') return '<span class="empty">-</span>';
+  const translated = valueLabel(value);
+  if (/state|status|reason|side|dedupe|flag|enabled|paused|candidate|stale|duplicate|reflected/i.test(key)) {
+    return `<span class="badge ${badgeClass(value)}">${esc(translated)}</span><span class="key">${esc(value)}</span>`;
+  }
+  return esc(value);
+}
 const sortState = {};
 let configOriginal = null;
 let configDraft = null;
@@ -89,9 +164,9 @@ function table(rows, tableId='default', opts={}) {
   const state = sortState[tableId] || opts.defaultSort || null;
   const sorted = state ? sortRows(rows, state.key, state.dir) : [...rows];
   return '<div class="sortHint">컬럼 헤더를 클릭하면 오름차순, 내림차순, 기본순으로 전환됩니다.</div><table data-table-id="'+esc(tableId)+'"><thead><tr>' +
-    keys.map(k => `<th onclick="sortTable('${esc(tableId)}','${esc(k)}')">${esc(k)}${state && state.key === k ? (state.dir === 'asc' ? ' ▲' : ' ▼') : ''}</th>`).join('') +
+    keys.map(k => `<th onclick="sortTable('${esc(tableId)}','${esc(k)}')">${headerLabel(k)}${state && state.key === k ? (state.dir === 'asc' ? ' ▲' : ' ▼') : ''}</th>`).join('') +
     '</tr></thead><tbody>' +
-    sorted.map(r => '<tr>' + keys.map(k => `<td>${esc(r[k])}</td>`).join('') + '</tr>').join('') + '</tbody></table>';
+    sorted.map(r => '<tr>' + keys.map(k => `<td class="${cellClass(k, r[k])}">${displayCell(k, r[k])}</td>`).join('') + '</tr>').join('') + '</tbody></table>';
 }
 function sortTable(tableId, key) {
   const current = sortState[tableId];
@@ -132,7 +207,7 @@ async function reloadCurrent() {
   return loadDashboard();
 }
 function metrics(obj) {
-  return '<div class="grid">' + Object.entries(obj || {}).map(([k,v]) => `<div class="metric"><strong>${esc(k)}</strong>${esc(typeof v === 'object' ? JSON.stringify(v) : v)}</div>`).join('') + '</div>';
+  return '<div class="grid">' + Object.entries(obj || {}).map(([k,v]) => `<div class="metric"><strong>${esc(labelFor(k))}<span class="key">${esc(k)}</span></strong>${displayCell(k, typeof v === 'object' ? JSON.stringify(v) : v)}</div>`).join('') + '</div>';
 }
 async function refreshBanner() {
   const s = await api('/api/status');
@@ -142,13 +217,23 @@ async function refreshBanner() {
 async function loadDashboard() {
   currentView = 'dashboard';
   const s = await api('/api/status');
-  document.getElementById('content').innerHTML = `<h2>Dashboard</h2><h3>Bot</h3>${metrics(s.bot)}<h3>Risk</h3>${metrics(s.account_risk)}<h3>Position States</h3>${metrics(s.position_state_counts)}<h3>Orders</h3>${metrics(s.order_status_counts)}<h3>Warnings</h3>${table(s.warnings)}<h3>Runtime</h3>${metrics(s.runtime_control)}`;
+  const top = {
+    live_trading: s.risk_banner.live_trading,
+    all_orders_paused: s.runtime_control.all_orders_paused,
+    buy_paused: s.runtime_control.buy_paused,
+    sell_paused: s.runtime_control.sell_paused,
+    total_open_lot_count: s.account_risk.total_open_lot_count,
+    new_buy_count_today: s.account_risk.new_buy_count_today,
+    risk_blocked_count: s.position_state_counts.RISK_BLOCKED || 0,
+    review_required_count: s.position_state_counts.REVIEW_REQUIRED || 0
+  };
+  document.getElementById('content').innerHTML = `<h2>대시보드</h2><h3>핵심 요약</h3>${metrics(top)}<h3>봇 상태</h3>${metrics(s.bot)}<h3>계좌/리스크</h3>${metrics(s.account_risk)}<h3>보유 상태별 종목 수</h3>${metrics(s.position_state_counts)}<h3>주문 상태</h3>${metrics(s.order_status_counts)}<h3>경고</h3>${table(s.warnings, 'warnings')}<h3>런타임 제어</h3>${metrics(s.runtime_control)}`;
 }
 async function loadStocks() {
   currentView = 'stocks';
   const rows = await api('/api/stocks');
   if (!sortState.stocks) sortState.stocks = {key:'position_state', dir:'asc'};
-  document.getElementById('content').innerHTML = '<h2>Stocks</h2><input id="stockFilter" placeholder="code/name/status filter" oninput="renderStockTable()" value="'+esc(window.stockFilterValue || '')+'"><div id="stockTable"></div>';
+  document.getElementById('content').innerHTML = '<h2>종목</h2><input id="stockFilter" placeholder="종목코드/종목명/상태 검색" oninput="renderStockTable()" value="'+esc(window.stockFilterValue || '')+'"><div class="manualBox"><strong>수동 매수 요청</strong><p class="muted">현재는 안전상 비활성입니다. 향후 UI는 요청만 생성하고, 실제 주문은 Bot Core가 runtime pause/risk/open order guard를 거쳐 처리해야 합니다.</p><button disabled>수동 매수 요청 비활성</button></div><div id="stockTable"></div>';
   window.stockRows = rows;
   renderStockTable();
 }
@@ -162,27 +247,72 @@ async function loadLots() {
   currentView = 'lots';
   const rows = await api('/api/lots');
   if (!sortState.lots) sortState.lots = {key:'unrealized_pnl_rate', dir:'asc'};
-  document.getElementById('content').innerHTML = '<h2>Lots</h2>' + table(rows, 'lots');
+  document.getElementById('content').innerHTML = '<h2>LOT</h2><div class="manualBox"><strong>LOT별 수동 매도 요청</strong><p class="muted">현재는 안전상 비활성입니다. CLOSED LOT, open SELL order, RISK_BLOCKED, SYNC_REQUIRED, runtime sell pause 상태에서는 요청 생성도 차단되어야 합니다.</p><button disabled>수동 매도 요청 비활성</button></div>' + table(rows, 'lots');
 }
 async function loadOrders() {
   currentView = 'orders';
   const o=await api('/api/orders'), f=await api('/api/fills');
   if (!sortState.orders) sortState.orders = {key:'requested_at', dir:'desc'};
   if (!sortState.fills) sortState.fills = {key:'filled_at', dir:'desc'};
-  document.getElementById('content').innerHTML = '<h2>Orders</h2>'+table(o, 'orders')+'<h2>Fills</h2>'+table(f, 'fills');
+  document.getElementById('content').innerHTML = '<h2>주문</h2>'+table(o, 'orders')+'<h2>체결</h2>'+table(f, 'fills');
 }
-async function loadLogs() { currentView = 'logs'; const l=await api('/api/logs/tail?limit=300'); document.getElementById('content').innerHTML = '<h2>Logs</h2><pre>'+esc(l.lines.join('\n'))+'</pre>'; }
-async function loadExecution() { currentView = 'execution'; const e=await api('/api/execution-mapping/status'); document.getElementById('content').innerHTML = '<h2>Execution Mapping Check</h2>'+metrics(e)+'<pre>'+esc(e.raw_log_line || '')+'</pre>'; }
+async function loadLogs() { currentView = 'logs'; const l=await api('/api/logs/tail?limit=300'); document.getElementById('content').innerHTML = '<h2>로그</h2><div class="manualBox"><strong>주요 차단 사유</strong><p>open_order_exists_for_cleanup: 미체결 주문이 있어 cleanup 매도 차단<br>risk_blocked_buy_sell_blocked: 위험 차단으로 매수/매도 모두 차단<br>sync_required: DB/KIS 동기화 필요</p></div><pre>'+esc(l.lines.join('\n'))+'</pre>'; }
+async function loadExecution() { currentView = 'execution'; const e=await api('/api/execution-mapping/status'); document.getElementById('content').innerHTML = '<h2>체결 필드 검증</h2>'+metrics(e)+'<pre>'+esc(e.raw_log_line || '')+'</pre>'; }
 async function loadRuntime() {
   currentView = 'runtime';
   const r=await api('/api/runtime');
-  document.getElementById('content').innerHTML = `<h2>Runtime Control</h2>${metrics(r)}
-  <p><button class="dangerBtn" onclick="runtime('/api/runtime/emergency-stop')">Emergency Stop</button>
-  <button onclick="runtime('/api/runtime/pause-buy')">Pause Buy</button>
-  <button onclick="runtime('/api/runtime/pause-sell')">Pause Sell</button>
-  <button onclick="runtime('/api/runtime/resume')">Resume</button></p>`;
+  document.getElementById('content').innerHTML = `<h2>런타임 제어</h2>${metrics(r)}
+  <div class="grid">
+    <div class="controlCard"><button onclick="runtime('/api/runtime/pause-all')">전체 주문 일시정지</button><p class="muted">모든 신규 주문 요청을 차단합니다.</p></div>
+    <div class="controlCard"><button onclick="runtime('/api/runtime/pause-buy')">매수 일시정지</button><p class="muted">신규 매수, 추가매수, 재진입 매수를 차단합니다.</p></div>
+    <div class="controlCard"><button onclick="runtime('/api/runtime/pause-sell')">매도 일시정지</button><p class="muted">자동 매도 요청을 차단합니다.</p></div>
+    <div class="controlCard"><button onclick="runtime('/api/runtime/pause-cleanup')">Cleanup 일시정지</button><p class="muted">손실 정리 매도만 별도로 차단합니다.</p></div>
+    <div class="controlCard"><button onclick="runtime('/api/runtime/pause-reentry')">재진입 일시정지</button><p class="muted">NORMAL/TRAILING 재진입 매수를 차단합니다.</p></div>
+    <div class="controlCard"><button onclick="runtime('/api/runtime/resume')">일시정지 해제</button><p class="muted">runtime pause 플래그를 해제합니다.</p></div>
+    <div class="controlCard dangerZone"><button class="dangerBtn" onclick="runtime('/api/runtime/emergency-stop')">Emergency Stop 비상정지</button><p class="bad">즉시 모든 주문 요청을 차단하는 비상 정지입니다.</p></div>
+  </div>`;
 }
 async function runtime(path) { await api(path, {method:'POST'}); await loadRuntime(); }
+async function loadManualOrders() {
+  currentView = 'manual';
+  document.getElementById('content').innerHTML = `<h2>수동 주문 요청 구조 검토</h2>
+  <div class="manualBox"><strong>현재 상태: 구현 보류 / 기본 비활성</strong><p>이 화면은 설계 안내입니다. UI 서버는 KIS 주문 API를 직접 호출하지 않으며, 수동 주문 요청도 아직 생성하지 않습니다.</p></div>
+  <h3>권장 데이터 모델</h3><pre>{
+  "request_id": "MANUAL-...",
+  "source": "local_ui_manual",
+  "requested_by": "operator",
+  "requested_at": "ISO timestamp",
+  "code": "005930",
+  "side": "BUY or SELL",
+  "amount": 30000,
+  "quantity": 1,
+  "lot_id": "sell only",
+  "preview": {},
+  "runtime_snapshot": {},
+  "live_trading": true,
+  "confirm_text_verified": true,
+  "status": "REQUESTED"
+}</pre>
+  <h3>안전한 처리 흐름</h3>
+  <ol>
+    <li>UI는 preview만 계산하고 주문 API를 호출하지 않습니다.</li>
+    <li>최종 확인 후 manual order request만 생성합니다.</li>
+    <li>봇이 요청을 읽고 기존 runtime pause, risk guard, open order guard, live trading guard를 적용합니다.</li>
+    <li>주문은 기존 order_manager 경로로만 생성합니다.</li>
+    <li>체결은 기존 reconciliation 또는 즉시 체결 확인으로 fills에 기록합니다.</li>
+    <li>lots/positions는 fill insert 성공 후에만 갱신합니다.</li>
+  </ol>
+  <h3>차단 조건</h3>
+  <ul>
+    <li>ui_manual_trading_enabled=false</li>
+    <li>SYNC_REQUIRED 또는 RISK_BLOCKED</li>
+    <li>runtime all/buy/sell/cleanup/reentry pause</li>
+    <li>동일 종목 또는 동일 LOT open order 존재</li>
+    <li>CLOSED LOT 매도 요청</li>
+    <li>수량 0 또는 예산 부족</li>
+  </ul>
+  <p class="warn">paper mode에서 request 생성, audit log, Bot Core 소비, reconciliation 반영까지 검증한 뒤 live trading에서 단계적으로 열어야 합니다.</p>`;
+}
 async function loadConfig() {
   currentView = 'config';
   configOriginal = await api('/api/config');
