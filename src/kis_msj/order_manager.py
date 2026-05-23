@@ -246,8 +246,10 @@ class OrderManager:
         requested_times = [_parse_timestamp(order.requested_at) for order in open_orders if order.requested_at]
         oldest_requested = min(requested_times, default=today_start)
         buffered = oldest_requested - timedelta(minutes=self.config.order.execution_query_buffer_minutes)
+        if not self.config.order.include_previous_day_for_open_orders:
+            return today_start
         query_start = min(today_start, buffered)
-        if self.config.order.include_previous_day_for_open_orders and open_orders:
+        if open_orders:
             previous_day_start = today_start - timedelta(days=1)
             query_start = min(query_start, previous_day_start)
         return query_start

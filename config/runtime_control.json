@@ -1,0 +1,11 @@
+{
+  "all_orders_paused": false,
+  "buy_paused": false,
+  "sell_paused": false,
+  "cleanup_paused": true,
+  "reentry_paused": false,
+  "reason": "ui_pause_cleanup",
+  "updated_at": "2026-05-24T00:13:24",
+  "updated_by": "local_ui",
+  "expires_at": ""
+}

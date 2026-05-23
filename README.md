@@ -1,5 +1,15 @@
 # KIS-MSJ
 
+## Local LOT Bot UI
+
+로컬 관제/제어 UI는 자동매매 루프와 분리되어 있으며, UI 실행만으로 KIS 주문 API를 호출하지 않습니다.
+
+```powershell
+.\.venv\Scripts\python.exe -m kis_msj.ui_server --config config\lot_auto_trader.json --host 127.0.0.1 --port 8765
+```
+
+자세한 기능, 안전 정책, runtime control 파일 설명은 [docs/local_ui.md](docs/local_ui.md)를 참고하세요.
+
 한국투자증권(KIS) Open API를 이용한 자동거래 실험용 Python 프로젝트입니다.
 
 ## 데이터 수집 코드

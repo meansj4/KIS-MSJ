@@ -20,6 +20,7 @@ from .order_manager import OrderManager
 from .position_manager import PositionManager
 from .price_provider import PriceSampler
 from .risk_manager import RiskManager
+from .runtime_control import load_runtime_control, runtime_block_reason
 from .storage import StateStore
 from .strategy import LotGridStrategy
 from .upstream_watcher import UpstreamWatcher
@@ -287,6 +288,9 @@ class AutoTrader:
         duplicate = self.open_order_block_reason(position, action)
         if duplicate:
             return duplicate
+        runtime_block = runtime_block_reason(load_runtime_control(), action)
+        if runtime_block:
+            return runtime_block
         portfolio_block = portfolio_preview or self.portfolio_buy_block_reason(position, action)
         if portfolio_block:
             return portfolio_block
