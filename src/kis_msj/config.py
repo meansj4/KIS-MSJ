@@ -106,6 +106,10 @@ class RiskConfig:
     max_consecutive_api_errors: int = 5
     max_price_sample_volatility_pct: float = 1.0
     block_on_lot_mismatch: bool = True
+    max_active_symbols: int = 20
+    max_total_open_lots: int = 40
+    max_total_invested_amount: int = 1_500_000
+    max_new_buy_per_day: int = 5
 
 
 @dataclass(frozen=True)

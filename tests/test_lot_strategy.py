@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 
-from kis_msj.config import BotConfig, OrderConfig, StrategyConfig
+from kis_msj.config import BotConfig, OrderConfig, RiskConfig, StrategyConfig
 from kis_msj.lot_manager import LotManager
 from kis_msj.models import AccountSnapshot, LotState, OrderSide, PositionLifecycle, PositionState, ReentryType, SellReason, TradeFill
 from kis_msj.position_manager import PositionManager
@@ -202,6 +202,33 @@ def test_breakeven_old_lot_is_profit_take_when_net_nonnegative() -> None:
     assert action.sell_reason == SellReason.PROFIT_TAKE.value
 
 
+def test_negative_effective_target_but_positive_realized_pnl_is_profit_take() -> None:
+    strategy_config = StrategyConfig(estimated_fee_tax_pct=0)
+    _, _, positions, strategy, risk, snapshot = setup_strategy(strategy_config)
+    lot = add_lot(positions, "005930", 10000, 1)
+    age_lot(lot, 20)
+    position = positions.refresh_from_lots("005930", 10050)
+
+    action = strategy.decide(position, 10050, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+
+    assert lot.effective_target_profit_rate < 0
+    assert action is not None
+    assert action.sell_reason == SellReason.PROFIT_TAKE.value
+
+
+def test_loss_lot_is_not_classified_as_profit_take() -> None:
+    strategy_config = StrategyConfig(cleanup_enabled=True, estimated_fee_tax_pct=0)
+    _, _, positions, strategy, risk, snapshot = setup_strategy(strategy_config, daily_profit_loss=10_000)
+    lot = add_lot(positions, "005930", 10000, 1)
+    age_lot(lot, 20)
+    position = positions.refresh_from_lots("005930", 9800)
+
+    action = strategy.decide(position, 9800, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+
+    assert action is not None
+    assert action.sell_reason == SellReason.CLEANUP_SELL.value
+
+
 def test_trailing_reentry_after_post_exit_high_pullback() -> None:
     _, _, positions, strategy, risk, snapshot = setup_strategy()
     position = positions.get("005930", "Test")
@@ -216,6 +243,34 @@ def test_trailing_reentry_after_post_exit_high_pullback() -> None:
     assert action is not None
     assert action.side is OrderSide.BUY
     assert action.reentry_type == ReentryType.TRAILING_REENTRY.value
+
+
+def test_context_does_not_update_post_exit_high_price() -> None:
+    _, _, positions, strategy, _, _ = setup_strategy()
+    position = positions.get("005930", "Test")
+    position.position_state = PositionLifecycle.WAIT_REENTRY.value
+    position.exit_anchor_price = 10000
+    position.post_exit_high_price = 10000
+    position.exit_time = (datetime.now() - timedelta(minutes=61)).isoformat(timespec="seconds")
+
+    strategy.context(position, 11500)
+
+    assert position.post_exit_high_price == 10000
+
+
+def test_update_reentry_tracking_only_updates_wait_reentry() -> None:
+    _, _, positions, strategy, _, _ = setup_strategy()
+    position = positions.get("005930", "Test")
+    position.position_state = PositionLifecycle.WAIT_REENTRY.value
+    position.exit_anchor_price = 10000
+    position.post_exit_high_price = 10000
+
+    assert strategy.update_reentry_tracking(position, 11500)
+    assert position.post_exit_high_price == 11500
+
+    position.position_state = PositionLifecycle.HOLDING.value
+    assert not strategy.update_reentry_tracking(position, 12000)
+    assert position.post_exit_high_price == 11500
 
 
 def test_cleanup_sell_partial_keeps_holding_and_sets_buy_cooldown() -> None:
@@ -396,3 +451,27 @@ def test_lot_quantity_mismatch_blocks_new_buy() -> None:
 
     assert not decision.allowed
     assert "lot_quantity_mismatch" in decision.reasons
+
+
+def test_total_invested_account_limit_blocks_new_buy() -> None:
+    config = BotConfig(risk=RiskConfig(max_total_invested_amount=50_000))
+    positions = {"005930": PositionState(code="005930", quantity=5, cumulative_invested_amount=50_000)}
+    snapshot = AccountSnapshot(10_000_000, 10_000_000, 0, 0, ())
+
+    decision = RiskManager(config).account_buy_allowed(snapshot, positions)
+
+    assert not decision.allowed
+    assert "max_total_invested_amount" in decision.reasons
+
+
+def test_profit_take_lots_exclude_loss_cleanup_candidates() -> None:
+    strategy_config = StrategyConfig(cleanup_enabled=True, estimated_fee_tax_pct=0)
+    _, lots, positions, _, _, _ = setup_strategy(strategy_config)
+    loss = add_lot(positions, "005930", 10000, 1)
+    age_lot(loss, 20)
+
+    profit_take = lots.profit_take_lots("005930", 9700, lots.cumulative_invested_amount("005930"))
+    cleanup_candidates = lots.cleanup_candidate_lots("005930", 9700)
+
+    assert loss not in profit_take
+    assert loss in cleanup_candidates

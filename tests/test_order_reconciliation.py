@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+import sqlite3
 
 from kis_msj.config import BotConfig, OrderConfig
 from kis_msj.models import OrderRequest, OrderResult, OrderSide, OrderStatus, TradeFill
@@ -76,3 +77,35 @@ def test_rejected_order_no_longer_counts_as_open(tmp_path) -> None:
     store.record_order(OrderResult(result.request, result.order_id, OrderStatus.REJECTED, "rejected"))
 
     assert not store.has_open_order("005930", OrderSide.BUY)
+
+
+def test_side_mismatch_fill_is_not_matched_to_order(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    store.record_order(order(side=OrderSide.BUY))
+    fill = TradeFill("005930", "Test", OrderSide.SELL, 10, 10000, "000001", datetime.now(), execution_id="E4")
+    manager = OrderManager(BotConfig(order=OrderConfig(limit_order_timeout_seconds=999)), ReconcileClient((fill,)), store, __import__("logging").getLogger("test"))
+
+    fills = manager.reconcile_open_orders()
+
+    assert fills == ()
+    assert store.has_open_order("005930", OrderSide.BUY)
+
+
+def test_fill_without_execution_id_is_deduped_by_stable_trade_fields(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    first = TradeFill("005930", "Test", OrderSide.BUY, 10, 10000, "000001", datetime.now().replace(microsecond=0))
+    second = TradeFill("005930", "Test", OrderSide.BUY, 10, 10000, "000001", first.filled_at + timedelta(seconds=3))
+
+    assert store.record_fill(first)
+    assert not store.record_fill(second)
+
+
+def test_existing_db_is_backed_up_before_schema_migration(tmp_path) -> None:
+    db_path = tmp_path / "state.sqlite3"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("CREATE TABLE positions (code TEXT PRIMARY KEY, name TEXT NOT NULL)")
+
+    StateStore(db_path)
+
+    backups = list((tmp_path / "backups").glob("state_*.sqlite3"))
+    assert backups

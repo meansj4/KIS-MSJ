@@ -59,6 +59,8 @@ class StrategyContext:
     cleanup_allowed: bool = False
     cleanup_buy_cooldown_until: str = ""
     cleanup_reentry_cooldown_until: str = ""
+    profit_take_lot_count: int = 0
+    cleanup_candidate_lot_count: int = 0
     review_reason: str = ""
     skip_reason: str = ""
 
@@ -95,7 +97,7 @@ class LotGridStrategy:
                     return StrategyAction(OrderSide.BUY, self.config.strategy.initial_buy_amount, None, "initial_buy")
                 return None
             if lifecycle == PositionLifecycle.WAIT_REENTRY.value:
-                normal, trailing = self._reentry_conditions(position, current_price)
+                normal, trailing = self.check_reentry_conditions(position, current_price)
                 if normal:
                     return StrategyAction(OrderSide.BUY, self.config.strategy.initial_buy_amount, None, "reentry_buy", reentry_type=ReentryType.NORMAL_REENTRY.value)
                 if trailing:
@@ -154,9 +156,11 @@ class LotGridStrategy:
             self.lot_manager.update_lot_target_metadata(lot, current_price)
             realized_rate = lot.profit_pct_at(current_price) / 100.0
             quantity = lot.remaining_quantity
-            fee_tax = int(round(current_price * quantity * self.config.strategy.estimated_fee_tax_pct / 100.0))
-            net_pnl = (current_price - lot.buy_price) * quantity - fee_tax
-            if lot.effective_target_profit_rate >= -EPSILON and realized_rate + EPSILON >= lot.effective_target_profit_rate and net_pnl >= 0:
+            net_pnl = self.calculate_expected_realized_pnl(lot, current_price, quantity)
+            if realized_rate + EPSILON < lot.effective_target_profit_rate:
+                continue
+            sell_reason = self.classify_sell_reason(lot, current_price, quantity)
+            if sell_reason == SellReason.PROFIT_TAKE.value:
                 profit_candidates.append(lot)
                 continue
             if not self.config.strategy.cleanup_enabled:
@@ -172,7 +176,7 @@ class LotGridStrategy:
                 and budget > 0
                 and expected_loss <= budget
             )
-            if lot.effective_target_profit_rate < -EPSILON and realized_rate < 0:
+            if sell_reason == SellReason.CLEANUP_SELL.value and lot.effective_target_profit_rate < -EPSILON and realized_rate < 0:
                 lot.cleanup_candidate = True
                 cleanup_candidates.append((lot, expected_loss, cleanup_allowed))
         if profit_candidates:
@@ -182,6 +186,14 @@ class LotGridStrategy:
             lot, expected_loss, cleanup_allowed = sorted(allowed_cleanup, key=lambda item: (item[1], -item[0].age_weeks))[0]
             return (lot, SellReason.CLEANUP_SELL.value, expected_loss, cleanup_allowed)
         return None
+
+    def calculate_expected_realized_pnl(self, lot: LotState, price: int, quantity: int | None = None) -> int:
+        quantity = quantity or lot.remaining_quantity
+        return self._net_pnl(lot, price, quantity)
+
+    def classify_sell_reason(self, lot: LotState, price: int, quantity: int | None = None) -> str:
+        net_pnl = self.calculate_expected_realized_pnl(lot, price, quantity)
+        return SellReason.PROFIT_TAKE.value if net_pnl >= 0 else SellReason.CLEANUP_SELL.value
 
     def _sort_sell_lots(self, lots: list[LotState], current_price: int) -> list[LotState]:
         return sorted(
@@ -204,14 +216,14 @@ class LotGridStrategy:
         buy_plan = self.lot_manager.buy_plan(exposure)
         reference_buy = self._reference_buy_lot(position)
         reference_sell = self._reference_sell_lot(position)
-        sellable = self.lot_manager.sellable_lots(position.code, current_price, exposure, target_profit) if exposure > 0 else []
-        normal_reentry, trailing_reentry = self._reentry_conditions(position, current_price)
+        profit_take_lots = self.lot_manager.profit_take_lots(position.code, current_price, exposure, target_profit) if exposure > 0 else []
+        cleanup_candidate_lots = self.lot_manager.cleanup_candidate_lots(position.code, current_price) if exposure > 0 else []
+        normal_reentry, trailing_reentry = self.check_reentry_conditions(position, current_price)
         sell_candidate = self._sell_candidate(position, current_price, snapshot) if exposure > 0 else None
         cleanup_budget = self.cleanup_loss_budget(snapshot)
         buy_condition = False
         if reference_buy and buy_plan:
             buy_condition = current_price <= reference_buy.buy_price * (1.0 - buy_plan[0] / 100.0)
-        cleanup_candidates = [lot for lot in self.lot_manager.open_lots(position.code) if lot.cleanup_candidate]
         return StrategyContext(
             position_state=self._position_state(position),
             pnl_mode=self._pnl_mode(position),
@@ -224,8 +236,8 @@ class LotGridStrategy:
             target_profit_rate=target_profit / 100.0,
             buy_condition_met=buy_condition,
             sell_signal_met=self._sell_signal_met(position, current_price, target_profit),
-            profitable_lots=";".join(lot.lot_id for lot in sellable) or "NONE",
-            selected_sell_lot_id=sellable[0].lot_id if sellable else "",
+            profitable_lots=";".join(lot.lot_id for lot in profit_take_lots) or "NONE",
+            selected_sell_lot_id=profit_take_lots[0].lot_id if profit_take_lots else "",
             reentry_condition_met=normal_reentry or trailing_reentry,
             normal_reentry_condition_met=normal_reentry,
             trailing_reentry_condition_met=trailing_reentry,
@@ -237,12 +249,14 @@ class LotGridStrategy:
             cycle_highest_sell_price=position.cycle_highest_sell_price,
             cycle_last_sell_price=position.cycle_last_sell_price,
             post_exit_high_price=position.post_exit_high_price,
-            cleanup_candidate=bool(cleanup_candidates),
+            cleanup_candidate=bool(cleanup_candidate_lots),
             cleanup_loss_budget=cleanup_budget,
             expected_cleanup_loss=sell_candidate[2] if sell_candidate else 0,
             cleanup_allowed=bool(sell_candidate and sell_candidate[1] == SellReason.CLEANUP_SELL.value and sell_candidate[3]),
             cleanup_buy_cooldown_until=position.cleanup_buy_cooldown_until,
             cleanup_reentry_cooldown_until=position.cleanup_reentry_cooldown_until,
+            profit_take_lot_count=len(profit_take_lots),
+            cleanup_candidate_lot_count=len(cleanup_candidate_lots),
             review_reason=position.review_reason,
             skip_reason=self._skip_reason(position, current_price),
         )
@@ -285,27 +299,39 @@ class LotGridStrategy:
     def _sell_signal_met(self, position: PositionState, current_price: int, target_pct: float) -> bool:
         if position.cumulative_invested_amount <= 0:
             return False
-        return bool(self.lot_manager.sellable_lots(position.code, current_price, position.cumulative_invested_amount, target_pct))
+        return bool(self.lot_manager.profit_take_lots(position.code, current_price, position.cumulative_invested_amount, target_pct))
 
-    def _reentry_conditions(self, position: PositionState, current_price: int) -> tuple[bool, bool]:
+    def update_reentry_tracking(self, position: PositionState, current_price: int, now: datetime | None = None) -> bool:
+        now = now or datetime.now()
         anchor = position.exit_anchor_price or position.reentry_anchor_price or position.last_sell_price
         if self._position_state(position) != PositionLifecycle.WAIT_REENTRY.value or anchor <= 0:
-            return False, False
+            return False
+        previous_high = position.post_exit_high_price
         if position.post_exit_high_price <= 0:
             position.post_exit_high_price = anchor
         position.post_exit_high_price = max(position.post_exit_high_price, current_price)
-        normal = current_price <= anchor * (1.0 - self.config.strategy.normal_reentry_drop_rate)
-        exit_time = _parse_time(position.exit_time)
-        waited = exit_time is not None and datetime.now() - exit_time >= timedelta(minutes=self.config.strategy.min_reentry_wait_minutes)
-        today = datetime.now().date().isoformat()
+        today = now.date().isoformat()
+        previous_count_date = position.trailing_reentry_count_date
         if position.trailing_reentry_count_date != today:
             position.trailing_reentry_count_today = 0
             position.trailing_reentry_count_date = today
+        return previous_high != position.post_exit_high_price or previous_count_date != position.trailing_reentry_count_date
+
+    def check_reentry_conditions(self, position: PositionState, current_price: int, now: datetime | None = None) -> tuple[bool, bool]:
+        now = now or datetime.now()
+        anchor = position.exit_anchor_price or position.reentry_anchor_price or position.last_sell_price
+        if self._position_state(position) != PositionLifecycle.WAIT_REENTRY.value or anchor <= 0:
+            return False, False
+        post_exit_high = position.post_exit_high_price if position.post_exit_high_price > 0 else anchor
+        normal = current_price <= anchor * (1.0 - self.config.strategy.normal_reentry_drop_rate)
+        exit_time = _parse_time(position.exit_time)
+        waited = exit_time is not None and now - exit_time >= timedelta(minutes=self.config.strategy.min_reentry_wait_minutes)
+        count_today = position.trailing_reentry_count_today if position.trailing_reentry_count_date == now.date().isoformat() else 0
         trailing = (
-            position.post_exit_high_price >= anchor * (1.0 + self.config.strategy.trailing_activation_gain)
-            and current_price <= position.post_exit_high_price * (1.0 - self.config.strategy.trailing_reentry_drop_rate)
+            post_exit_high >= anchor * (1.0 + self.config.strategy.trailing_activation_gain)
+            and current_price <= post_exit_high * (1.0 - self.config.strategy.trailing_reentry_drop_rate)
             and waited
-            and position.trailing_reentry_count_today < self.config.strategy.max_trailing_reentry_per_day
+            and count_today < self.config.strategy.max_trailing_reentry_per_day
         )
         return normal, trailing
 
@@ -318,7 +344,7 @@ class LotGridStrategy:
             return state.lower()
         if state == PositionLifecycle.COOLDOWN_AFTER_CLEANUP.value:
             return "cleanup_cooldown"
-        if state == PositionLifecycle.WAIT_REENTRY.value and not any(self._reentry_conditions(position, current_price)):
+        if state == PositionLifecycle.WAIT_REENTRY.value and not any(self.check_reentry_conditions(position, current_price)):
             return "wait_reentry"
         if state == PositionLifecycle.NEVER_BOUGHT.value and current_price > self.config.strategy.initial_buy_amount:
             return "initial_buy_amount_below_price"

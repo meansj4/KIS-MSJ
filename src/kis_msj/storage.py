@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import shutil
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -20,6 +21,8 @@ SYNC_REQUIRED = "SYNC_REQUIRED"
 class StateStore:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
+        self._db_existed_before_init = self.path.exists() and self.path.stat().st_size > 0
+        self._migration_backup_done = False
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
 
@@ -67,6 +70,7 @@ class StateStore:
                 )
                 """
             )
+            self._backup_before_migration_if_needed(connection)
             _ensure_column(connection, "positions", "sync_status", "TEXT NOT NULL DEFAULT 'OK'")
             _ensure_column(connection, "positions", "trading_paused", "INTEGER NOT NULL DEFAULT 0")
             _ensure_column(connection, "positions", "position_state", "TEXT NOT NULL DEFAULT 'NEVER_BOUGHT'")
@@ -162,6 +166,50 @@ class StateStore:
             _ensure_column(connection, "orders", "sell_reason", "TEXT NOT NULL DEFAULT 'UNKNOWN'")
             _ensure_column(connection, "orders", "reentry_type", "TEXT NOT NULL DEFAULT 'NONE'")
             _ensure_column(connection, "orders", "cleanup_flag", "INTEGER NOT NULL DEFAULT 0")
+
+    def _backup_before_migration_if_needed(self, connection: sqlite3.Connection) -> None:
+        if self._migration_backup_done or not self._db_existed_before_init:
+            return
+        expected_columns = {
+            "positions": {
+                "sync_status",
+                "trading_paused",
+                "position_state",
+                "last_sell_price",
+                "reentry_anchor_price",
+                "exit_anchor_price",
+                "cycle_highest_sell_price",
+                "cycle_last_sell_price",
+                "post_exit_high_price",
+                "exit_time",
+                "cleanup_sell_price",
+                "cleanup_time",
+                "cleanup_reentry_cooldown_until",
+                "cleanup_buy_cooldown_until",
+                "last_reentry_type",
+                "trailing_reentry_count_today",
+                "trailing_reentry_count_date",
+                "review_reason",
+                "skip_reason",
+            },
+            "lots": {"cleanup_candidate", "age_weeks", "base_target_profit_rate", "effective_target_profit_rate", "last_sell_reason"},
+            "fills": {"execution_id", "sell_reason", "reentry_type"},
+            "orders": {"requested_at", "sell_reason", "reentry_type", "cleanup_flag"},
+        }
+        missing = False
+        for table, columns in expected_columns.items():
+            existing = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
+            if existing and not columns.issubset(existing):
+                missing = True
+                break
+        if not missing:
+            return
+        backup_dir = self.path.parent / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = backup_dir / f"{self.path.stem}_{timestamp}{self.path.suffix}"
+        shutil.copy2(self.path, backup_path)
+        self._migration_backup_done = True
 
     def load_positions(self) -> dict[str, PositionState]:
         with self._connect() as connection:
@@ -261,6 +309,32 @@ class StateStore:
                 existing = connection.execute(
                     "SELECT 1 FROM fills WHERE execution_id = ? LIMIT 1",
                     (fill.execution_id,),
+                ).fetchone()
+                if existing is not None:
+                    return False
+            else:
+                existing = connection.execute(
+                    """
+                    SELECT 1
+                    FROM fills
+                    WHERE order_id = ?
+                      AND code = ?
+                      AND side = ?
+                      AND lot_id = ?
+                      AND price = ?
+                      AND quantity = ?
+                      AND substr(filled_at, 1, 10) = ?
+                    LIMIT 1
+                    """,
+                    (
+                        fill.order_id,
+                        fill.code,
+                        fill.side.value,
+                        fill.lot_id,
+                        fill.price,
+                        fill.quantity,
+                        fill.filled_at.date().isoformat(),
+                    ),
                 ).fetchone()
                 if existing is not None:
                     return False

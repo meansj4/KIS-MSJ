@@ -13,7 +13,7 @@ from .config import DEFAULT_CONFIG_PATH, BotConfig, load_config, write_default_c
 from .kis_client import KisClient, MockKisClient
 from .logger import configure_trade_logger, log_decision
 from .lot_manager import LotManager
-from .models import AccountSnapshot, OrderSide, PositionState
+from .models import AccountSnapshot, OrderSide, PositionState, SellReason
 from .models import PositionLifecycle
 from .notifier import LogNotifier
 from .order_manager import OrderManager
@@ -110,9 +110,11 @@ class AutoTrader:
             self.logger.info("trade_blocked code=%s price=%s reason=%s", position.code, current_price, stable_reason)
             return
         position = self.position_manager.refresh_from_lots(position.code, current_price)
+        if self.strategy.update_reentry_tracking(position, current_price):
+            self.store.save_position(position)
         symbol_risk = self.risk_manager.symbol_buy_allowed(position)
         action = self.strategy.decide(position, current_price, snapshot, account_risk, symbol_risk)
-        self.log_symbol_decision(position, current_price, account_risk, symbol_risk, action.reason if action else "NONE")
+        self.log_symbol_decision(position, current_price, snapshot, account_risk, symbol_risk, action.reason if action else "NONE")
         if action is None:
             return
         sync_block = self.sync_required_block_reason(position)
@@ -153,7 +155,7 @@ class AutoTrader:
         self.store.save_lots(self.lot_manager.lots.values())
         self.logger.info("fill_applied code=%s side=%s qty=%s price=%s lot_id=%s order_id=%s", fill.code, fill.side.value, fill.quantity, fill.price, fill.lot_id, fill.order_id)
 
-    def log_symbol_decision(self, position: PositionState, current_price: int, account_risk, symbol_risk, action: str) -> None:
+    def log_symbol_decision(self, position: PositionState, current_price: int, snapshot: AccountSnapshot | None, account_risk, symbol_risk, action: str) -> None:
         last_lot = self.lot_manager.last_buy_lot(position.code)
         last_lot_drop = (current_price - last_lot.buy_price) / last_lot.buy_price * 100.0 if last_lot else 0.0
         lots = self.lot_manager.open_lots(position.code)
@@ -213,6 +215,9 @@ class AutoTrader:
             cleanup_allowed=context.cleanup_allowed,
             cleanup_buy_cooldown_until=context.cleanup_buy_cooldown_until,
             cleanup_reentry_cooldown_until=context.cleanup_reentry_cooldown_until,
+            profit_take_lot_count=context.profit_take_lot_count,
+            cleanup_candidate_lot_count=context.cleanup_candidate_lot_count,
+            cleanup_signal_met=context.cleanup_candidate,
             review_reason=context.review_reason,
             skip_reason=context.skip_reason,
             open_order_exists=self.store.has_any_open_order(position.code),
@@ -242,6 +247,9 @@ class AutoTrader:
         return "partial_order_exists"
 
     def open_order_block_reason(self, position: PositionState, action) -> str:
+        if action.side is OrderSide.SELL and action.sell_reason == SellReason.CLEANUP_SELL.value and self.store.has_any_open_order(position.code):
+            position.skip_reason = "open_order_exists_for_cleanup"
+            return "open_order_exists_for_cleanup"
         if action.side is OrderSide.BUY and self.store.has_open_order(position.code, OrderSide.BUY):
             return "open_buy_order_exists"
         if action.side is OrderSide.SELL and self.store.has_open_order(position.code, OrderSide.SELL, action.lot_id):

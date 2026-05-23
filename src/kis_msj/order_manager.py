@@ -157,7 +157,7 @@ class OrderManager:
         order_id = _normalize_order_id(result.order_id)
         matches = []
         for fill in self.client.executions():
-            if _normalize_order_id(fill.order_id) == order_id and fill.code == request.code:
+            if _normalize_order_id(fill.order_id) == order_id and fill.code == request.code and fill.side == request.side:
                 matches.append(TradeFill(fill.code, fill.name, fill.side, fill.quantity, fill.price, fill.order_id, fill.filled_at, request.lot_id, fill.execution_id, request.sell_reason, request.reentry_type))
         return matches
 

@@ -50,8 +50,17 @@ class LotManager:
         return None
 
     def sellable_lots(self, code: str, current_price: int, exposure: int, target_pct: float | None = None) -> list[LotState]:
+        """Backward-compatible alias for non-loss profit-take candidates."""
+        return self.profit_take_lots(code, current_price, exposure, target_pct)
+
+    def profit_take_lots(self, code: str, current_price: int, exposure: int, target_pct: float | None = None) -> list[LotState]:
         target_pct = self.target_profit_pct(exposure) if target_pct is None else target_pct
-        lots = [lot for lot in self.open_lots(code) if lot.profit_pct_at(current_price) / 100.0 >= self.effective_target_profit_rate(lot)]
+        lots = []
+        for lot in self.open_lots(code):
+            self.update_lot_target_metadata(lot, current_price)
+            realized_rate = lot.profit_pct_at(current_price) / 100.0
+            if realized_rate >= 0 and realized_rate >= lot.effective_target_profit_rate:
+                lots.append(lot)
         return sorted(
             lots,
             key=lambda lot: (
@@ -62,6 +71,20 @@ class LotManager:
             ),
             reverse=True,
         )
+
+    def cleanup_candidate_lots(self, code: str, current_price: int) -> list[LotState]:
+        lots = []
+        for lot in self.open_lots(code):
+            self.update_lot_target_metadata(lot, current_price)
+            realized_rate = lot.profit_pct_at(current_price) / 100.0
+            if (
+                lot.effective_target_profit_rate < 0
+                and realized_rate < 0
+                and realized_rate >= self.config.cleanup_min_target_rate
+            ):
+                lot.cleanup_candidate = True
+                lots.append(lot)
+        return sorted(lots, key=lambda lot: (-lot.age_weeks, lot.profit_pct_at(current_price)))
 
     def create_buy_lot(self, fill: TradeFill) -> LotState:
         exposure_after = self.cumulative_invested_amount(fill.code) + fill.quantity * fill.price
