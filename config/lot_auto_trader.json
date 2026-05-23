@@ -400,7 +400,9 @@
     "cancel_unfilled_on_start": false,
     "execution_query_buffer_minutes": 60,
     "include_previous_day_for_open_orders": true,
-    "enable_execution_raw_log": false
+    "enable_execution_raw_log": false,
+    "reconcile_recent_executions_on_startup": true,
+    "startup_execution_lookup_days": 1
   },
   "market_hours": {
     "open_time": "09:00",

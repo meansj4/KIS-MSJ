@@ -527,6 +527,21 @@ def test_review_required_blocks_buy_but_allows_profit_take_sell() -> None:
     assert action.lot_id == lot.lot_id
 
 
+def test_review_required_blocks_cleanup_sell_conservatively() -> None:
+    strategy_config = StrategyConfig(cleanup_enabled=True, estimated_fee_tax_pct=0)
+    _, _, positions, strategy, risk, snapshot = setup_strategy(strategy_config, daily_profit_loss=10_000)
+    lot = add_lot(positions, "005930", 10000, 1)
+    age_lot(lot, 20)
+    position = positions.refresh_from_lots("005930", 9600)
+    position.needs_review = True
+    position.position_state = PositionLifecycle.REVIEW_REQUIRED.value
+
+    action = strategy.decide(position, 9600, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+
+    assert action is None
+    assert position.skip_reason == "needs_review"
+
+
 def test_risk_blocked_blocks_buy_and_sell_conservatively() -> None:
     _, _, positions, strategy, risk, snapshot = setup_strategy()
     add_lot(positions, "005930", 10000, 1)

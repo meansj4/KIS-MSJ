@@ -155,6 +155,51 @@ class OrderManager:
             )
         return tuple(applied)
 
+    def reconcile_recent_executions(self) -> tuple[TradeFill, ...]:
+        days = max(1, self.config.order.startup_execution_lookup_days)
+        query_start = datetime.now() - timedelta(days=days - 1)
+        fetched_fills = self.client.executions(since=query_start.date())
+        applied: list[TradeFill] = []
+        duplicate_fill_count = 0
+        ignored_unmatched_count = 0
+        for fill in fetched_fills:
+            order = self.store.find_order(fill.order_id)
+            if order is None or order.request.code != fill.code or order.request.side != fill.side:
+                ignored_unmatched_count += 1
+                continue
+            matched = TradeFill(
+                fill.code,
+                fill.name,
+                fill.side,
+                fill.quantity,
+                fill.price,
+                fill.order_id,
+                fill.filled_at,
+                order.request.lot_id,
+                fill.execution_id,
+                order.request.sell_reason,
+                order.request.reentry_type,
+            )
+            matched = self._dedupe_or_delta_fill(matched)
+            if matched is None:
+                duplicate_fill_count += 1
+                continue
+            if self.store.record_fill(matched):
+                applied.append(matched)
+            else:
+                duplicate_fill_count += 1
+        self.logger.info(
+            "startup_execution_reconcile execution_query_start=%s execution_query_end=%s startup_execution_lookup_days=%s fetched_execution_count=%s new_fill_count=%s duplicate_fill_count=%s ignored_unmatched_execution_count=%s",
+            query_start.date().isoformat(),
+            datetime.now().date().isoformat(),
+            days,
+            len(fetched_fills),
+            len(applied),
+            duplicate_fill_count,
+            ignored_unmatched_count,
+        )
+        return tuple(applied)
+
     def _dedupe_or_delta_fill(self, fill: TradeFill) -> TradeFill | None:
         if fill.execution_id.startswith("AGG:"):
             already_filled = self.store.filled_quantity_for_order(fill.order_id)

@@ -45,6 +45,7 @@ class AutoTrader:
             self.client.logger = self.logger
         self.price_sampler = PriceSampler(self.client, config.order.price_sample_count, config.order.price_sample_interval_seconds)
         self.order_manager = OrderManager(config, self.client, self.store, self.logger)
+        self._startup_recent_executions_reconciled = False
 
     def startup_sync(self) -> AccountSnapshot:
         snapshot = self.client.account_snapshot()
@@ -70,6 +71,7 @@ class AutoTrader:
 
     def run_once(self) -> None:
         self.upstream_watcher.tick()
+        self.reconcile_recent_executions_on_startup()
         self.reconcile_open_orders()
         snapshot = self.startup_sync()
         account_risk = self.risk_manager.account_buy_allowed(snapshot, self.position_manager.positions)
@@ -87,19 +89,31 @@ class AutoTrader:
 
     def reconcile_open_orders(self) -> None:
         for fill in self.order_manager.reconcile_open_orders():
-            updated = self.position_manager.apply_fill(fill)
-            self.store.save_position(updated)
-            self.store.save_lots(self.lot_manager.lots.values())
-            self.logger.info(
-                "reconcile_fill_applied code=%s side=%s qty=%s price=%s lot_id=%s order_id=%s execution_id=%s",
-                fill.code,
-                fill.side.value,
-                fill.quantity,
-                fill.price,
-                fill.lot_id,
-                fill.order_id,
-                fill.execution_id,
-            )
+            self.apply_reconciled_fill(fill)
+
+    def reconcile_recent_executions_on_startup(self) -> None:
+        if self._startup_recent_executions_reconciled:
+            return
+        self._startup_recent_executions_reconciled = True
+        if not self.config.order.live_trading or not self.config.order.reconcile_recent_executions_on_startup:
+            return
+        for fill in self.order_manager.reconcile_recent_executions():
+            self.apply_reconciled_fill(fill)
+
+    def apply_reconciled_fill(self, fill) -> None:
+        updated = self.position_manager.apply_fill(fill)
+        self.store.save_position(updated)
+        self.store.save_lots(self.lot_manager.lots.values())
+        self.logger.info(
+            "reconcile_fill_applied code=%s side=%s qty=%s price=%s lot_id=%s order_id=%s execution_id=%s",
+            fill.code,
+            fill.side.value,
+            fill.quantity,
+            fill.price,
+            fill.lot_id,
+            fill.order_id,
+            fill.execution_id,
+        )
 
     def evaluate(self, position: PositionState, snapshot: AccountSnapshot, account_risk) -> None:
         if not in_trade_window(self.config):

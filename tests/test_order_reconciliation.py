@@ -190,3 +190,28 @@ def test_duplicate_fill_count_is_logged_for_repeated_execution(tmp_path, caplog)
 
     assert fills == ()
     assert any("duplicate_fill_count=1" in message for message in caplog.messages)
+
+
+def test_startup_recent_reconcile_applies_known_order_fill(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    result = order(quantity=1)
+    store.record_order(OrderResult(result.request, result.order_id, OrderStatus.CANCELED, "stale_status"))
+    fill = TradeFill("005930", "Test", OrderSide.BUY, 1, 10000, "000001", datetime.now(), execution_id="E-START")
+    client = ReconcileClient((fill,))
+    manager = OrderManager(BotConfig(order=OrderConfig(startup_execution_lookup_days=1)), client, store, __import__("logging").getLogger("test"))
+
+    fills = manager.reconcile_recent_executions()
+
+    assert fills
+    assert fills[0].execution_id == "E-START"
+
+
+def test_startup_recent_reconcile_ignores_unmatched_manual_fill(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    fill = TradeFill("005930", "Test", OrderSide.BUY, 1, 10000, "MANUAL-1", datetime.now(), execution_id="E-MANUAL")
+    client = ReconcileClient((fill,))
+    manager = OrderManager(BotConfig(order=OrderConfig(startup_execution_lookup_days=1)), client, store, __import__("logging").getLogger("test"))
+
+    fills = manager.reconcile_recent_executions()
+
+    assert fills == ()

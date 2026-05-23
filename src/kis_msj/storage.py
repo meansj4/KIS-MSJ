@@ -388,6 +388,29 @@ class StateStore:
             orders.append(OrderResult(request, str(row["order_id"]), OrderStatus(str(row["status"])), str(row["message"]), str(row["requested_at"])))
         return tuple(orders)
 
+    def find_order(self, order_id: str) -> OrderResult | None:
+        normalized = _normalize_order_id(order_id)
+        with self._connect() as connection:
+            rows = connection.execute("SELECT * FROM orders").fetchall()
+        for row in rows:
+            if _normalize_order_id(str(row["order_id"])) != normalized:
+                continue
+            request = OrderRequest(
+                str(row["code"]),
+                "",
+                OrderSide(str(row["side"])),
+                int(row["quantity"]),
+                int(row["limit_price"]),
+                str(row["reason"]),
+                str(row["lot_id"]),
+                False,
+                str(row["sell_reason"]),
+                str(row["reentry_type"]),
+                bool(row["cleanup_flag"]),
+            )
+            return OrderResult(request, str(row["order_id"]), OrderStatus(str(row["status"])), str(row["message"]), str(row["requested_at"]))
+        return None
+
     def open_order_count(self, code: str | None = None) -> int:
         placeholders = ", ".join("?" for _ in OPEN_ORDER_STATUSES)
         params: list[object] = [*OPEN_ORDER_STATUSES]
@@ -531,3 +554,8 @@ def _ensure_column(connection: sqlite3.Connection, table: str, column: str, defi
 
 def _parse_timestamp(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
+
+
+def _normalize_order_id(order_id: str) -> str:
+    normalized = str(order_id).strip()
+    return normalized.lstrip("0") or normalized

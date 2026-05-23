@@ -117,4 +117,22 @@ def test_executions_logs_masked_raw_fields_when_enabled(caplog: pytest.LogCaptur
     assert "has_side=True" in message
     assert "has_order_no=True" in message
     assert '"CANO": "***"' in message
+    assert '"order_no_field": "odno"' in message
+    assert '"execution_id_field": "ccld_no"' in message
+    assert '"filled_at_field": "ccld_tmd"' in message
+    assert '"side_field": "sll_buy_dvsn_cd"' in message
+    assert '"code_field": "pdno"' in message
+    assert '"quantity_field": "ccld_qty"' in message
+    assert '"price_field": "ccld_unpr"' in message
     assert "12345678" not in message
+
+
+def test_executions_does_not_log_raw_fields_when_disabled(caplog: pytest.LogCaptureFixture) -> None:
+    client = _client()
+    client.enable_execution_raw_log = False
+    client._request = lambda *args, **kwargs: {"output1": [{"CANO": "12345678", "odno": "000001", "ccld_qty": "1", "ccld_unpr": "10000", "pdno": "005930"}]}
+
+    with caplog.at_level(logging.INFO, logger="kis_msj.kis_client"):
+        client.executions()
+
+    assert not caplog.messages

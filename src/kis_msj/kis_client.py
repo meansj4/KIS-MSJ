@@ -169,12 +169,12 @@ class KisClient:
         if self.enable_execution_raw_log:
             self._log_raw_execution_rows(rows)
         fills = []
+        side_text = ""
         for row in rows:
             quantity = int(float(_first_value(row, ("tot_ccld_qty", "ccld_qty", "ord_qty")) or 0))
             price = int(float(_first_value(row, ("avg_prvs", "avg_pric", "ccld_unpr", "ord_unpr")) or 0))
             if quantity < 1 or price < 1:
                 continue
-            side_text = str(row.get("sll_buy_dvsn_cd_name") or row.get("trad_dvsn_name") or "")
             side = OrderSide.SELL if "매도" in side_text or "sell" in side_text.lower() else OrderSide.BUY
             order_id = str(_first_value(row, ("odno", "ODNO", "orgn_odno")) or "").strip()
             execution_id = _execution_id(row, order_id)
@@ -204,7 +204,7 @@ class KisClient:
             _has_any_field(rows, ("ccld_dtime", "ccld_tmd", "ord_tmd", "ord_dt", "trad_dt", "ccld_dt")),
             _has_any_field(rows, ("sll_buy_dvsn_cd", "sll_buy_dvsn_cd_name", "trad_dvsn_name")),
             _has_any_field(rows, ("odno", "ODNO", "orgn_odno")),
-            json.dumps(sample, ensure_ascii=False, sort_keys=True),
+            json.dumps({**sample, "_field_mapping": _execution_field_mapping(rows)}, ensure_ascii=False, sort_keys=True),
             "order_id,code,side,lot_id,price,quantity,filled_at",
         )
 
@@ -339,8 +339,8 @@ def _execution_id(row: dict[str, Any], order_id: str) -> str:
             return f"EXEC:{value}" if key != "odno" else ""
     code = str(row.get("pdno") or "").zfill(6)
     quantity = str(row.get("tot_ccld_qty") or row.get("ccld_qty") or "").strip()
-    price = str(row.get("avg_prvs") or row.get("ord_unpr") or "").strip()
-    time_text = str(row.get("ord_tmd") or row.get("ccld_dtime") or row.get("ord_dt") or "").strip()
+    price = str(_first_value(row, ("avg_prvs", "avg_pric", "ccld_unpr", "ord_unpr")) or "").strip()
+    time_text = str(_first_value(row, ("ccld_dtime", "ccld_tmd", "ord_tmd", "ord_dt", "trad_dt", "ccld_dt")) or "").strip()
     return f"AGG:{order_id}:{code}:{quantity}:{price}:{time_text}" if order_id and code and quantity and price else ""
 
 
@@ -386,9 +386,28 @@ def _has_any_field(rows: list[dict[str, Any]], keys: tuple[str, ...]) -> bool:
 
 
 def _mask_sensitive_row(row: dict[str, Any]) -> dict[str, Any]:
-    sensitive_parts = ("acnt", "cano", "account", "acct", "appkey", "appsecret")
+    sensitive_parts = ("acnt", "cano", "account", "acct", "appkey", "appsecret", "token", "authorization", "auth")
     masked = {}
     for key, value in row.items():
         key_text = str(key).lower()
         masked[key] = "***" if any(part in key_text for part in sensitive_parts) else value
     return masked
+
+
+def _execution_field_mapping(rows: list[dict[str, Any]]) -> dict[str, str]:
+    return {
+        "order_no_field": _first_present_key(rows, ("odno", "ODNO", "orgn_odno")),
+        "execution_id_field": _first_present_key(rows, ("exec_no", "ccld_no", "cnfm_no", "odno_seq", "ord_seq")),
+        "filled_at_field": _first_present_key(rows, ("ccld_dtime", "ccld_tmd", "ord_tmd", "ord_dt", "trad_dt", "ccld_dt")),
+        "side_field": _first_present_key(rows, ("sll_buy_dvsn_cd", "sll_buy_dvsn_cd_name", "trad_dvsn_name")),
+        "code_field": _first_present_key(rows, ("pdno",)),
+        "quantity_field": _first_present_key(rows, ("tot_ccld_qty", "ccld_qty", "ord_qty")),
+        "price_field": _first_present_key(rows, ("avg_prvs", "avg_pric", "ccld_unpr", "ord_unpr")),
+    }
+
+
+def _first_present_key(rows: list[dict[str, Any]], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        if any(str(row.get(key) or "").strip() for row in rows):
+            return key
+    return ""
