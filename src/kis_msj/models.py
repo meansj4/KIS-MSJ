@@ -32,9 +32,24 @@ class PositionLifecycle(str, Enum):
     NEVER_BOUGHT = "NEVER_BOUGHT"
     HOLDING = "HOLDING"
     WAIT_REENTRY = "WAIT_REENTRY"
+    COOLDOWN_AFTER_CLEANUP = "COOLDOWN_AFTER_CLEANUP"
     REVIEW_REQUIRED = "REVIEW_REQUIRED"
     RISK_BLOCKED = "RISK_BLOCKED"
     SYNC_REQUIRED = "SYNC_REQUIRED"
+
+
+class SellReason(str, Enum):
+    PROFIT_TAKE = "PROFIT_TAKE"
+    CLEANUP_SELL = "CLEANUP_SELL"
+    MANUAL_SYNC = "MANUAL_SYNC"
+    RISK_EXIT = "RISK_EXIT"
+    UNKNOWN = "UNKNOWN"
+
+
+class ReentryType(str, Enum):
+    NONE = "NONE"
+    NORMAL_REENTRY = "NORMAL_REENTRY"
+    TRAILING_REENTRY = "TRAILING_REENTRY"
 
 
 @dataclass(frozen=True)
@@ -106,6 +121,20 @@ class PositionState:
     position_state: str = PositionLifecycle.NEVER_BOUGHT.value
     last_sell_price: int = 0
     reentry_anchor_price: int = 0
+    exit_anchor_price: int = 0
+    cycle_highest_sell_price: int = 0
+    cycle_last_sell_price: int = 0
+    post_exit_high_price: int = 0
+    exit_time: str = ""
+    cleanup_sell_price: int = 0
+    cleanup_time: str = ""
+    cleanup_reentry_cooldown_until: str = ""
+    cleanup_buy_cooldown_until: str = ""
+    last_reentry_type: str = ReentryType.NONE.value
+    trailing_reentry_count_today: int = 0
+    trailing_reentry_count_date: str = ""
+    review_reason: str = ""
+    skip_reason: str = ""
 
 
 @dataclass
@@ -124,6 +153,11 @@ class LotState:
     realized_profit_loss: int = 0
     estimated_fee_tax: int = 0
     status: str = LotStatus.OPEN.value
+    cleanup_candidate: bool = False
+    age_weeks: float = 0.0
+    base_target_profit_rate: float = 0.0
+    effective_target_profit_rate: float = 0.0
+    last_sell_reason: str = SellReason.UNKNOWN.value
 
     @property
     def open_amount(self) -> int:
@@ -143,6 +177,9 @@ class OrderRequest:
     reason: str
     lot_id: str = ""
     market_order: bool = False
+    sell_reason: str = SellReason.UNKNOWN.value
+    reentry_type: str = ReentryType.NONE.value
+    cleanup_flag: bool = False
 
 
 @dataclass(frozen=True)
@@ -164,3 +201,5 @@ class TradeFill:
     filled_at: datetime
     lot_id: str = ""
     execution_id: str = ""
+    sell_reason: str = SellReason.UNKNOWN.value
+    reentry_type: str = ReentryType.NONE.value

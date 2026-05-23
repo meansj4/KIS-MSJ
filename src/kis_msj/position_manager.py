@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from .config import StrategyConfig
 from .lot_manager import LotManager
-from .models import AccountSnapshot, OrderSide, PositionLifecycle, PositionState, TradeFill
+from .models import AccountSnapshot, OrderSide, PositionLifecycle, PositionState, ReentryType, SellReason, TradeFill
 
 
 class PositionManager:
@@ -66,6 +66,16 @@ class PositionManager:
             return PositionLifecycle.REVIEW_REQUIRED.value
         if has_open_lots:
             return PositionLifecycle.HOLDING.value
+        if position.position_state == PositionLifecycle.COOLDOWN_AFTER_CLEANUP.value:
+            cooldown_until = _parse_time(position.cleanup_reentry_cooldown_until)
+            if cooldown_until is not None and datetime.now() < cooldown_until:
+                return PositionLifecycle.COOLDOWN_AFTER_CLEANUP.value
+            if self.config.cleanup_auto_return_to_wait_reentry:
+                return PositionLifecycle.WAIT_REENTRY.value
+            position.needs_review = True
+            position.review_reason = "cleanup_cooldown_complete"
+            position.auto_buy_enabled = False
+            return PositionLifecycle.REVIEW_REQUIRED.value
         if position.last_fill_side == OrderSide.SELL.value or any(lot.code == position.code for lot in self.lot_manager.lots.values()):
             return PositionLifecycle.WAIT_REENTRY.value
         return PositionLifecycle.NEVER_BOUGHT.value
@@ -96,15 +106,53 @@ class PositionManager:
     def apply_fill(self, fill: TradeFill) -> PositionState:
         position = self.get(fill.code, fill.name)
         if fill.side is OrderSide.BUY:
+            starts_new_cycle = not self.lot_manager.open_lots(fill.code)
             lot = self.lot_manager.create_buy_lot(fill)
             position.last_buy_lot_id = lot.lot_id
             position.daily_buy_amount += lot.buy_amount
+            position.position_state = PositionLifecycle.HOLDING.value
+            if starts_new_cycle:
+                position.cycle_highest_sell_price = 0
+                position.cycle_last_sell_price = 0
+                position.exit_anchor_price = 0
+                position.reentry_anchor_price = 0
+                position.exit_time = ""
+                position.cleanup_sell_price = 0
+                position.cleanup_time = ""
+                position.cleanup_reentry_cooldown_until = ""
+            position.last_reentry_type = fill.reentry_type
+            if fill.reentry_type == ReentryType.TRAILING_REENTRY.value:
+                today = fill.filled_at.date().isoformat()
+                if position.trailing_reentry_count_date != today:
+                    position.trailing_reentry_count_today = 0
+                position.trailing_reentry_count_today += 1
+                position.trailing_reentry_count_date = today
+            position.post_exit_high_price = 0
+            position.skip_reason = ""
         else:
             lot = self.lot_manager.apply_sell_fill(fill)
             position.daily_sell_amount += fill.quantity * fill.price
             position.last_sell_price = fill.price
+            sell_reason = lot.last_sell_reason or fill.sell_reason or SellReason.UNKNOWN.value
+            position.cycle_last_sell_price = fill.price
+            position.cycle_highest_sell_price = max(position.cycle_highest_sell_price, fill.price)
+            if sell_reason == SellReason.CLEANUP_SELL.value:
+                position.cleanup_buy_cooldown_until = (fill.filled_at + timedelta(days=self.config.cleanup_buy_cooldown_days)).isoformat(timespec="seconds")
+                position.cleanup_sell_price = fill.price
+                position.cleanup_time = fill.filled_at.isoformat(timespec="seconds")
             if not self.lot_manager.open_lots(fill.code):
-                position.reentry_anchor_price = fill.price
+                if sell_reason == SellReason.CLEANUP_SELL.value:
+                    position.position_state = PositionLifecycle.COOLDOWN_AFTER_CLEANUP.value
+                    position.cleanup_reentry_cooldown_until = (fill.filled_at + timedelta(days=self.config.cleanup_reentry_cooldown_days)).isoformat(timespec="seconds")
+                    position.skip_reason = "cleanup_cooldown"
+                else:
+                    position.position_state = PositionLifecycle.WAIT_REENTRY.value
+                    position.exit_anchor_price = position.cycle_highest_sell_price or fill.price
+                    position.reentry_anchor_price = position.exit_anchor_price
+                    position.cycle_last_sell_price = fill.price
+                    position.post_exit_high_price = position.exit_anchor_price
+                    position.exit_time = fill.filled_at.isoformat(timespec="seconds")
+                    position.skip_reason = "wait_reentry"
         position.last_fill_price = fill.price
         position.last_fill_side = fill.side.value
         position.last_order_id = fill.order_id
@@ -131,3 +179,9 @@ def _stage_for_exposure(exposure: int) -> int:
     if exposure <= 300_000:
         return 4
     return 5
+
+
+def _parse_time(value: str) -> datetime | None:
+    if not value:
+        return None
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)

@@ -157,7 +157,7 @@ class AutoTrader:
         last_lot = self.lot_manager.last_buy_lot(position.code)
         last_lot_drop = (current_price - last_lot.buy_price) / last_lot.buy_price * 100.0 if last_lot else 0.0
         lots = self.lot_manager.open_lots(position.code)
-        context = self.strategy.context(position, current_price)
+        context = self.strategy.context(position, current_price, snapshot)
         lot_summary = ";".join(
             f"{lot.lot_id}:{lot.buy_price}->{lot.target_sell_price}:{lot.profit_pct_at(current_price):.2f}%:{lot.remaining_quantity}"
             for lot in lots
@@ -197,6 +197,23 @@ class AutoTrader:
             last_sell_price=position.last_sell_price,
             reentry_anchor_price=position.reentry_anchor_price,
             reentry_condition_met=context.reentry_condition_met,
+            reentry_type=context.reentry_type,
+            exit_anchor_price=context.exit_anchor_price,
+            cycle_highest_sell_price=context.cycle_highest_sell_price,
+            cycle_last_sell_price=context.cycle_last_sell_price,
+            post_exit_high_price=context.post_exit_high_price,
+            normal_reentry_condition_met=context.normal_reentry_condition_met,
+            trailing_reentry_condition_met=context.trailing_reentry_condition_met,
+            sell_reason=context.sell_reason,
+            realized_pnl_rate=f"{context.realized_pnl_rate:.4f}",
+            net_realized_pnl=context.net_realized_pnl,
+            cleanup_candidate=context.cleanup_candidate,
+            cleanup_loss_budget=context.cleanup_loss_budget,
+            expected_cleanup_loss=context.expected_cleanup_loss,
+            cleanup_allowed=context.cleanup_allowed,
+            cleanup_buy_cooldown_until=context.cleanup_buy_cooldown_until,
+            cleanup_reentry_cooldown_until=context.cleanup_reentry_cooldown_until,
+            review_reason=context.review_reason,
             skip_reason=context.skip_reason,
             open_order_exists=self.store.has_any_open_order(position.code),
             sync_status=position.sync_status,

@@ -72,6 +72,20 @@ class StateStore:
             _ensure_column(connection, "positions", "position_state", "TEXT NOT NULL DEFAULT 'NEVER_BOUGHT'")
             _ensure_column(connection, "positions", "last_sell_price", "INTEGER NOT NULL DEFAULT 0")
             _ensure_column(connection, "positions", "reentry_anchor_price", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "positions", "exit_anchor_price", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "positions", "cycle_highest_sell_price", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "positions", "cycle_last_sell_price", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "positions", "post_exit_high_price", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "positions", "exit_time", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "positions", "cleanup_sell_price", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "positions", "cleanup_time", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "positions", "cleanup_reentry_cooldown_until", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "positions", "cleanup_buy_cooldown_until", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "positions", "last_reentry_type", "TEXT NOT NULL DEFAULT 'NONE'")
+            _ensure_column(connection, "positions", "trailing_reentry_count_today", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "positions", "trailing_reentry_count_date", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "positions", "review_reason", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "positions", "skip_reason", "TEXT NOT NULL DEFAULT ''")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS lots (
@@ -88,10 +102,20 @@ class StateStore:
                     partial_sold INTEGER NOT NULL,
                     realized_profit_loss INTEGER NOT NULL,
                     estimated_fee_tax INTEGER NOT NULL,
-                    status TEXT NOT NULL
+                    status TEXT NOT NULL,
+                    cleanup_candidate INTEGER NOT NULL DEFAULT 0,
+                    age_weeks REAL NOT NULL DEFAULT 0,
+                    base_target_profit_rate REAL NOT NULL DEFAULT 0,
+                    effective_target_profit_rate REAL NOT NULL DEFAULT 0,
+                    last_sell_reason TEXT NOT NULL DEFAULT 'UNKNOWN'
                 )
                 """
             )
+            _ensure_column(connection, "lots", "cleanup_candidate", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "lots", "age_weeks", "REAL NOT NULL DEFAULT 0")
+            _ensure_column(connection, "lots", "base_target_profit_rate", "REAL NOT NULL DEFAULT 0")
+            _ensure_column(connection, "lots", "effective_target_profit_rate", "REAL NOT NULL DEFAULT 0")
+            _ensure_column(connection, "lots", "last_sell_reason", "TEXT NOT NULL DEFAULT 'UNKNOWN'")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS fills (
@@ -105,11 +129,15 @@ class StateStore:
                     filled_at TEXT NOT NULL,
                     lot_id TEXT NOT NULL,
                     execution_id TEXT NOT NULL DEFAULT '',
+                    sell_reason TEXT NOT NULL DEFAULT 'UNKNOWN',
+                    reentry_type TEXT NOT NULL DEFAULT 'NONE',
                     UNIQUE(order_id, code, side, quantity, price, filled_at, lot_id)
                 )
                 """
             )
             _ensure_column(connection, "fills", "execution_id", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "fills", "sell_reason", "TEXT NOT NULL DEFAULT 'UNKNOWN'")
+            _ensure_column(connection, "fills", "reentry_type", "TEXT NOT NULL DEFAULT 'NONE'")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS orders (
@@ -122,12 +150,18 @@ class StateStore:
                     reason TEXT NOT NULL,
                     lot_id TEXT NOT NULL,
                     message TEXT NOT NULL,
+                    sell_reason TEXT NOT NULL DEFAULT 'UNKNOWN',
+                    reentry_type TEXT NOT NULL DEFAULT 'NONE',
+                    cleanup_flag INTEGER NOT NULL DEFAULT 0,
                     requested_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
             _ensure_column(connection, "orders", "requested_at", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "orders", "sell_reason", "TEXT NOT NULL DEFAULT 'UNKNOWN'")
+            _ensure_column(connection, "orders", "reentry_type", "TEXT NOT NULL DEFAULT 'NONE'")
+            _ensure_column(connection, "orders", "cleanup_flag", "INTEGER NOT NULL DEFAULT 0")
 
     def load_positions(self) -> dict[str, PositionState]:
         with self._connect() as connection:
@@ -140,6 +174,9 @@ class StateStore:
             data.setdefault("position_state", "NEVER_BOUGHT")
             data.setdefault("last_sell_price", 0)
             data.setdefault("reentry_anchor_price", 0)
+            data.setdefault("last_reentry_type", "NONE")
+            data.setdefault("review_reason", "")
+            data.setdefault("skip_reason", "")
             for key in ("needs_review", "auto_buy_enabled", "danger_state", "lot_quantity_mismatch", "trading_paused"):
                 data[key] = bool(data[key])
             positions[data["code"]] = PositionState(**data)
@@ -153,6 +190,13 @@ class StateStore:
             data = dict(row)
             data["sell_completed"] = bool(data["sell_completed"])
             data["partial_sold"] = bool(data["partial_sold"])
+            data.setdefault("cleanup_candidate", 0)
+            data["cleanup_candidate"] = bool(data["cleanup_candidate"])
+            if not data.get("base_target_profit_rate"):
+                data["base_target_profit_rate"] = data.get("target_profit_pct", 0.0) / 100.0
+            if not data.get("effective_target_profit_rate"):
+                data["effective_target_profit_rate"] = data.get("base_target_profit_rate", data.get("target_profit_pct", 0.0) / 100.0)
+            data.setdefault("last_sell_reason", "UNKNOWN")
             lots[data["lot_id"]] = LotState(**data)
         return lots
 
@@ -190,8 +234,8 @@ class StateStore:
         with self._connect() as connection:
             connection.execute(
                 """
-                INSERT INTO orders (order_id, code, side, quantity, limit_price, status, reason, lot_id, message, requested_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO orders (order_id, code, side, quantity, limit_price, status, reason, lot_id, message, sell_reason, reentry_type, cleanup_flag, requested_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(order_id) DO UPDATE SET status=excluded.status, message=excluded.message, updated_at=CURRENT_TIMESTAMP
                 """,
                 (
@@ -204,6 +248,9 @@ class StateStore:
                     request.reason,
                     request.lot_id,
                     result.message,
+                    request.sell_reason,
+                    request.reentry_type,
+                    int(request.cleanup_flag),
                     requested_at,
                 ),
             )
@@ -219,8 +266,8 @@ class StateStore:
                     return False
             cursor = connection.execute(
                 """
-                INSERT OR IGNORE INTO fills (code, name, side, quantity, price, order_id, filled_at, lot_id, execution_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT OR IGNORE INTO fills (code, name, side, quantity, price, order_id, filled_at, lot_id, execution_id, sell_reason, reentry_type)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     fill.code,
@@ -232,6 +279,8 @@ class StateStore:
                     fill.filled_at.isoformat(),
                     fill.lot_id,
                     fill.execution_id,
+                    fill.sell_reason,
+                    fill.reentry_type,
                 ),
             )
         return cursor.rowcount > 0
@@ -253,6 +302,10 @@ class StateStore:
                 int(row["limit_price"]),
                 str(row["reason"]),
                 str(row["lot_id"]),
+                False,
+                str(row["sell_reason"]),
+                str(row["reentry_type"]),
+                bool(row["cleanup_flag"]),
             )
             orders.append(OrderResult(request, str(row["order_id"]), OrderStatus(str(row["status"])), str(row["message"])))
         return tuple(orders)

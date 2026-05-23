@@ -65,6 +65,20 @@ class StrategyConfig:
     pnl_minus_threshold: float = -0.01
     pnl_plus_threshold: float = 0.01
     reentry_drop_rate: float = 0.04
+    normal_reentry_drop_rate: float = 0.04
+    trailing_activation_gain: float = 0.05
+    trailing_reentry_drop_rate: float = 0.08
+    min_reentry_wait_minutes: int = 60
+    max_trailing_reentry_per_day: int = 1
+    reentry_buy_cooldown_minutes: int = 60
+    age_decay_rate: float = 0.005
+    cleanup_enabled: bool = False
+    cleanup_min_age_weeks: int = 12
+    cleanup_min_target_rate: float = -0.04
+    cleanup_profit_offset_ratio: float = 0.3
+    cleanup_buy_cooldown_days: int = 3
+    cleanup_reentry_cooldown_days: int = 5
+    cleanup_auto_return_to_wait_reentry: bool = False
     exposure_buy_bands: tuple[BuyBand, ...] = (
         BuyBand(1, 60_000, 4.0, 30_000),
         BuyBand(60_001, 120_000, 5.0, 30_000),

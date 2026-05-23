@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from .config import StrategyConfig
-from .models import LotState, LotStatus, OrderSide, TradeFill
+from .models import LotState, LotStatus, SellReason, TradeFill
 
 
 class LotManager:
@@ -51,7 +51,7 @@ class LotManager:
 
     def sellable_lots(self, code: str, current_price: int, exposure: int, target_pct: float | None = None) -> list[LotState]:
         target_pct = self.target_profit_pct(exposure) if target_pct is None else target_pct
-        lots = [lot for lot in self.open_lots(code) if lot.profit_pct_at(current_price) >= target_pct]
+        lots = [lot for lot in self.open_lots(code) if lot.profit_pct_at(current_price) / 100.0 >= self.effective_target_profit_rate(lot)]
         return sorted(
             lots,
             key=lambda lot: (
@@ -77,6 +77,8 @@ class LotManager:
             remaining_quantity=fill.quantity,
             target_profit_pct=target_pct,
             target_sell_price=round_price(fill.price * (1.0 + target_pct / 100.0)),
+            base_target_profit_rate=target_pct / 100.0,
+            effective_target_profit_rate=target_pct / 100.0,
         )
         self.lots[lot.lot_id] = lot
         return lot
@@ -91,10 +93,32 @@ class LotManager:
         lot.remaining_quantity -= sell_quantity
         lot.realized_profit_loss += gross_profit - fee_tax
         lot.estimated_fee_tax += fee_tax
+        if fill.sell_reason and fill.sell_reason != SellReason.UNKNOWN.value:
+            lot.last_sell_reason = fill.sell_reason
+        elif gross_profit - fee_tax >= 0:
+            lot.last_sell_reason = SellReason.PROFIT_TAKE.value
+        else:
+            lot.last_sell_reason = SellReason.CLEANUP_SELL.value
         lot.partial_sold = lot.remaining_quantity > 0
         lot.sell_completed = lot.remaining_quantity == 0
         lot.status = LotStatus.CLOSED.value if lot.sell_completed else LotStatus.PARTIAL_SOLD.value
         return lot
+
+    def age_weeks(self, lot: LotState, now: datetime | None = None) -> float:
+        now = now or datetime.now()
+        bought_at = datetime.fromisoformat(lot.buy_filled_at.replace("Z", "+00:00")).replace(tzinfo=None)
+        return max(0.0, (now - bought_at).total_seconds() / (7 * 24 * 60 * 60))
+
+    def effective_target_profit_rate(self, lot: LotState, now: datetime | None = None) -> float:
+        base = lot.base_target_profit_rate or lot.target_profit_pct / 100.0
+        return base - self.age_weeks(lot, now) * self.config.age_decay_rate
+
+    def update_lot_target_metadata(self, lot: LotState, current_price: int, now: datetime | None = None) -> None:
+        lot.age_weeks = self.age_weeks(lot, now)
+        lot.base_target_profit_rate = lot.base_target_profit_rate or lot.target_profit_pct / 100.0
+        lot.effective_target_profit_rate = self.effective_target_profit_rate(lot, now)
+        realized_pnl_rate = lot.profit_pct_at(current_price) / 100.0
+        lot.cleanup_candidate = lot.effective_target_profit_rate < 0 and realized_pnl_rate < 0
 
 
 def round_price(price: float) -> int:

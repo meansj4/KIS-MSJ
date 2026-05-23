@@ -29,11 +29,23 @@ class OrderManager:
             limit_price = self.sell_limit_price(current_price)
         if quantity < 1:
             return None
-        return OrderRequest(position.code, position.name, action.side, quantity, limit_price, action.reason, action.lot_id, False)
+        return OrderRequest(
+            position.code,
+            position.name,
+            action.side,
+            quantity,
+            limit_price,
+            action.reason,
+            action.lot_id,
+            False,
+            action.sell_reason,
+            action.reentry_type,
+            action.cleanup_flag,
+        )
 
     def submit_and_confirm(self, request: OrderRequest) -> tuple[OrderResult, TradeFill | None]:
         self.logger.info(
-            "order_request live=%s code=%s side=%s qty=%s limit=%s lot_id=%s reason=%s",
+            "order_request live=%s code=%s side=%s qty=%s limit=%s lot_id=%s reason=%s sell_reason=%s reentry_type=%s cleanup_flag=%s",
             self.config.order.live_trading,
             request.code,
             request.side.value,
@@ -41,11 +53,14 @@ class OrderManager:
             request.limit_price,
             request.lot_id,
             request.reason,
+            request.sell_reason,
+            request.reentry_type,
+            request.cleanup_flag,
         )
         if not self.config.order.live_trading:
             result = OrderResult(request, f"PAPER-{datetime.now().strftime('%Y%m%d%H%M%S%f')}", OrderStatus.FILLED)
             lot_id = request.lot_id or f"{request.code}-{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
-            fill = TradeFill(request.code, request.name, request.side, request.quantity, request.limit_price, result.order_id, datetime.now(), lot_id, result.order_id)
+            fill = TradeFill(request.code, request.name, request.side, request.quantity, request.limit_price, result.order_id, datetime.now(), lot_id, result.order_id, request.sell_reason, request.reentry_type)
             self.store.record_order(result)
             self.store.record_fill(fill)
             return result, fill
@@ -128,6 +143,8 @@ class OrderManager:
                 fill.filled_at,
                 fill.lot_id,
                 f"{fill.execution_id}:delta:{already_filled}->{fill.quantity}",
+                fill.sell_reason,
+                fill.reentry_type,
             )
         return fill
 
@@ -141,7 +158,7 @@ class OrderManager:
         matches = []
         for fill in self.client.executions():
             if _normalize_order_id(fill.order_id) == order_id and fill.code == request.code:
-                matches.append(TradeFill(fill.code, fill.name, fill.side, fill.quantity, fill.price, fill.order_id, fill.filled_at, request.lot_id, fill.execution_id))
+                matches.append(TradeFill(fill.code, fill.name, fill.side, fill.quantity, fill.price, fill.order_id, fill.filled_at, request.lot_id, fill.execution_id, request.sell_reason, request.reentry_type))
         return matches
 
     def _record_filled(self, result: OrderResult, fill: TradeFill) -> tuple[OrderResult, TradeFill]:
