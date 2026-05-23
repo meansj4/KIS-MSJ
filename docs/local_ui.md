@@ -72,10 +72,98 @@ kis-lot-ui --config config\lot_auto_trader.json
 - Lots: OPEN/CLOSED LOT 현시, 손익률, stale/cleanup 후보, dedupe 관련 파생 정보
 - Orders/Fills: 주문/체결 테이블, `dedupe_key_type`, duplicate 표시
 - Logs: 기존 log 파일 tail, keyword/level/event 필터 API, 민감정보 마스킹
-- Config: JSON 조회, validation, backup 후 atomic save, 저장 이력 기록
+- Config: 항목별 설명/단위/입력 form, diff, validation, backup 후 atomic save, 저장 이력 기록
 - Runtime Control: 전체 주문/매수/매도/cleanup/reentry pause, emergency stop
 - Execution Mapping Check: 첫 실체결 raw mapping 검증 로그 요약
 - Decision Preview: 주문 API 호출 없이 현재 DB/config/가격 기준 dry-run 후보 확인
+
+## 테이블 정렬
+
+Stocks, Lots, Orders/Fills 화면의 테이블은 컬럼 헤더 클릭으로 정렬할 수 있습니다.
+
+- 첫 클릭: 오름차순
+- 두 번째 클릭: 내림차순
+- 세 번째 클릭: 정렬 해제
+
+현재 정렬 컬럼은 `▲` 또는 `▼` 로 표시됩니다. 정렬은 브라우저 화면에서만 수행되며 DB 값이나 전략 판단에는 영향을 주지 않습니다.
+
+정렬 방식:
+
+- 숫자처럼 보이는 값은 numeric sort
+- `YYYY-MM-DD...` 형태의 날짜/시간 값은 timestamp sort
+- `true`/`false` 값은 boolean sort
+- 빈 값은 정렬 방향과 관계없이 아래쪽에 배치
+
+현재 구현은 client-side sort입니다. 종목/LOT 수가 크게 늘어나면 같은 API 형태를 유지하면서 server-side sort로 확장할 수 있습니다.
+
+기본 정렬:
+
+- Stocks: `position_state` 기준
+- Lots: `unrealized_pnl_rate` 낮은 순
+- Orders: `requested_at` 최신순
+- Fills: `filled_at` 최신순
+
+## Config 화면
+
+Config 탭은 기본적으로 원본 JSON 편집기가 아니라 항목별 form으로 표시됩니다.
+
+각 항목은 다음 정보를 표시합니다.
+
+- 한글 이름
+- config key
+- 현재 값
+- 수정 입력란
+- 단위
+- 설명
+- 저장 형식
+- 재시작 필요 여부
+- 위험 설정 여부
+
+섹션:
+
+- Strategy
+- Risk
+- Order
+- Market Hours
+- Paths / Account / Upstream
+
+원본 JSON은 `고급 / 원본 JSON 보기` 로 접어 두었습니다. raw JSON을 직접 수정해도 validation, diff, backup, atomic save 흐름은 동일하게 적용됩니다.
+
+### Percent / Decimal 변환
+
+일부 값은 UI 표시와 config 저장 단위가 다릅니다.
+
+- `decimal_rate`: UI에서는 percent로 보여주고 저장 시 100으로 나눈 소수로 저장합니다.
+  - 예: `normal_reentry_drop_rate` UI `4.0%` -> config `0.04`
+  - 예: `pnl_minus_threshold` UI `-1.0%` -> config `-0.01`
+- `percent_value`: config 값 자체가 percent입니다.
+  - 예: `estimated_fee_tax_pct` UI `0.25%` -> config `0.25`
+  - 예: `exposure_buy_bands.drop_pct` UI `4.0%` -> config `4.0`
+
+혼동을 줄이기 위해 Config schema에 `display_format` 과 `config_format` 을 분리해 두었습니다.
+
+### Config 저장 흐름
+
+1. 항목별 form에서 값 수정
+2. `변경사항 확인` 클릭
+3. 변경 전/후 diff 표시
+4. validation 수행
+5. 위험 설정 변경 여부 표시
+6. `백업 후 저장` 클릭
+7. `config/backups/` 에 백업 생성
+8. atomic save
+9. 저장 후 다시 읽어 round-trip 검증
+10. `config/config_change_history.jsonl` 에 변경 이력 기록
+
+위험 설정은 저장 전 이중 확인이 필요합니다.
+
+- `order.live_trading`
+- `order.emergency_market_order`
+- `strategy.cleanup_enabled`
+- `strategy.cleanup_auto_return_to_wait_reentry`
+- `order.enable_execution_raw_log`
+- `order.cancel_unfilled_on_start`
+- `risk.block_on_lot_mismatch`
 
 ## 표준 API 구분
 

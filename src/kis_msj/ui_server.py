@@ -36,9 +36,20 @@ INDEX_HTML = r"""<!doctype html>
     .metric strong { display: block; font-size: 12px; color: #59636e; }
     table { border-collapse: collapse; width: 100%; font-size: 13px; }
     th, td { border-bottom: 1px solid #e6ebf0; padding: 7px; text-align: left; white-space: nowrap; }
-    th { background: #f1f4f7; position: sticky; top: 0; }
+    th { background: #f1f4f7; position: sticky; top: 0; cursor: pointer; user-select: none; }
+    th:hover { background: #e5ebf1; }
     .warn { color: #a15c00; font-weight: 700; }
     .bad { color: #b42318; font-weight: 700; }
+    .field { display: grid; grid-template-columns: minmax(180px, 260px) 1fr minmax(80px, 120px); gap: 10px; align-items: start; border-bottom: 1px solid #e6ebf0; padding: 10px 0; }
+    .field label { font-weight: 700; }
+    .field small { display: block; color: #59636e; margin-top: 4px; line-height: 1.35; }
+    .field input, .field textarea, .field select { width: 100%; box-sizing: border-box; }
+    .field textarea { min-height: 90px; }
+    .sectionNav { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+    .critical, .dangerText { color: #b42318; font-weight: 700; }
+    .changed { background: #fff7db; }
+    .configActions { position: sticky; bottom: 0; background: white; border-top: 1px solid #d7dde3; padding: 10px 0; }
+    .sortHint { color: #59636e; font-size: 12px; margin: 4px 0 10px; }
     pre { background: #0b1020; color: #d6e2ff; padding: 12px; border-radius: 6px; overflow: auto; max-height: 420px; }
     input, textarea, select { padding: 7px; border: 1px solid #b8c2cc; border-radius: 6px; }
     textarea { width: 100%; min-height: 240px; font-family: ui-monospace, Consolas, monospace; }
@@ -68,11 +79,57 @@ async function api(path, options={}) {
   return data;
 }
 function esc(v) { return String(v ?? '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
-function table(rows) {
+const sortState = {};
+let configOriginal = null;
+let configDraft = null;
+let configSchema = null;
+function table(rows, tableId='default', opts={}) {
   if (!rows || !rows.length) return '<p>No data</p>';
   const keys = Object.keys(rows[0]);
-  return '<table><thead><tr>' + keys.map(k => `<th>${esc(k)}</th>`).join('') + '</tr></thead><tbody>' +
-    rows.map(r => '<tr>' + keys.map(k => `<td>${esc(r[k])}</td>`).join('') + '</tr>').join('') + '</tbody></table>';
+  const state = sortState[tableId] || opts.defaultSort || null;
+  const sorted = state ? sortRows(rows, state.key, state.dir) : [...rows];
+  return '<div class="sortHint">컬럼 헤더를 클릭하면 오름차순, 내림차순, 기본순으로 전환됩니다.</div><table data-table-id="'+esc(tableId)+'"><thead><tr>' +
+    keys.map(k => `<th onclick="sortTable('${esc(tableId)}','${esc(k)}')">${esc(k)}${state && state.key === k ? (state.dir === 'asc' ? ' ▲' : ' ▼') : ''}</th>`).join('') +
+    '</tr></thead><tbody>' +
+    sorted.map(r => '<tr>' + keys.map(k => `<td>${esc(r[k])}</td>`).join('') + '</tr>').join('') + '</tbody></table>';
+}
+function sortTable(tableId, key) {
+  const current = sortState[tableId];
+  if (!current || current.key !== key) sortState[tableId] = {key, dir:'asc'};
+  else if (current.dir === 'asc') sortState[tableId] = {key, dir:'desc'};
+  else delete sortState[tableId];
+  reloadCurrent();
+}
+function sortRows(rows, key, dir) {
+  const multiplier = dir === 'desc' ? -1 : 1;
+  return [...rows].sort((a,b) => {
+    const av = sortValue(a[key]), bv = sortValue(b[key]);
+    if (av.empty && bv.empty) return 0;
+    if (av.empty) return 1;
+    if (bv.empty) return -1;
+    if (av.value < bv.value) return -1 * multiplier;
+    if (av.value > bv.value) return 1 * multiplier;
+    return 0;
+  });
+}
+function sortValue(v) {
+  if (v === null || v === undefined || v === '') return {empty:true, value:''};
+  if (typeof v === 'boolean') return {empty:false, value:v ? 1 : 0};
+  if (typeof v === 'number') return {empty:false, value:v};
+  const s = String(v).trim();
+  if (/^(true|false)$/i.test(s)) return {empty:false, value:/^true$/i.test(s) ? 1 : 0};
+  if (/^-?\d+(\.\d+)?$/.test(s)) return {empty:false, value:Number(s)};
+  const t = Date.parse(s);
+  if (!Number.isNaN(t) && /\d{4}-\d{2}-\d{2}/.test(s)) return {empty:false, value:t};
+  return {empty:false, value:s.toLowerCase()};
+}
+let currentView = 'dashboard';
+async function reloadCurrent() {
+  if (currentView === 'stocks') return loadStocks();
+  if (currentView === 'lots') return loadLots();
+  if (currentView === 'orders') return loadOrders();
+  if (currentView === 'config') return renderConfig();
+  return loadDashboard();
 }
 function metrics(obj) {
   return '<div class="grid">' + Object.entries(obj || {}).map(([k,v]) => `<div class="metric"><strong>${esc(k)}</strong>${esc(typeof v === 'object' ? JSON.stringify(v) : v)}</div>`).join('') + '</div>';
@@ -83,15 +140,41 @@ async function refreshBanner() {
   document.getElementById('banner').innerHTML = msgs.length ? `<div class="danger">${msgs.map(esc).join('<br>')}</div>` : '';
 }
 async function loadDashboard() {
+  currentView = 'dashboard';
   const s = await api('/api/status');
   document.getElementById('content').innerHTML = `<h2>Dashboard</h2><h3>Bot</h3>${metrics(s.bot)}<h3>Risk</h3>${metrics(s.account_risk)}<h3>Position States</h3>${metrics(s.position_state_counts)}<h3>Orders</h3>${metrics(s.order_status_counts)}<h3>Warnings</h3>${table(s.warnings)}<h3>Runtime</h3>${metrics(s.runtime_control)}`;
 }
-async function loadStocks() { document.getElementById('content').innerHTML = '<h2>Stocks</h2>' + table(await api('/api/stocks')); }
-async function loadLots() { document.getElementById('content').innerHTML = '<h2>Lots</h2>' + table(await api('/api/lots')); }
-async function loadOrders() { const o=await api('/api/orders'), f=await api('/api/fills'); document.getElementById('content').innerHTML = '<h2>Orders</h2>'+table(o)+'<h2>Fills</h2>'+table(f); }
-async function loadLogs() { const l=await api('/api/logs/tail?limit=300'); document.getElementById('content').innerHTML = '<h2>Logs</h2><pre>'+esc(l.lines.join('\n'))+'</pre>'; }
-async function loadExecution() { const e=await api('/api/execution-mapping/status'); document.getElementById('content').innerHTML = '<h2>Execution Mapping Check</h2>'+metrics(e)+'<pre>'+esc(e.raw_log_line || '')+'</pre>'; }
+async function loadStocks() {
+  currentView = 'stocks';
+  const rows = await api('/api/stocks');
+  if (!sortState.stocks) sortState.stocks = {key:'position_state', dir:'asc'};
+  document.getElementById('content').innerHTML = '<h2>Stocks</h2><input id="stockFilter" placeholder="code/name/status filter" oninput="renderStockTable()" value="'+esc(window.stockFilterValue || '')+'"><div id="stockTable"></div>';
+  window.stockRows = rows;
+  renderStockTable();
+}
+function renderStockTable() {
+  window.stockFilterValue = document.getElementById('stockFilter')?.value || '';
+  const q = window.stockFilterValue.toLowerCase();
+  const rows = (window.stockRows || []).filter(r => !q || JSON.stringify(r).toLowerCase().includes(q));
+  document.getElementById('stockTable').innerHTML = table(rows, 'stocks');
+}
+async function loadLots() {
+  currentView = 'lots';
+  const rows = await api('/api/lots');
+  if (!sortState.lots) sortState.lots = {key:'unrealized_pnl_rate', dir:'asc'};
+  document.getElementById('content').innerHTML = '<h2>Lots</h2>' + table(rows, 'lots');
+}
+async function loadOrders() {
+  currentView = 'orders';
+  const o=await api('/api/orders'), f=await api('/api/fills');
+  if (!sortState.orders) sortState.orders = {key:'requested_at', dir:'desc'};
+  if (!sortState.fills) sortState.fills = {key:'filled_at', dir:'desc'};
+  document.getElementById('content').innerHTML = '<h2>Orders</h2>'+table(o, 'orders')+'<h2>Fills</h2>'+table(f, 'fills');
+}
+async function loadLogs() { currentView = 'logs'; const l=await api('/api/logs/tail?limit=300'); document.getElementById('content').innerHTML = '<h2>Logs</h2><pre>'+esc(l.lines.join('\n'))+'</pre>'; }
+async function loadExecution() { currentView = 'execution'; const e=await api('/api/execution-mapping/status'); document.getElementById('content').innerHTML = '<h2>Execution Mapping Check</h2>'+metrics(e)+'<pre>'+esc(e.raw_log_line || '')+'</pre>'; }
 async function loadRuntime() {
+  currentView = 'runtime';
   const r=await api('/api/runtime');
   document.getElementById('content').innerHTML = `<h2>Runtime Control</h2>${metrics(r)}
   <p><button class="dangerBtn" onclick="runtime('/api/runtime/emergency-stop')">Emergency Stop</button>
@@ -101,11 +184,96 @@ async function loadRuntime() {
 }
 async function runtime(path) { await api(path, {method:'POST'}); await loadRuntime(); }
 async function loadConfig() {
-  const c = await api('/api/config');
-  document.getElementById('content').innerHTML = `<h2>Config</h2><p><button onclick="validateConfig()">Validate</button> <button onclick="saveConfig()">Save edited JSON</button></p><textarea id="cfg">${esc(JSON.stringify(c, null, 2))}</textarea><pre id="cfgResult"></pre>`;
+  currentView = 'config';
+  configOriginal = await api('/api/config');
+  configDraft = JSON.parse(JSON.stringify(configOriginal));
+  configSchema = await api('/api/config/schema');
+  renderConfig();
 }
-async function validateConfig() { const body = document.getElementById('cfg').value; const r = await api('/api/config/validate', {method:'POST', body}); document.getElementById('cfgResult').textContent = JSON.stringify(r, null, 2); }
-async function saveConfig() { if (!confirm('config backup 후 atomic 저장합니다. 계속할까요?')) return; const body = document.getElementById('cfg').value; const r = await api('/api/config', {method:'PATCH', body}); document.getElementById('cfgResult').textContent = JSON.stringify(r, null, 2); }
+function renderConfig(sectionName) {
+  if (!configSchema || !configDraft) return;
+  const sections = Object.keys(configSchema.sections);
+  const selected = sectionName || window.configSection || sections[0];
+  window.configSection = selected;
+  const nav = '<div class="sectionNav">' + sections.map(s => `<button class="${s===selected?'primary':''}" onclick="renderConfig('${esc(s)}')">${esc(s)}</button>`).join('') + '</div>';
+  const fields = (configSchema.sections[selected] || []).map(renderConfigField).join('');
+  const raw = `<details><summary>고급 / 원본 JSON 보기</summary><p class="warn">원본 JSON 직접 편집도 같은 validation, diff, backup, atomic save를 거칩니다.</p><textarea id="rawConfig" oninput="rawConfigChanged()">${esc(JSON.stringify(configDraft, null, 2))}</textarea></details>`;
+  document.getElementById('content').innerHTML = `<h2>Config</h2>${nav}<div>${fields}</div>${raw}<div class="configActions"><button onclick="previewConfigChanges()">변경사항 확인</button> <button class="primary" onclick="saveConfigForm()">백업 후 저장</button> <button onclick="loadConfig()">되돌리기</button><pre id="cfgResult"></pre></div>`;
+}
+function renderConfigField(meta) {
+  const current = getPath(configDraft, meta.key);
+  const original = getPath(configOriginal, meta.key);
+  const changed = JSON.stringify(current) !== JSON.stringify(original);
+  const danger = meta.danger_confirm_required ? '<span class="critical"> 이중 확인 필요</span>' : '';
+  let input = '';
+  if (meta.type === 'boolean') input = `<select onchange="configInputChanged('${esc(meta.key)}', this.value, '${esc(meta.config_format)}')"><option value="true" ${current===true?'selected':''}>true</option><option value="false" ${current===false?'selected':''}>false</option></select>`;
+  else if (meta.type === 'json') input = `<textarea onchange="configInputChanged('${esc(meta.key)}', this.value, 'json')">${esc(JSON.stringify(current, null, 2))}</textarea>`;
+  else input = `<input type="${meta.type === 'time' ? 'time' : 'text'}" value="${esc(toDisplay(current, meta))}" onchange="configInputChanged('${esc(meta.key)}', this.value, '${esc(meta.config_format)}')">`;
+  return `<div class="field ${changed ? 'changed' : ''}"><div><label>${esc(meta.label_ko)}</label><small>${esc(meta.key)}</small></div><div>${input}<small>${esc(meta.description_ko || '')}${danger}<br>단위: ${esc(meta.unit || '')} / 저장 형식: ${esc(meta.config_format || '')} / 재시작 필요: ${meta.requires_restart ? '예' : '아니오'}</small></div><div><small>현재값</small>${esc(toDisplay(original, meta))}</div></div>`;
+}
+function getPath(obj, path) { return path.split('.').reduce((acc,k) => acc == null ? undefined : acc[k], obj); }
+function setPath(obj, path, value) { const parts = path.split('.'); let target = obj; parts.slice(0,-1).forEach(k => { if (!target[k]) target[k] = {}; target = target[k]; }); target[parts.at(-1)] = value; }
+function toDisplay(value, meta) {
+  if (value === null || value === undefined) return '';
+  if (meta.display_format === 'decimal_percent') return Number(value) * 100;
+  if (meta.type === 'json') return JSON.stringify(value, null, 2);
+  return value;
+}
+function fromDisplay(value, format) {
+  if (format === 'boolean') return value === true || value === 'true';
+  if (format === 'json') return JSON.parse(value);
+  if (format === 'decimal_rate') return Number(value) / 100;
+  if (format === 'integer') return value === '' ? null : parseInt(value, 10);
+  if (format === 'number' || format === 'percent_value') return value === '' ? null : Number(value);
+  if (format === 'nullable_integer') return value === '' ? null : parseInt(value, 10);
+  return value;
+}
+function configInputChanged(path, value, format) {
+  try {
+    setPath(configDraft, path, fromDisplay(value, format));
+    renderConfig(window.configSection);
+  } catch (err) {
+    document.getElementById('cfgResult').textContent = '입력값 오류: ' + err.message;
+  }
+}
+function rawConfigChanged() {
+  try {
+    configDraft = JSON.parse(document.getElementById('rawConfig').value);
+  } catch (err) {
+    document.getElementById('cfgResult').textContent = 'JSON 오류: ' + err.message;
+  }
+}
+function diffConfig(before, after, prefix='') {
+  const keys = new Set([...Object.keys(before || {}), ...Object.keys(after || {})]);
+  const out = [];
+  keys.forEach(k => {
+    const path = prefix ? prefix + '.' + k : k;
+    const a = before ? before[k] : undefined, b = after ? after[k] : undefined;
+    if (a && b && typeof a === 'object' && typeof b === 'object' && !Array.isArray(a) && !Array.isArray(b)) out.push(...diffConfig(a,b,path));
+    else if (JSON.stringify(a) !== JSON.stringify(b)) out.push({key:path, before:a, after:b});
+  });
+  return out;
+}
+async function previewConfigChanges() {
+  const changes = diffConfig(configOriginal, configDraft);
+  const validation = await api('/api/config/validate', {method:'POST', body:JSON.stringify(configDraft)});
+  const dangerKeys = new Set(configSchema.danger_confirm_keys || []);
+  const danger = changes.filter(c => dangerKeys.has(c.key)).map(c => c.key);
+  document.getElementById('cfgResult').textContent = JSON.stringify({valid: validation.valid, errors: validation.errors, danger_confirm_required: danger, changes}, null, 2);
+}
+async function saveConfigForm() {
+  const changes = diffConfig(configOriginal, configDraft);
+  const dangerKeys = new Set(configSchema.danger_confirm_keys || []);
+  const danger = changes.filter(c => dangerKeys.has(c.key)).map(c => c.key);
+  const validation = await api('/api/config/validate', {method:'POST', body:JSON.stringify(configDraft)});
+  if (!validation.valid) { document.getElementById('cfgResult').textContent = JSON.stringify(validation, null, 2); return; }
+  if (danger.length && !confirm('위험 설정 변경이 포함되어 있습니다: ' + danger.join(', ') + '\n계속할까요?')) return;
+  if (!confirm('config/backups에 백업을 만들고 atomic save를 수행합니다. 계속할까요?')) return;
+  const r = await api('/api/config', {method:'PATCH', body:JSON.stringify(configDraft)});
+  document.getElementById('cfgResult').textContent = JSON.stringify({saved:r, changes}, null, 2);
+  configOriginal = await api('/api/config');
+  configDraft = JSON.parse(JSON.stringify(configOriginal));
+}
 refreshBanner().then(loadDashboard);
 </script>
 </body>
@@ -126,7 +294,7 @@ class UIHandler(BaseHTTPRequestHandler):
             routes = {
                 "/api/status": self.service.status,
                 "/api/config": self.service.raw_config,
-                "/api/config/schema": lambda: {"sections": ["strategy", "risk", "order", "market_hours", "stocks"], "restart_required_by_default": True},
+                "/api/config/schema": self.service.config_schema,
                 "/api/stocks": self.service.stocks,
                 "/api/positions": self.service.positions,
                 "/api/lots": self.service.lots,

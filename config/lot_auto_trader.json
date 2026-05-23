@@ -293,7 +293,7 @@
     "initial_buy_amount": 30000,
     "auto_buy_limit": 300000,
     "absolute_max_investment": 500000,
-    "review_loss_pct": -20.0,
+    "review_loss_pct": -20,
     "max_open_lots_before_review": 12,
     "pnl_minus_threshold": -0.01,
     "pnl_plus_threshold": 0.01,
@@ -321,25 +321,25 @@
       {
         "min_exposure": 1,
         "max_exposure": 60000,
-        "drop_pct": 4.0,
+        "drop_pct": 4,
         "amount": 30000
       },
       {
         "min_exposure": 60001,
         "max_exposure": 120000,
-        "drop_pct": 5.0,
+        "drop_pct": 5,
         "amount": 30000
       },
       {
         "min_exposure": 120001,
         "max_exposure": 200000,
-        "drop_pct": 6.0,
+        "drop_pct": 6,
         "amount": 40000
       },
       {
         "min_exposure": 200001,
         "max_exposure": 300000,
-        "drop_pct": 8.0,
+        "drop_pct": 8,
         "amount": 50000
       }
     ],
@@ -347,22 +347,22 @@
       {
         "min_exposure": 1,
         "max_exposure": 60000,
-        "target_profit_pct": 6.0
+        "target_profit_pct": 6
       },
       {
         "min_exposure": 60001,
         "max_exposure": 120000,
-        "target_profit_pct": 5.0
+        "target_profit_pct": 5
       },
       {
         "min_exposure": 120001,
         "max_exposure": 200000,
-        "target_profit_pct": 4.0
+        "target_profit_pct": 4
       },
       {
         "min_exposure": 200001,
         "max_exposure": 300000,
-        "target_profit_pct": 3.0
+        "target_profit_pct": 3
       },
       {
         "min_exposure": 300001,
@@ -370,17 +370,17 @@
         "target_profit_pct": 2.5
       }
     ],
-    "high_exposure_partial_sell_pct": 50.0,
+    "high_exposure_partial_sell_pct": 50,
     "estimated_fee_tax_pct": 0.25
   },
   "risk": {
     "market_risk_mode": false,
     "daily_account_loss_limit_pct": -1.5,
-    "total_account_loss_limit_pct": -5.0,
+    "total_account_loss_limit_pct": -5,
     "max_review_positions": 3,
     "min_cash_available": 30000,
     "max_consecutive_api_errors": 5,
-    "max_price_sample_volatility_pct": 1.0,
+    "max_price_sample_volatility_pct": 1,
     "block_on_lot_mismatch": true,
     "max_active_symbols": 20,
     "max_total_open_lots": 40,
@@ -393,7 +393,7 @@
     "buy_limit_markup_pct": 0.3,
     "sell_limit_markdown_pct": 0.3,
     "price_sample_count": 5,
-    "price_sample_interval_seconds": 2.0,
+    "price_sample_interval_seconds": 2,
     "limit_order_timeout_seconds": 30,
     "order_cooldown_seconds": 600,
     "min_order_request_interval_seconds": 10,
@@ -423,6 +423,6 @@
   },
   "storage_path": "C:\\MSJ\\KIS-MSJ\\data\\lot_auto_trader_real_test.sqlite3",
   "log_path": "C:\\MSJ\\KIS-MSJ\\logs\\lot_auto_trader.log",
-  "loop_interval_seconds": 15.0,
+  "loop_interval_seconds": 15,
   "max_loop_count": null
 }

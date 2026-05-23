@@ -21,7 +21,7 @@ from kis_msj.models import (
 from kis_msj.runtime_control import RuntimeControl, runtime_block_reason, save_runtime_control
 from kis_msj.storage import StateStore
 from kis_msj.strategy import StrategyAction
-from kis_msj.ui_server import build_server
+from kis_msj.ui_server import INDEX_HTML, build_server
 from kis_msj.ui_service import UIService
 
 
@@ -152,6 +152,44 @@ def test_config_validation_backup_atomic_save_and_stock_patch(tmp_path):
     assert stock["investment_alert"] is True
 
 
+def test_config_schema_metadata_and_danger_flags(tmp_path):
+    config_path, _, _ = _write_config(tmp_path)
+    service = UIService(config_path, tmp_path / "runtime.json")
+
+    schema = service.config_schema()
+    by_key = {item["key"]: item for item in schema["metadata"]}
+    for key in (
+        "strategy.initial_buy_amount",
+        "strategy.pnl_minus_threshold",
+        "strategy.cleanup_profit_offset_ratio",
+        "risk.max_total_open_lots",
+        "order.live_trading",
+        "order.enable_execution_raw_log",
+        "market_hours.open_time",
+        "storage_path",
+    ):
+        assert by_key[key]["label_ko"]
+        assert by_key[key]["description_ko"]
+        assert by_key[key]["unit"]
+    assert by_key["strategy.pnl_minus_threshold"]["display_format"] == "decimal_percent"
+    assert by_key["strategy.pnl_minus_threshold"]["config_format"] == "decimal_rate"
+    assert by_key["strategy.exposure_buy_bands"]["config_format"] == "json"
+    assert "order.live_trading" in schema["danger_confirm_keys"]
+    assert "order.enable_execution_raw_log" in schema["danger_confirm_keys"]
+
+
+def test_config_form_and_table_sorting_scripts_are_present():
+    assert "function sortRows" in INDEX_HTML
+    assert "function sortValue" in INDEX_HTML
+    assert "table(rows, 'stocks')" in INDEX_HTML
+    assert "table(o, 'orders')" in INDEX_HTML
+    assert "table(f, 'fills')" in INDEX_HTML
+    assert "function renderConfigField" in INDEX_HTML
+    assert "decimal_rate" in INDEX_HTML
+    assert "danger_confirm_required" in INDEX_HTML
+    assert "고급 / 원본 JSON 보기" in INDEX_HTML
+
+
 def test_runtime_controls_are_readable_and_block_actions(tmp_path):
     config_path, _, _ = _write_config(tmp_path)
     runtime_path = tmp_path / "runtime.json"
@@ -212,6 +250,11 @@ def test_http_api_status_config_runtime_and_no_order_endpoint(tmp_path):
         connection.request("GET", "/api/runtime")
         runtime = json.loads(connection.getresponse().read().decode("utf-8"))
         assert runtime["all_orders_paused"] is False
+
+        connection.request("GET", "/api/config/schema")
+        schema = json.loads(connection.getresponse().read().decode("utf-8"))
+        assert schema["sections"]["Order"]
+        assert "order.live_trading" in schema["danger_confirm_keys"]
 
         connection.request("POST", "/api/runtime/pause-cleanup", body="{}", headers={"content-type": "application/json"})
         paused = json.loads(connection.getresponse().read().decode("utf-8"))
