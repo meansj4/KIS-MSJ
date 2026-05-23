@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 import sqlite3
+import logging
 
 from kis_msj.config import BotConfig, OrderConfig
 from kis_msj.models import OrderRequest, OrderResult, OrderSide, OrderStatus, TradeFill
@@ -96,10 +97,19 @@ def test_side_mismatch_fill_is_not_matched_to_order(tmp_path) -> None:
 def test_fill_without_execution_id_is_deduped_by_stable_trade_fields(tmp_path) -> None:
     store = StateStore(tmp_path / "state.sqlite3")
     first = TradeFill("005930", "Test", OrderSide.BUY, 10, 10000, "000001", datetime.now().replace(microsecond=0))
-    second = TradeFill("005930", "Test", OrderSide.BUY, 10, 10000, "000001", first.filled_at + timedelta(seconds=3))
+    second = TradeFill("005930", "Test", OrderSide.BUY, 10, 10000, "000001", first.filled_at)
 
     assert store.record_fill(first)
     assert not store.record_fill(second)
+
+
+def test_fill_without_execution_id_distinguishes_different_fill_times(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    first = TradeFill("005930", "Test", OrderSide.BUY, 10, 10000, "000001", datetime.now().replace(microsecond=0))
+    second = TradeFill("005930", "Test", OrderSide.BUY, 10, 10000, "000001", first.filled_at + timedelta(seconds=3))
+
+    assert store.record_fill(first)
+    assert store.record_fill(second)
 
 
 def test_existing_db_is_backed_up_before_schema_migration(tmp_path) -> None:
@@ -139,6 +149,22 @@ def test_reconcile_query_includes_previous_day_for_old_open_order(tmp_path) -> N
     assert client.execution_since <= (datetime.now() - timedelta(days=1)).date()
 
 
+def test_reconcile_query_can_disable_previous_day_floor(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    result = order()
+    store.record_order(result)
+    old_requested_at = (datetime.now() - timedelta(hours=2)).isoformat(timespec="seconds")
+    with store._connect() as connection:
+        connection.execute("UPDATE orders SET requested_at = ? WHERE order_id = ?", (old_requested_at, result.order_id))
+    client = ReconcileClient(())
+    config = BotConfig(order=OrderConfig(limit_order_timeout_seconds=999, include_previous_day_for_open_orders=False))
+    manager = OrderManager(config, client, store, __import__("logging").getLogger("test"))
+
+    manager.reconcile_open_orders()
+
+    assert client.execution_since == datetime.now().date()
+
+
 def test_no_open_orders_do_not_query_executions(tmp_path) -> None:
     store = StateStore(tmp_path / "state.sqlite3")
     client = ReconcileClient(())
@@ -147,3 +173,20 @@ def test_no_open_orders_do_not_query_executions(tmp_path) -> None:
     manager.reconcile_open_orders()
 
     assert client.execution_since is None
+
+
+def test_duplicate_fill_count_is_logged_for_repeated_execution(tmp_path, caplog) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    result = order(quantity=10)
+    store.record_order(result)
+    fill = TradeFill("005930", "Test", OrderSide.BUY, 10, 10000, "000001", datetime.now().replace(microsecond=0), execution_id="E-DUP")
+    store.record_fill(fill)
+    client = ReconcileClient((fill,))
+    logger = logging.getLogger("test_reconcile_duplicate")
+    manager = OrderManager(BotConfig(order=OrderConfig(limit_order_timeout_seconds=999)), client, store, logger)
+
+    with caplog.at_level(logging.INFO, logger="test_reconcile_duplicate"):
+        fills = manager.reconcile_open_orders()
+
+    assert fills == ()
+    assert any("duplicate_fill_count=1" in message for message in caplog.messages)

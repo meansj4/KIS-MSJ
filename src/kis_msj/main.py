@@ -40,7 +40,9 @@ class AutoTrader:
         self.strategy = LotGridStrategy(config, self.lot_manager)
         self.notifier = LogNotifier(self.logger)
         self.upstream_watcher = UpstreamWatcher(config.upstream_watch, self.notifier)
-        self.client = MockKisClient(DEFAULT_QUOTE_CSV) if use_mock_client or not config.order.live_trading else KisClient(config.kis_account)
+        self.client = MockKisClient(DEFAULT_QUOTE_CSV) if use_mock_client or not config.order.live_trading else KisClient(config.kis_account, enable_execution_raw_log=config.order.enable_execution_raw_log)
+        if hasattr(self.client, "logger"):
+            self.client.logger = self.logger
         self.price_sampler = PriceSampler(self.client, config.order.price_sample_count, config.order.price_sample_interval_seconds)
         self.order_manager = OrderManager(config, self.client, self.store, self.logger)
 
@@ -114,7 +116,10 @@ class AutoTrader:
             self.store.save_position(position)
         symbol_risk = self.risk_manager.symbol_buy_allowed(position)
         action = self.strategy.decide(position, current_price, snapshot, account_risk, symbol_risk)
-        self.log_symbol_decision(position, current_price, snapshot, account_risk, symbol_risk, action.reason if action else "NONE")
+        portfolio_preview = self.portfolio_buy_block_reason(position, action) if action else ""
+        if portfolio_preview:
+            position.skip_reason = portfolio_preview
+        self.log_symbol_decision(position, current_price, snapshot, account_risk, symbol_risk, action.reason if action else "NONE", portfolio_preview)
         if action is None:
             return
         sync_block = self.sync_required_block_reason(position)
@@ -130,7 +135,7 @@ class AutoTrader:
         if duplicate:
             self.logger.info("trade_blocked code=%s name=%s reason=%s", position.code, position.name, duplicate)
             return
-        portfolio_block = self.portfolio_buy_block_reason(position, action)
+        portfolio_block = portfolio_preview or self.portfolio_buy_block_reason(position, action)
         if portfolio_block:
             position.skip_reason = portfolio_block
             self.logger.info("trade_blocked code=%s name=%s reason=%s", position.code, position.name, portfolio_block)
@@ -160,7 +165,7 @@ class AutoTrader:
         self.store.save_lots(self.lot_manager.lots.values())
         self.logger.info("fill_applied code=%s side=%s qty=%s price=%s lot_id=%s order_id=%s", fill.code, fill.side.value, fill.quantity, fill.price, fill.lot_id, fill.order_id)
 
-    def log_symbol_decision(self, position: PositionState, current_price: int, snapshot: AccountSnapshot | None, account_risk, symbol_risk, action: str) -> None:
+    def log_symbol_decision(self, position: PositionState, current_price: int, snapshot: AccountSnapshot | None, account_risk, symbol_risk, action: str, portfolio_risk_block_reason: str = "") -> None:
         last_lot = self.lot_manager.last_buy_lot(position.code)
         last_lot_drop = (current_price - last_lot.buy_price) / last_lot.buy_price * 100.0 if last_lot else 0.0
         lots = self.lot_manager.open_lots(position.code)
@@ -239,7 +244,7 @@ class AutoTrader:
             max_new_buy_per_day=self.config.risk.max_new_buy_per_day,
             max_total_open_lots=self.config.risk.max_total_open_lots,
             max_total_invested_amount=self.config.risk.max_total_invested_amount,
-            portfolio_risk_block_reason=self.portfolio_buy_block_reason(position, None),
+            portfolio_risk_block_reason=portfolio_risk_block_reason or self.portfolio_buy_block_reason(position, None),
             sync_status=position.sync_status,
             action=action,
         )

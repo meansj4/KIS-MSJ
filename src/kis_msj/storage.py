@@ -313,6 +313,10 @@ class StateStore:
                 if existing is not None:
                     return False
             else:
+                # Fallback dedupe is intentionally secondary to KIS execution_id.
+                # It relies on stable order/code/side/lot/price/quantity/fill-time fields;
+                # if KIS omits a stable execution time, raw execution logging should be used
+                # to verify whether duplicate or split fills need manual reconciliation.
                 existing = connection.execute(
                     """
                     SELECT 1
@@ -323,7 +327,7 @@ class StateStore:
                       AND lot_id = ?
                       AND price = ?
                       AND quantity = ?
-                      AND substr(filled_at, 1, 10) = ?
+                      AND filled_at = ?
                     LIMIT 1
                     """,
                     (
@@ -333,7 +337,7 @@ class StateStore:
                         fill.lot_id,
                         fill.price,
                         fill.quantity,
-                        fill.filled_at.date().isoformat(),
+                        fill.filled_at.isoformat(timespec="seconds"),
                     ),
                 ).fetchone()
                 if existing is not None:
@@ -417,9 +421,8 @@ class StateStore:
                 WHERE side = ?
                   AND reason = 'initial_buy'
                   AND substr(requested_at, 1, 10) = ?
-                  AND status IN (?, ?, ?)
                 """,
-                (OrderSide.BUY.value, today, OrderStatus.REQUESTED.value, OrderStatus.PARTIAL.value, OrderStatus.FILLED.value),
+                (OrderSide.BUY.value, today),
             ).fetchone()
         return int(row["count"] or 0)
 

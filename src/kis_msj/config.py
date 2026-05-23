@@ -131,6 +131,7 @@ class OrderConfig:
     cancel_unfilled_on_start: bool = False
     execution_query_buffer_minutes: int = 60
     include_previous_day_for_open_orders: bool = True
+    enable_execution_raw_log: bool = False
 
 
 @dataclass(frozen=True)

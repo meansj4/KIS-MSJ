@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 import os
 import time
 import urllib.error
@@ -67,13 +68,15 @@ def _is_transient_http_status(status_code: int | None) -> bool:
 
 
 class KisClient:
-    def __init__(self, account_config: KisAccountConfig | None = None) -> None:
+    def __init__(self, account_config: KisAccountConfig | None = None, *, enable_execution_raw_log: bool = False) -> None:
         self.credentials = load_credentials()
         self.access_token = get_access_token(self.credentials)
         self.account_config = account_config or KisAccountConfig()
         self.account_number = os.environ.get(self.account_config.account_number_env, "").strip()
         self.account_product_code = os.environ.get(self.account_config.account_product_code_env, "").strip()
         self.consecutive_errors = 0
+        self.enable_execution_raw_log = enable_execution_raw_log
+        self.logger = logging.getLogger("kis_msj.kis_client")
 
     @property
     def is_demo(self) -> bool:
@@ -162,16 +165,20 @@ class KisClient:
             "CTX_AREA_NK100": "",
         }
         response = self._request("GET", DAILY_FILL_PATH, params=params, tr_id="VTTC8001R" if self.is_demo else "TTTC8001R")
+        rows = response.get("output1") or []
+        if self.enable_execution_raw_log:
+            self._log_raw_execution_rows(rows)
         fills = []
-        for row in response.get("output1") or []:
-            quantity = int(float(row.get("tot_ccld_qty") or row.get("ccld_qty") or 0))
-            price = int(float(row.get("avg_prvs") or row.get("ord_unpr") or 0))
+        for row in rows:
+            quantity = int(float(_first_value(row, ("tot_ccld_qty", "ccld_qty", "ord_qty")) or 0))
+            price = int(float(_first_value(row, ("avg_prvs", "avg_pric", "ccld_unpr", "ord_unpr")) or 0))
             if quantity < 1 or price < 1:
                 continue
             side_text = str(row.get("sll_buy_dvsn_cd_name") or row.get("trad_dvsn_name") or "")
             side = OrderSide.SELL if "매도" in side_text or "sell" in side_text.lower() else OrderSide.BUY
-            order_id = str(row.get("odno") or "").strip()
+            order_id = str(_first_value(row, ("odno", "ODNO", "orgn_odno")) or "").strip()
             execution_id = _execution_id(row, order_id)
+            side = _execution_side(row)
             fills.append(
                 TradeFill(
                     str(row.get("pdno") or "").zfill(6),
@@ -180,11 +187,26 @@ class KisClient:
                     quantity,
                     price,
                     order_id,
-                    datetime.now(),
+                    _execution_datetime(row),
                     execution_id=execution_id,
                 )
             )
         return tuple(fills)
+
+    def _log_raw_execution_rows(self, rows: list[dict[str, Any]]) -> None:
+        fields = sorted({key for row in rows for key in row})
+        sample = _mask_sensitive_row(rows[0]) if rows else {}
+        self.logger.info(
+            "kis_raw_executions raw_execution_count=%s raw_execution_fields_detected=%s has_execution_id=%s has_filled_at=%s has_side=%s has_order_no=%s masked_raw_execution_sample=%s fallback_dedupe_fields=%s",
+            len(rows),
+            ",".join(fields),
+            _has_any_field(rows, ("exec_no", "ccld_no", "cnfm_no", "odno_seq", "ord_seq")),
+            _has_any_field(rows, ("ccld_dtime", "ccld_tmd", "ord_tmd", "ord_dt", "trad_dt", "ccld_dt")),
+            _has_any_field(rows, ("sll_buy_dvsn_cd", "sll_buy_dvsn_cd_name", "trad_dvsn_name")),
+            _has_any_field(rows, ("odno", "ODNO", "orgn_odno")),
+            json.dumps(sample, ensure_ascii=False, sort_keys=True),
+            "order_id,code,side,lot_id,price,quantity,filled_at",
+        )
 
     def open_orders(self) -> tuple[dict[str, Any], ...]:
         self._require_account()
@@ -311,7 +333,7 @@ def _load_prices(path: Path) -> dict[str, int]:
 
 
 def _execution_id(row: dict[str, Any], order_id: str) -> str:
-    for key in ("exec_no", "ccld_no", "odno_seq", "ord_seq", "orgn_odno", "odno"):
+    for key in ("exec_no", "ccld_no", "cnfm_no", "odno_seq", "ord_seq", "orgn_odno", "odno"):
         value = str(row.get(key) or "").strip()
         if value:
             return f"EXEC:{value}" if key != "odno" else ""
@@ -320,3 +342,53 @@ def _execution_id(row: dict[str, Any], order_id: str) -> str:
     price = str(row.get("avg_prvs") or row.get("ord_unpr") or "").strip()
     time_text = str(row.get("ord_tmd") or row.get("ccld_dtime") or row.get("ord_dt") or "").strip()
     return f"AGG:{order_id}:{code}:{quantity}:{price}:{time_text}" if order_id and code and quantity and price else ""
+
+
+def _first_value(row: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    for key in keys:
+        value = row.get(key)
+        if value not in (None, ""):
+            return value
+    return ""
+
+
+def _execution_side(row: dict[str, Any]) -> OrderSide:
+    side_code = str(_first_value(row, ("sll_buy_dvsn_cd", "trad_dvsn_cd")) or "").strip()
+    if side_code in {"01", "1"}:
+        return OrderSide.SELL
+    if side_code in {"02", "2"}:
+        return OrderSide.BUY
+    side_text = str(_first_value(row, ("sll_buy_dvsn_cd_name", "trad_dvsn_name")) or "").lower()
+    return OrderSide.SELL if "매도" in side_text or "sell" in side_text else OrderSide.BUY
+
+
+def _execution_datetime(row: dict[str, Any]) -> datetime:
+    full_text = str(_first_value(row, ("ccld_dtime", "exec_dtime")) or "").strip()
+    parsed = _parse_datetime_text(full_text)
+    if parsed is not None:
+        return parsed
+    date_text = str(_first_value(row, ("ccld_dt", "trad_dt", "ord_dt")) or "").strip()
+    time_text = str(_first_value(row, ("ccld_tmd", "ord_tmd", "exec_tmd")) or "").strip()
+    parsed = _parse_datetime_text(f"{date_text}{time_text}")
+    return parsed or datetime.now().replace(microsecond=0)
+
+
+def _parse_datetime_text(value: str) -> datetime | None:
+    digits = "".join(ch for ch in value if ch.isdigit())
+    for fmt, length in (("%Y%m%d%H%M%S", 14), ("%Y%m%d%H%M", 12), ("%Y%m%d", 8)):
+        if len(digits) >= length:
+            return datetime.strptime(digits[:length], fmt)
+    return None
+
+
+def _has_any_field(rows: list[dict[str, Any]], keys: tuple[str, ...]) -> bool:
+    return any(any(str(row.get(key) or "").strip() for key in keys) for row in rows)
+
+
+def _mask_sensitive_row(row: dict[str, Any]) -> dict[str, Any]:
+    sensitive_parts = ("acnt", "cano", "account", "acct", "appkey", "appsecret")
+    masked = {}
+    for key, value in row.items():
+        key_text = str(key).lower()
+        masked[key] = "***" if any(part in key_text for part in sensitive_parts) else value
+    return masked

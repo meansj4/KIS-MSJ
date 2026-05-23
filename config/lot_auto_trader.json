@@ -399,7 +399,8 @@
     "min_order_request_interval_seconds": 10,
     "cancel_unfilled_on_start": false,
     "execution_query_buffer_minutes": 60,
-    "include_previous_day_for_open_orders": true
+    "include_previous_day_for_open_orders": true,
+    "enable_execution_raw_log": false
   },
   "market_hours": {
     "open_time": "09:00",

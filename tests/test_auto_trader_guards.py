@@ -88,6 +88,16 @@ def test_max_new_buy_per_day_blocks_initial_buy_only(tmp_path) -> None:
     assert bot.portfolio_buy_block_reason(PositionState(code="005930", name="Test"), reentry_action) == ""
 
 
+def test_max_new_buy_per_day_counts_rejected_initial_buy_orders(tmp_path) -> None:
+    bot = trader(tmp_path, RiskConfig(max_new_buy_per_day=1))
+    request = OrderRequest("000001", "Test", OrderSide.BUY, 1, 10000, "initial_buy")
+    bot.store.record_order(OrderResult(request, "BUY-1", OrderStatus.REJECTED, "rejected"))
+    action = StrategyAction(OrderSide.BUY, 30_000, None, "initial_buy")
+
+    assert bot.store.count_today_initial_buy_orders() == 1
+    assert bot.portfolio_buy_block_reason(PositionState(code="005930", name="Test"), action) == "max_new_buy_per_day_reached"
+
+
 def test_max_total_open_lots_blocks_buy_but_not_sell(tmp_path) -> None:
     bot = trader(tmp_path, RiskConfig(max_total_open_lots=1))
     bot.position_manager.apply_fill(TradeFill("000001", "Test", OrderSide.BUY, 1, 10000, "BUY-1", datetime.now()))

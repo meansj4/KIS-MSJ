@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import io
+import logging
 import urllib.error
 from types import SimpleNamespace
 
 import pytest
 
 from kis_msj.config import KisAccountConfig
-from kis_msj.kis_client import BALANCE_PATH, KisApiError, KisClient
+from kis_msj.kis_client import BALANCE_PATH, DAILY_FILL_PATH, KisApiError, KisClient
+from kis_msj.models import OrderSide
 
 
 def _client() -> KisClient:
@@ -16,6 +18,10 @@ def _client() -> KisClient:
     client.access_token = "token"
     client.account_config = KisAccountConfig()
     client.consecutive_errors = 0
+    client.enable_execution_raw_log = False
+    client.logger = logging.getLogger("kis_msj.kis_client")
+    client.account_number = "12345678"
+    client.account_product_code = "01"
     return client
 
 
@@ -73,3 +79,42 @@ def test_kis_business_error_includes_endpoint_details(monkeypatch: pytest.Monkey
     assert f"path={BALANCE_PATH}" in message
     assert "tr_id=TTTC8434R" in message
     assert "APBK0919" in message
+
+
+def test_executions_logs_masked_raw_fields_when_enabled(caplog: pytest.LogCaptureFixture) -> None:
+    client = _client()
+    client.enable_execution_raw_log = True
+
+    def response(method, path, *, params=None, body=None, tr_id=""):  # noqa: ANN001, ANN202
+        assert path == DAILY_FILL_PATH
+        return {
+            "output1": [
+                {
+                    "CANO": "12345678",
+                    "odno": "000001",
+                    "ccld_no": "FILL-1",
+                    "ccld_dt": "20260523",
+                    "ccld_tmd": "093015",
+                    "sll_buy_dvsn_cd": "02",
+                    "pdno": "005930",
+                    "ccld_qty": "3",
+                    "ccld_unpr": "10000",
+                }
+            ]
+        }
+
+    client._request = response
+
+    with caplog.at_level(logging.INFO, logger="kis_msj.kis_client"):
+        fills = client.executions()
+
+    assert fills[0].side is OrderSide.BUY
+    assert fills[0].filled_at.isoformat() == "2026-05-23T09:30:15"
+    message = caplog.messages[0]
+    assert "raw_execution_count=1" in message
+    assert "has_execution_id=True" in message
+    assert "has_filled_at=True" in message
+    assert "has_side=True" in message
+    assert "has_order_no=True" in message
+    assert '"CANO": "***"' in message
+    assert "12345678" not in message
