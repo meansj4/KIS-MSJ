@@ -461,7 +461,7 @@ def test_total_invested_account_limit_blocks_new_buy() -> None:
     decision = RiskManager(config).account_buy_allowed(snapshot, positions)
 
     assert not decision.allowed
-    assert "max_total_invested_amount" in decision.reasons
+    assert "max_total_invested_amount_reached" in decision.reasons
 
 
 def test_profit_take_lots_exclude_loss_cleanup_candidates() -> None:
@@ -475,3 +475,67 @@ def test_profit_take_lots_exclude_loss_cleanup_candidates() -> None:
 
     assert loss not in profit_take
     assert loss in cleanup_candidates
+
+
+def test_stale_lot_is_marked_without_forced_sell() -> None:
+    strategy_config = StrategyConfig(cleanup_enabled=True, estimated_fee_tax_pct=0)
+    _, lots, positions, strategy, risk, snapshot = setup_strategy(strategy_config)
+    stale = add_lot(positions, "005930", 10000, 1)
+    age_lot(stale, 10)
+    position = positions.refresh_from_lots("005930", 8500)
+
+    stale_lots = lots.stale_lots("005930", 8500)
+    action = strategy.decide(position, 8500, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+
+    assert stale in stale_lots
+    assert stale.cleanup_candidate
+    assert action is None or action.side is not OrderSide.SELL
+
+
+def test_stale_lot_review_age_marks_review_required() -> None:
+    _, _, positions, _, _, _ = setup_strategy()
+    stale = add_lot(positions, "005930", 10000, 1)
+    age_lot(stale, 20)
+
+    position = positions.refresh_from_lots("005930", 8500)
+
+    assert position.position_state == PositionLifecycle.REVIEW_REQUIRED.value
+    assert position.review_reason == "stale_lot_review_age"
+
+
+def test_symbol_loss_marks_review_required() -> None:
+    _, _, positions, _, _, _ = setup_strategy()
+    add_lot(positions, "005930", 10000, 1)
+
+    position = positions.refresh_from_lots("005930", 7900)
+
+    assert position.position_state == PositionLifecycle.REVIEW_REQUIRED.value
+    assert position.review_reason == "symbol_loss_review"
+
+
+def test_review_required_blocks_buy_but_allows_profit_take_sell() -> None:
+    _, _, positions, strategy, risk, snapshot = setup_strategy()
+    lot = add_lot(positions, "005930", 10000, 1)
+    position = positions.refresh_from_lots("005930", 10600)
+    position.needs_review = True
+    position.position_state = PositionLifecycle.REVIEW_REQUIRED.value
+
+    action = strategy.decide(position, 10600, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+
+    assert action is not None
+    assert action.side is OrderSide.SELL
+    assert action.lot_id == lot.lot_id
+
+
+def test_risk_blocked_blocks_buy_and_sell_conservatively() -> None:
+    _, _, positions, strategy, risk, snapshot = setup_strategy()
+    add_lot(positions, "005930", 10000, 1)
+    position = positions.refresh_from_lots("005930", 10600)
+    position.danger_state = True
+    position.position_state = PositionLifecycle.RISK_BLOCKED.value
+
+    action = strategy.decide(position, 10600, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    context = strategy.context(position, 10600)
+
+    assert action is None
+    assert context.skip_reason == "risk_blocked_buy_sell_blocked"

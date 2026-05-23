@@ -86,6 +86,21 @@ class LotManager:
                 lots.append(lot)
         return sorted(lots, key=lambda lot: (-lot.age_weeks, lot.profit_pct_at(current_price)))
 
+    def stale_lots(self, code: str, current_price: int) -> list[LotState]:
+        lots = []
+        for lot in self.open_lots(code):
+            self.update_lot_target_metadata(lot, current_price)
+            realized_rate = lot.profit_pct_at(current_price) / 100.0
+            price_gap_rate = (current_price - lot.buy_price) / lot.buy_price if lot.buy_price else 0.0
+            if (
+                realized_rate <= self.config.stale_lot_loss_rate
+                and lot.age_weeks >= self.config.stale_lot_min_age_weeks
+                and price_gap_rate <= self.config.stale_lot_price_gap_rate
+            ):
+                lot.cleanup_candidate = True
+                lots.append(lot)
+        return sorted(lots, key=lambda lot: (-lot.age_weeks, lot.profit_pct_at(current_price)))
+
     def create_buy_lot(self, fill: TradeFill) -> LotState:
         exposure_after = self.cumulative_invested_amount(fill.code) + fill.quantity * fill.price
         target_pct = self.target_profit_pct(exposure_after)
@@ -141,7 +156,7 @@ class LotManager:
         lot.base_target_profit_rate = lot.base_target_profit_rate or lot.target_profit_pct / 100.0
         lot.effective_target_profit_rate = self.effective_target_profit_rate(lot, now)
         realized_pnl_rate = lot.profit_pct_at(current_price) / 100.0
-        lot.cleanup_candidate = lot.effective_target_profit_rate < 0 and realized_pnl_rate < 0
+        lot.cleanup_candidate = lot.cleanup_candidate or (lot.effective_target_profit_rate < 0 and realized_pnl_rate < 0)
 
 
 def round_price(price: float) -> int:

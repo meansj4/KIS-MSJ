@@ -79,6 +79,11 @@ class StrategyConfig:
     cleanup_buy_cooldown_days: int = 3
     cleanup_reentry_cooldown_days: int = 5
     cleanup_auto_return_to_wait_reentry: bool = False
+    stale_lot_loss_rate: float = -0.15
+    stale_lot_min_age_weeks: int = 8
+    stale_lot_price_gap_rate: float = -0.10
+    review_symbol_loss_rate: float = -0.20
+    stale_lot_review_age_weeks: int = 20
     exposure_buy_bands: tuple[BuyBand, ...] = (
         BuyBand(1, 60_000, 4.0, 30_000),
         BuyBand(60_001, 120_000, 5.0, 30_000),
@@ -124,6 +129,8 @@ class OrderConfig:
     order_cooldown_seconds: int = 300
     min_order_request_interval_seconds: int = 10
     cancel_unfilled_on_start: bool = False
+    execution_query_buffer_minutes: int = 60
+    include_previous_day_for_open_orders: bool = True
 
 
 @dataclass(frozen=True)

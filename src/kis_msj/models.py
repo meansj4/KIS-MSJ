@@ -188,6 +188,7 @@ class OrderResult:
     order_id: str
     status: OrderStatus
     message: str = ""
+    requested_at: str = ""
 
 
 @dataclass(frozen=True)

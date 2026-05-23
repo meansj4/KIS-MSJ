@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, time as day_time, timedelta
 
 from .config import BotConfig
 from .lot_manager import round_price
@@ -93,14 +93,31 @@ class OrderManager:
 
     def reconcile_open_orders(self) -> tuple[TradeFill, ...]:
         applied: list[TradeFill] = []
-        for result in self.store.open_orders():
-            fills = self._matching_fills(result)
+        open_orders = self.store.open_orders()
+        query_start = self._execution_query_start(open_orders)
+        fetched_fills = self.client.executions(since=query_start.date()) if open_orders else ()
+        duplicate_fill_count = 0
+        if open_orders:
+            self.logger.info(
+                "reconcile_execution_query open_order_count_for_reconciliation=%s oldest_open_order_requested_at=%s execution_query_start=%s execution_query_end=%s execution_query_buffer_minutes=%s fetched_execution_count=%s",
+                len(open_orders),
+                min((order.requested_at for order in open_orders if order.requested_at), default=""),
+                query_start.isoformat(timespec="seconds"),
+                datetime.now().isoformat(timespec="seconds"),
+                self.config.order.execution_query_buffer_minutes,
+                len(fetched_fills),
+            )
+        for result in open_orders:
+            fills = self._matching_fills(result, fetched_fills)
             for fill in fills:
                 fill = self._dedupe_or_delta_fill(fill)
                 if fill is None:
+                    duplicate_fill_count += 1
                     continue
                 if self.store.record_fill(fill):
                     applied.append(fill)
+                else:
+                    duplicate_fill_count += 1
             filled_quantity = self.store.filled_quantity_for_order(result.order_id)
             if filled_quantity >= result.request.quantity:
                 self.store.record_order(OrderResult(result.request, result.order_id, OrderStatus.FILLED, result.message))
@@ -115,16 +132,27 @@ class OrderManager:
             except RuntimeError as error:
                 self.logger.warning("order_cancel_or_requery_failed code=%s order_id=%s error=%s", result.request.code, result.order_id, error)
                 continue
-            fills_after_cancel = self._matching_fills(result)
+            fills_after_cancel = self._matching_fills(result, fetched_fills)
             for fill in fills_after_cancel:
                 fill = self._dedupe_or_delta_fill(fill)
                 if fill is None:
+                    duplicate_fill_count += 1
                     continue
                 if self.store.record_fill(fill):
                     applied.append(fill)
+                else:
+                    duplicate_fill_count += 1
             filled_quantity = self.store.filled_quantity_for_order(result.order_id)
             final_status = OrderStatus.PARTIAL_CANCELED if filled_quantity > 0 else status
             self.store.record_order(OrderResult(result.request, result.order_id, final_status, "cancel_or_reprice"))
+        if open_orders:
+            self.logger.info(
+                "reconcile_execution_result open_order_count_for_reconciliation=%s fetched_execution_count=%s new_fill_count=%s duplicate_fill_count=%s",
+                len(open_orders),
+                len(fetched_fills),
+                len(applied),
+                duplicate_fill_count,
+            )
         return tuple(applied)
 
     def _dedupe_or_delta_fill(self, fill: TradeFill) -> TradeFill | None:
@@ -152,14 +180,27 @@ class OrderManager:
         fills = self._matching_fills(result)
         return fills[0] if fills else None
 
-    def _matching_fills(self, result: OrderResult) -> list[TradeFill]:
+    def _matching_fills(self, result: OrderResult, fetched_fills: tuple[TradeFill, ...] | None = None) -> list[TradeFill]:
         request = result.request
         order_id = _normalize_order_id(result.order_id)
         matches = []
-        for fill in self.client.executions():
+        source_fills = fetched_fills if fetched_fills is not None else self.client.executions()
+        for fill in source_fills:
             if _normalize_order_id(fill.order_id) == order_id and fill.code == request.code and fill.side == request.side:
                 matches.append(TradeFill(fill.code, fill.name, fill.side, fill.quantity, fill.price, fill.order_id, fill.filled_at, request.lot_id, fill.execution_id, request.sell_reason, request.reentry_type))
         return matches
+
+    def _execution_query_start(self, open_orders: tuple[OrderResult, ...]) -> datetime:
+        now = datetime.now()
+        today_start = datetime.combine(now.date(), day_time.min)
+        requested_times = [_parse_timestamp(order.requested_at) for order in open_orders if order.requested_at]
+        oldest_requested = min(requested_times, default=today_start)
+        buffered = oldest_requested - timedelta(minutes=self.config.order.execution_query_buffer_minutes)
+        query_start = min(today_start, buffered)
+        if self.config.order.include_previous_day_for_open_orders and open_orders:
+            previous_day_start = today_start - timedelta(days=1)
+            query_start = min(query_start, previous_day_start)
+        return query_start
 
     def _record_filled(self, result: OrderResult, fill: TradeFill) -> tuple[OrderResult, TradeFill]:
         status = OrderStatus.FILLED if fill.quantity >= result.request.quantity else OrderStatus.PARTIAL
@@ -186,3 +227,7 @@ class OrderManager:
 def _normalize_order_id(order_id: str) -> str:
     normalized = str(order_id).strip()
     return normalized.lstrip("0") or normalized
+
+
+def _parse_timestamp(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)

@@ -35,7 +35,7 @@ class RiskManager:
             reasons.append("cash_below_minimum")
         total_invested = sum(max(0, item.cumulative_invested_amount) for item in positions.values())
         if total_invested >= risk.max_total_invested_amount:
-            reasons.append("max_total_invested_amount")
+            reasons.append("max_total_invested_amount_reached")
         if self.consecutive_api_errors >= risk.max_consecutive_api_errors:
             reasons.append("consecutive_api_errors")
         if self.data_mismatch_detected:

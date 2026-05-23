@@ -11,8 +11,10 @@ class ReconcileClient:
     def __init__(self, fills: tuple[TradeFill, ...] = ()) -> None:
         self.fills = fills
         self.canceled: list[tuple[str, int]] = []
+        self.execution_since = None
 
-    def executions(self):
+    def executions(self, *, since=None):
+        self.execution_since = since
         return self.fills
 
     def cancel_order(self, order_id: str, quantity: int) -> OrderStatus:
@@ -109,3 +111,39 @@ def test_existing_db_is_backed_up_before_schema_migration(tmp_path) -> None:
 
     backups = list((tmp_path / "backups").glob("state_*.sqlite3"))
     assert backups
+
+
+def test_reconcile_queries_from_today_for_today_open_order(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    store.record_order(order())
+    client = ReconcileClient(())
+    manager = OrderManager(BotConfig(order=OrderConfig(limit_order_timeout_seconds=999, include_previous_day_for_open_orders=False)), client, store, __import__("logging").getLogger("test"))
+
+    manager.reconcile_open_orders()
+
+    assert client.execution_since == datetime.now().date()
+
+
+def test_reconcile_query_includes_previous_day_for_old_open_order(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    result = order()
+    store.record_order(result)
+    old_requested_at = (datetime.now() - timedelta(days=1, hours=2)).isoformat(timespec="seconds")
+    with store._connect() as connection:
+        connection.execute("UPDATE orders SET requested_at = ? WHERE order_id = ?", (old_requested_at, result.order_id))
+    client = ReconcileClient(())
+    manager = OrderManager(BotConfig(order=OrderConfig(limit_order_timeout_seconds=999)), client, store, __import__("logging").getLogger("test"))
+
+    manager.reconcile_open_orders()
+
+    assert client.execution_since <= (datetime.now() - timedelta(days=1)).date()
+
+
+def test_no_open_orders_do_not_query_executions(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    client = ReconcileClient(())
+    manager = OrderManager(BotConfig(), client, store, __import__("logging").getLogger("test"))
+
+    manager.reconcile_open_orders()
+
+    assert client.execution_since is None

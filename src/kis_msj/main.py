@@ -130,6 +130,11 @@ class AutoTrader:
         if duplicate:
             self.logger.info("trade_blocked code=%s name=%s reason=%s", position.code, position.name, duplicate)
             return
+        portfolio_block = self.portfolio_buy_block_reason(position, action)
+        if portfolio_block:
+            position.skip_reason = portfolio_block
+            self.logger.info("trade_blocked code=%s name=%s reason=%s", position.code, position.name, portfolio_block)
+            return
         request_gap = self.recent_order_request_block_reason(position)
         if request_gap:
             self.logger.info("trade_blocked code=%s name=%s reason=%s", position.code, position.name, request_gap)
@@ -218,9 +223,23 @@ class AutoTrader:
             profit_take_lot_count=context.profit_take_lot_count,
             cleanup_candidate_lot_count=context.cleanup_candidate_lot_count,
             cleanup_signal_met=context.cleanup_candidate,
+            stale_lot_count=context.stale_lot_count,
+            stale_lot_ids=context.stale_lot_ids,
+            cleanup_candidate_count=context.cleanup_candidate_lot_count,
+            review_required_condition_met=context.review_required_condition_met,
             review_reason=context.review_reason,
             skip_reason=context.skip_reason,
             open_order_exists=self.store.has_any_open_order(position.code),
+            open_order_count=self.store.open_order_count(position.code),
+            active_symbol_count=self.active_symbol_count(),
+            new_buy_count_today=self.store.count_today_initial_buy_orders(),
+            total_open_lot_count=self.total_open_lot_count(),
+            total_invested_amount=self.total_invested_amount(),
+            max_active_symbols=self.config.risk.max_active_symbols,
+            max_new_buy_per_day=self.config.risk.max_new_buy_per_day,
+            max_total_open_lots=self.config.risk.max_total_open_lots,
+            max_total_invested_amount=self.config.risk.max_total_invested_amount,
+            portfolio_risk_block_reason=self.portfolio_buy_block_reason(position, None),
             sync_status=position.sync_status,
             action=action,
         )
@@ -262,6 +281,49 @@ class AutoTrader:
         if elapsed is not None and elapsed < minimum:
             return "recent_order_request"
         return ""
+
+    def portfolio_buy_block_reason(self, position: PositionState, action) -> str:
+        if action is not None and action.side is not OrderSide.BUY:
+            return ""
+        risk = self.config.risk
+        total_open_lots = self.total_open_lot_count()
+        if total_open_lots >= risk.max_total_open_lots:
+            return "max_total_open_lots_reached"
+        total_invested = self.total_invested_amount()
+        if total_invested >= risk.max_total_invested_amount:
+            return "max_total_invested_amount_reached"
+        if action is None:
+            return ""
+        if action.reason == "initial_buy":
+            active_codes = self.active_symbol_codes()
+            if position.code not in active_codes and len(active_codes) >= risk.max_active_symbols:
+                return "max_active_symbols_reached"
+            if self.store.count_today_initial_buy_orders() >= risk.max_new_buy_per_day:
+                return "max_new_buy_per_day_reached"
+        return ""
+
+    def active_symbol_codes(self) -> set[str]:
+        active_states = {
+            PositionLifecycle.HOLDING.value,
+            PositionLifecycle.WAIT_REENTRY.value,
+            PositionLifecycle.COOLDOWN_AFTER_CLEANUP.value,
+            PositionLifecycle.REVIEW_REQUIRED.value,
+            PositionLifecycle.RISK_BLOCKED.value,
+            PositionLifecycle.SYNC_REQUIRED.value,
+        }
+        codes = {lot.code for lot in self.lot_manager.lots.values() if lot.remaining_quantity > 0}
+        codes.update(self.store.open_order_codes())
+        codes.update(code for code, position in self.position_manager.positions.items() if position.position_state in active_states)
+        return codes
+
+    def active_symbol_count(self) -> int:
+        return len(self.active_symbol_codes())
+
+    def total_open_lot_count(self) -> int:
+        return sum(1 for lot in self.lot_manager.lots.values() if lot.remaining_quantity > 0)
+
+    def total_invested_amount(self) -> int:
+        return sum(lot.open_amount for lot in self.lot_manager.lots.values() if lot.remaining_quantity > 0)
 
 
 def in_trade_window(config: BotConfig) -> bool:

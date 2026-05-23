@@ -312,6 +312,11 @@
     "cleanup_buy_cooldown_days": 3,
     "cleanup_reentry_cooldown_days": 5,
     "cleanup_auto_return_to_wait_reentry": false,
+    "stale_lot_loss_rate": -0.15,
+    "stale_lot_min_age_weeks": 8,
+    "stale_lot_price_gap_rate": -0.1,
+    "review_symbol_loss_rate": -0.2,
+    "stale_lot_review_age_weeks": 20,
     "exposure_buy_bands": [
       {
         "min_exposure": 1,
@@ -376,7 +381,11 @@
     "min_cash_available": 30000,
     "max_consecutive_api_errors": 5,
     "max_price_sample_volatility_pct": 1.0,
-    "block_on_lot_mismatch": true
+    "block_on_lot_mismatch": true,
+    "max_active_symbols": 20,
+    "max_total_open_lots": 40,
+    "max_total_invested_amount": 1500000,
+    "max_new_buy_per_day": 5
   },
   "order": {
     "live_trading": true,
@@ -388,7 +397,9 @@
     "limit_order_timeout_seconds": 30,
     "order_cooldown_seconds": 600,
     "min_order_request_interval_seconds": 10,
-    "cancel_unfilled_on_start": false
+    "cancel_unfilled_on_start": false,
+    "execution_query_buffer_minutes": 60,
+    "include_previous_day_for_open_orders": true
   },
   "market_hours": {
     "open_time": "09:00",

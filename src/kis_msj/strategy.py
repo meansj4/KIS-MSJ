@@ -61,6 +61,9 @@ class StrategyContext:
     cleanup_reentry_cooldown_until: str = ""
     profit_take_lot_count: int = 0
     cleanup_candidate_lot_count: int = 0
+    stale_lot_count: int = 0
+    stale_lot_ids: str = "NONE"
+    review_required_condition_met: bool = False
     review_reason: str = ""
     skip_reason: str = ""
 
@@ -79,13 +82,19 @@ class LotGridStrategy:
         symbol_risk: RiskDecision,
     ) -> StrategyAction | None:
         lifecycle = self._position_state(position)
-        if lifecycle in {PositionLifecycle.SYNC_REQUIRED.value, PositionLifecycle.RISK_BLOCKED.value}:
-            position.skip_reason = lifecycle.lower()
+        if lifecycle == PositionLifecycle.SYNC_REQUIRED.value:
+            position.skip_reason = "sync_required"
+            return None
+        if lifecycle == PositionLifecycle.RISK_BLOCKED.value:
+            # Conservative policy: risk-blocked symbols are held for manual review,
+            # so both BUY and SELL are blocked until risk reasons are classified.
+            position.skip_reason = "risk_blocked_buy_sell_blocked"
             return None
         sell = self._sell_action(position, current_price, snapshot)
         if sell:
             return sell
         if not account_risk.allowed or not symbol_risk.allowed:
+            position.skip_reason = "|".join(account_risk.reasons + symbol_risk.reasons)
             return None
         buy_block = self._buy_block_reason(position)
         if buy_block:
@@ -218,6 +227,7 @@ class LotGridStrategy:
         reference_sell = self._reference_sell_lot(position)
         profit_take_lots = self.lot_manager.profit_take_lots(position.code, current_price, exposure, target_profit) if exposure > 0 else []
         cleanup_candidate_lots = self.lot_manager.cleanup_candidate_lots(position.code, current_price) if exposure > 0 else []
+        stale_lots = self.lot_manager.stale_lots(position.code, current_price) if exposure > 0 else []
         normal_reentry, trailing_reentry = self.check_reentry_conditions(position, current_price)
         sell_candidate = self._sell_candidate(position, current_price, snapshot) if exposure > 0 else None
         cleanup_budget = self.cleanup_loss_budget(snapshot)
@@ -257,6 +267,9 @@ class LotGridStrategy:
             cleanup_reentry_cooldown_until=position.cleanup_reentry_cooldown_until,
             profit_take_lot_count=len(profit_take_lots),
             cleanup_candidate_lot_count=len(cleanup_candidate_lots),
+            stale_lot_count=len(stale_lots),
+            stale_lot_ids=";".join(lot.lot_id for lot in stale_lots) or "NONE",
+            review_required_condition_met=position.needs_review,
             review_reason=position.review_reason,
             skip_reason=self._skip_reason(position, current_price),
         )
@@ -336,6 +349,8 @@ class LotGridStrategy:
         return normal, trailing
 
     def _skip_reason(self, position: PositionState, current_price: int) -> str:
+        if position.skip_reason:
+            return position.skip_reason
         state = self._position_state(position)
         buy_block = self._buy_block_reason(position)
         if buy_block:

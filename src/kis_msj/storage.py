@@ -381,8 +381,47 @@ class StateStore:
                 str(row["reentry_type"]),
                 bool(row["cleanup_flag"]),
             )
-            orders.append(OrderResult(request, str(row["order_id"]), OrderStatus(str(row["status"])), str(row["message"])))
+            orders.append(OrderResult(request, str(row["order_id"]), OrderStatus(str(row["status"])), str(row["message"]), str(row["requested_at"])))
         return tuple(orders)
+
+    def open_order_count(self, code: str | None = None) -> int:
+        placeholders = ", ".join("?" for _ in OPEN_ORDER_STATUSES)
+        params: list[object] = [*OPEN_ORDER_STATUSES]
+        code_filter = ""
+        if code is not None:
+            code_filter = " AND code = ?"
+            params.append(code)
+        with self._connect() as connection:
+            row = connection.execute(
+                f"SELECT COUNT(*) AS count FROM orders WHERE status IN ({placeholders}){code_filter}",
+                params,
+            ).fetchone()
+        return int(row["count"] or 0)
+
+    def open_order_codes(self) -> set[str]:
+        placeholders = ", ".join("?" for _ in OPEN_ORDER_STATUSES)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT DISTINCT code FROM orders WHERE status IN ({placeholders})",
+                OPEN_ORDER_STATUSES,
+            ).fetchall()
+        return {str(row["code"]) for row in rows}
+
+    def count_today_initial_buy_orders(self) -> int:
+        today = datetime.now().date().isoformat()
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM orders
+                WHERE side = ?
+                  AND reason = 'initial_buy'
+                  AND substr(requested_at, 1, 10) = ?
+                  AND status IN (?, ?, ?)
+                """,
+                (OrderSide.BUY.value, today, OrderStatus.REQUESTED.value, OrderStatus.PARTIAL.value, OrderStatus.FILLED.value),
+            ).fetchone()
+        return int(row["count"] or 0)
 
     def filled_quantity_for_order(self, order_id: str) -> int:
         with self._connect() as connection:

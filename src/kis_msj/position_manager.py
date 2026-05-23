@@ -50,9 +50,20 @@ class PositionManager:
         last = self.lot_manager.last_buy_lot(code)
         position.last_buy_lot_id = last.lot_id if last else ""
         position.add_buy_stage = _stage_for_exposure(exposure)
-        if exposure > self.config.auto_buy_limit or position.profit_loss_pct <= self.config.review_loss_pct or len(lots) > self.config.max_open_lots_before_review:
+        stale_lots = self.lot_manager.stale_lots(code, current_price) if current_price else []
+        review_reason = ""
+        if exposure > self.config.auto_buy_limit:
+            review_reason = "auto_buy_limit_exceeded"
+        elif position.profit_loss_pct <= self.config.review_symbol_loss_rate * 100.0:
+            review_reason = "symbol_loss_review"
+        elif len(lots) > self.config.max_open_lots_before_review:
+            review_reason = "too_many_open_lots"
+        elif any(lot.age_weeks >= self.config.stale_lot_review_age_weeks for lot in stale_lots):
+            review_reason = "stale_lot_review_age"
+        if review_reason:
             position.needs_review = True
             position.auto_buy_enabled = False
+            position.review_reason = review_reason
         position.position_state = self._lifecycle_for(position, bool(lots))
         position.last_update_time = datetime.now().isoformat(timespec="seconds")
         return position
