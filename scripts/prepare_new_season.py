@@ -7,16 +7,25 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import shutil
 import sqlite3
-from datetime import datetime
+import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 
 CONFIRM_RESET = "RESET 확인"
 CONFIRM_LIQUIDATION = "전량매도 요청 확인"
+PENDING_ORDER_STATUSES = ("REQUESTED", "PARTIAL", "SUBMITTED", "ACCEPTED", "PENDING", "OPEN", "NEW")
+TERMINAL_ORDER_STATUSES = ("FILLED", "CANCELED", "REJECTED", "FAILED", "EXPIRED", "PARTIAL_CANCELED", "NONE")
+PENDING_MANUAL_STATUSES = ("REQUESTED", "PROCESSING", "ACCEPTED", "SUBMITTED", "PENDING", "OPEN", "NEW", "CREATED", "RETRYING")
+TERMINAL_MANUAL_STATUSES = ("FILLED", "CANCELED", "REJECTED", "FAILED", "BLOCKED", "EXPIRED")
+PLAN_ACTIVE_STATUSES = ("ACTIVE",)
+PLAN_TERMINAL_STATUSES = ("EXPIRED", "SUPERSEDED", "USED", "BLOCKED")
+DEFAULT_PLAN_MAX_AGE_MINUTES = 60
 
 KOSPI_100: list[dict[str, Any]] = [
     {"code": "005930", "name": "삼성전자", "sector": "반도체"},
@@ -227,18 +236,114 @@ def apply_expansion_config(config_path: Path, profile: str, dry_run: bool) -> di
     return result
 
 
-def liquidation_plan(config_path: Path, output_dir: Path, dry_run: bool) -> dict[str, Any]:
-    config = load_json(config_path)
-    db_path = Path(config.get("storage_path", ""))
-    output_dir.mkdir(parents=True, exist_ok=True)
-    items = []
+def load_kis_balance_json(path: Path | None) -> dict[str, dict[str, int]]:
+    if path is None:
+        return {}
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    rows = raw.get("positions", raw) if isinstance(raw, dict) else raw
+    result: dict[str, dict[str, int]] = {}
+    for row in rows:
+        code = str(row.get("code") or row.get("pdno") or row.get("symbol") or "").zfill(6)
+        if not code or code == "000000":
+            continue
+        quantity = int(float(row.get("quantity") or row.get("hldg_qty") or row.get("holding_quantity") or 0))
+        sellable = int(float(row.get("sellable_quantity") or row.get("ord_psbl_qty") or row.get("available_quantity") or quantity))
+        result[code] = {"holding_quantity": quantity, "sellable_quantity": sellable}
+    return result
+
+
+def _stable_hash(value: Any) -> str:
+    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def db_open_lot_snapshot(db_path: Path) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
     if db_path.exists():
         with sqlite3.connect(db_path) as connection:
             connection.row_factory = sqlite3.Row
             try:
-                rows = connection.execute(
+                result = connection.execute(
+                    """
+                    SELECT lot_id, code, remaining_quantity, buy_price, status, buy_filled_at
+                    FROM lots
+                    WHERE remaining_quantity > 0 AND status != 'CLOSED'
+                    ORDER BY code, lot_id
+                    """
+                ).fetchall()
+                rows = [dict(row) for row in result]
+            except sqlite3.Error:
+                rows = []
+    return {"rows": rows, "count": len(rows), "hash": _stable_hash(rows)}
+
+
+def kis_balance_snapshot(kis_balances: dict[str, dict[str, int]] | None) -> dict[str, Any]:
+    rows = [
+        {"code": code, "holding_quantity": int(item.get("holding_quantity", 0)), "sellable_quantity": int(item.get("sellable_quantity", 0))}
+        for code, item in sorted((kis_balances or {}).items())
+    ]
+    return {"rows": rows, "count": len(rows), "hash": _stable_hash(rows)}
+
+
+def _plan_files(output_dir: Path) -> list[Path]:
+    if not output_dir.exists():
+        return []
+    return sorted(output_dir.glob("liquidation_plan_*.json"))
+
+
+def _update_plan_status(path: Path, status: str, reason: str = "") -> None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    data["status"] = status
+    if reason:
+        data["status_reason"] = reason
+    data["updated_at"] = datetime.now().isoformat(timespec="seconds")
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def supersede_active_plans(output_dir: Path) -> list[str]:
+    superseded: list[str] = []
+    for path in _plan_files(output_dir):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if data.get("status") == "ACTIVE":
+            _update_plan_status(path, "SUPERSEDED", "new_plan_created")
+            superseded.append(str(path))
+    return superseded
+
+
+def liquidation_plan(
+    config_path: Path,
+    output_dir: Path,
+    dry_run: bool,
+    kis_balances: dict[str, dict[str, int]] | None = None,
+    kis_balance_path: Path | None = None,
+    max_age_minutes: int = DEFAULT_PLAN_MAX_AGE_MINUTES,
+) -> dict[str, Any]:
+    config = load_json(config_path)
+    db_path = Path(config.get("storage_path", ""))
+    output_dir.mkdir(parents=True, exist_ok=True)
+    items = []
+    kis_balances = kis_balances or {}
+    source = "db_and_kis_reconciled" if kis_balances else "db_only_dry_run"
+    created_at = datetime.now()
+    db_snapshot = db_open_lot_snapshot(db_path)
+    kis_snapshot = kis_balance_snapshot(kis_balances)
+    blockers = reset_blockers(db_path)
+    if db_path.exists():
+        with sqlite3.connect(db_path) as connection:
+            connection.row_factory = sqlite3.Row
+            try:
+                lots = connection.execute(
                     """
                     SELECT l.lot_id, l.code, p.name, l.remaining_quantity, l.buy_price, p.current_price,
+                           COALESCE(p.quantity, 0) AS db_position_quantity,
+                           COALESCE(p.sync_status, '') AS sync_status,
+                           COALESCE(p.lot_quantity_mismatch, 0) AS lot_quantity_mismatch,
                            (p.current_price - l.buy_price) * l.remaining_quantity AS estimated_pnl
                     FROM lots l
                     LEFT JOIN positions p ON p.code = l.code
@@ -246,17 +351,155 @@ def liquidation_plan(config_path: Path, output_dir: Path, dry_run: bool) -> dict
                     ORDER BY l.code, l.buy_filled_at
                     """
                 ).fetchall()
-                items = [dict(row) for row in rows]
+                db_qty = {
+                    str(row["code"]).zfill(6): int(row["qty"] or 0)
+                    for row in connection.execute("SELECT code, SUM(remaining_quantity) AS qty FROM lots WHERE remaining_quantity > 0 AND status != 'CLOSED' GROUP BY code").fetchall()
+                }
+                placeholders = ",".join("?" for _ in PENDING_ORDER_STATUSES)
+                open_orders: dict[str, int] = {}
+                for row in connection.execute(f"SELECT code, SUM(quantity) AS qty FROM orders WHERE status IN ({placeholders}) GROUP BY code", PENDING_ORDER_STATUSES).fetchall():
+                    open_orders[str(row["code"]).zfill(6)] = int(row["qty"] or 0)
+                manual_placeholders = ",".join("?" for _ in PENDING_MANUAL_STATUSES)
+                pending_manual: dict[tuple[str, str], int] = {}
+                pending_manual_by_code: dict[str, int] = {}
+                for row in connection.execute(f"SELECT code, lot_id, SUM(quantity) AS qty FROM manual_order_requests WHERE side = 'SELL' AND status IN ({manual_placeholders}) GROUP BY code, lot_id", PENDING_MANUAL_STATUSES).fetchall():
+                    code = str(row["code"]).zfill(6)
+                    lot_id = str(row["lot_id"] or "")
+                    qty = int(row["qty"] or 0)
+                    pending_manual[(code, lot_id)] = qty
+                    pending_manual_by_code[code] = pending_manual_by_code.get(code, 0) + qty
+                items = []
+                for row in lots:
+                    item = dict(row)
+                    code = str(item["code"]).zfill(6)
+                    lot_id = str(item["lot_id"])
+                    db_open_qty = db_qty.get(code, 0)
+                    kis = kis_balances.get(code, {})
+                    kis_qty = int(kis.get("holding_quantity", 0)) if kis_balances else None
+                    kis_sellable = int(kis.get("sellable_quantity", 0)) if kis_balances else None
+                    block_reason = ""
+                    if not kis_balances:
+                        block_reason = "liquidation_kis_balance_fetch_required"
+                    elif kis_qty != db_open_qty:
+                        block_reason = "liquidation_kis_balance_mismatch"
+                    elif kis_sellable < db_open_qty:
+                        block_reason = "liquidation_sellable_quantity_insufficient"
+                    elif item.get("sync_status") == "SYNC_REQUIRED":
+                        block_reason = "liquidation_sync_required"
+                    elif bool(item.get("lot_quantity_mismatch")):
+                        block_reason = "liquidation_lot_quantity_mismatch"
+                    elif open_orders.get(code, 0) > 0:
+                        block_reason = "liquidation_open_order_exists"
+                    elif pending_manual.get((code, lot_id), 0) > 0 or pending_manual_by_code.get(code, 0) > 0:
+                        block_reason = "liquidation_pending_manual_sell_exists"
+                    item.update(
+                        {
+                            "db_open_lot_quantity": db_open_qty,
+                            "db_position_quantity": int(item.get("db_position_quantity") or 0),
+                            "kis_holding_quantity": kis_qty,
+                            "kis_sellable_quantity": kis_sellable,
+                            "quantity_diff": None if kis_qty is None else db_open_qty - kis_qty,
+                            "open_order_quantity": open_orders.get(code, 0),
+                            "pending_manual_sell_quantity": pending_manual_by_code.get(code, 0),
+                            "eligible_for_liquidation_request": block_reason == "",
+                            "block_reason": block_reason,
+                            "expected_sell_quantity": int(item.get("remaining_quantity") or 0),
+                            "source": source,
+                        }
+                    )
+                    items.append(item)
             except sqlite3.Error:
                 items = []
-    path = output_dir / f"liquidation_plan_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-    payload = {"dry_run": dry_run, "order_api_called": False, "manual_requests_created": False, "items": items}
+    plan_blocked = (
+        not kis_balances
+        or blockers["open_order_count"] > 0
+        or blockers["pending_manual_request_count"] > 0
+        or blockers["sync_required_count"] > 0
+        or blockers["lot_mismatch_count"] > 0
+        or any(not item.get("eligible_for_liquidation_request") for item in items)
+    )
+    status = "BLOCKED" if plan_blocked else "ACTIVE"
+    plan_id = f"LIQPLAN-{created_at.strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    path = output_dir / f"liquidation_plan_{created_at.strftime('%Y%m%d_%H%M%S')}_{plan_id.rsplit('-', 1)[-1]}.json"
+    superseded = [] if dry_run else supersede_active_plans(output_dir)
+    payload = {
+        "plan_id": plan_id,
+        "created_at": created_at.isoformat(timespec="seconds"),
+        "db_snapshot_at": created_at.isoformat(timespec="seconds"),
+        "kis_balance_snapshot_at": created_at.isoformat(timespec="seconds") if kis_balances else "",
+        "source_db_path": str(db_path),
+        "db_identity": str(db_path.resolve()) if db_path.exists() else str(db_path),
+        "source_kis_snapshot_path": str(kis_balance_path or ""),
+        "db_open_lot_hash": db_snapshot["hash"],
+        "kis_snapshot_hash": kis_snapshot["hash"] if kis_balances else "",
+        "open_lot_count": db_snapshot["count"],
+        "pending_order_count": blockers["open_order_count"],
+        "pending_manual_request_count": blockers["pending_manual_request_count"],
+        "sync_required_count": blockers["sync_required_count"],
+        "lot_mismatch_count": blockers["lot_mismatch_count"],
+        "status": status,
+        "status_reason": "blocked_by_missing_or_ineligible_snapshot" if status == "BLOCKED" else "",
+        "expires_at": (created_at + timedelta(minutes=max_age_minutes)).isoformat(timespec="seconds"),
+        "max_age_minutes": max_age_minutes,
+        "dry_run": dry_run,
+        "order_api_called": False,
+        "manual_requests_created": False,
+        "source": source,
+        "superseded_plan_paths": superseded,
+        "items": items,
+    }
     if not dry_run:
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return {"plan_path": str(path), "item_count": len(items), **payload}
 
 
-PENDING_MANUAL_STATUSES = ("REQUESTED", "PROCESSING", "ACCEPTED", "SUBMITTED")
+def validate_liquidation_plan(
+    config_path: Path,
+    plan_path: Path | None,
+    kis_balance_path: Path | None,
+    max_age_minutes: int | None = None,
+) -> dict[str, Any]:
+    if plan_path is None or not plan_path.exists():
+        return {"valid": False, "reason": "liquidation_plan_missing"}
+    try:
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"valid": False, "reason": "liquidation_plan_missing"}
+    if plan.get("status") != "ACTIVE":
+        return {"valid": False, "reason": "liquidation_plan_not_active", "status": plan.get("status")}
+    config = load_json(config_path)
+    db_path = Path(config.get("storage_path", ""))
+    db_snapshot = db_open_lot_snapshot(db_path)
+    if db_snapshot["hash"] != plan.get("db_open_lot_hash"):
+        return {"valid": False, "reason": "liquidation_plan_db_changed", "current_db_open_lot_hash": db_snapshot["hash"], "plan_db_open_lot_hash": plan.get("db_open_lot_hash")}
+    blockers = reset_blockers(db_path)
+    if blockers["open_order_count"] or blockers["pending_manual_request_count"]:
+        return {"valid": False, "reason": "liquidation_plan_pending_work_created", "blockers": blockers}
+    if blockers["sync_required_count"]:
+        return {"valid": False, "reason": "liquidation_plan_sync_required", "blockers": blockers}
+    if blockers["lot_mismatch_count"]:
+        return {"valid": False, "reason": "liquidation_plan_lot_mismatch", "blockers": blockers}
+    try:
+        expires_at = datetime.fromisoformat(str(plan.get("expires_at") or ""))
+    except ValueError:
+        expires_at = datetime.fromisoformat(str(plan.get("created_at"))) + timedelta(minutes=max_age_minutes or int(plan.get("max_age_minutes") or DEFAULT_PLAN_MAX_AGE_MINUTES))
+    if datetime.now() > expires_at:
+        _update_plan_status(plan_path, "EXPIRED", "plan_age_exceeded")
+        return {"valid": False, "reason": "liquidation_plan_snapshot_expired", "expires_at": expires_at.isoformat(timespec="seconds")}
+    if kis_balance_path is None:
+        return {"valid": False, "reason": "liquidation_kis_balance_fetch_failed"}
+    try:
+        kis_balances = load_kis_balance_json(kis_balance_path)
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {"valid": False, "reason": "liquidation_kis_balance_fetch_failed"}
+    kis_snapshot = kis_balance_snapshot(kis_balances)
+    if kis_snapshot["hash"] != plan.get("kis_snapshot_hash"):
+        return {"valid": False, "reason": "liquidation_plan_kis_snapshot_changed", "current_kis_snapshot_hash": kis_snapshot["hash"], "plan_kis_snapshot_hash": plan.get("kis_snapshot_hash")}
+    current_plan = liquidation_plan(config_path, plan_path.parent, dry_run=True, kis_balances=kis_balances, kis_balance_path=kis_balance_path, max_age_minutes=int(plan.get("max_age_minutes") or DEFAULT_PLAN_MAX_AGE_MINUTES))
+    ineligible = [item for item in current_plan["items"] if not item.get("eligible_for_liquidation_request")]
+    if ineligible:
+        return {"valid": False, "reason": "liquidation_plan_not_eligible", "block_reasons": sorted({str(item.get("block_reason")) for item in ineligible})}
+    return {"valid": True, "reason": "", "plan": plan, "current_plan": current_plan}
 
 
 def reset_blockers(db_path: Path) -> dict[str, Any]:
@@ -265,7 +508,8 @@ def reset_blockers(db_path: Path) -> dict[str, Any]:
         return blockers
     with sqlite3.connect(db_path) as connection:
         try:
-            row = connection.execute("SELECT COUNT(*) FROM orders WHERE status IN ('REQUESTED', 'PARTIAL')").fetchone()
+            placeholders = ",".join("?" for _ in PENDING_ORDER_STATUSES)
+            row = connection.execute(f"SELECT COUNT(*) FROM orders WHERE status IN ({placeholders})", PENDING_ORDER_STATUSES).fetchone()
             blockers["open_order_count"] = int(row[0] or 0)
         except sqlite3.Error:
             blockers["open_order_count"] = 0
@@ -309,18 +553,31 @@ def reset_db(config_path: Path, confirm: str, dry_run: bool) -> dict[str, Any]:
     return {"reset": True, "db_path": str(db_path), "dry_run": False}
 
 
-def create_liquidation_manual_requests(config_path: Path, confirm: str, dry_run: bool) -> dict[str, Any]:
+def create_liquidation_manual_requests(
+    config_path: Path,
+    confirm: str,
+    dry_run: bool,
+    kis_balance_path: Path | None = None,
+    plan_path: Path | None = None,
+) -> dict[str, Any]:
     if confirm != CONFIRM_LIQUIDATION:
         return {"created": False, "reason": "confirm_required", "required_confirm_text": CONFIRM_LIQUIDATION, "dry_run": dry_run}
     config = load_json(config_path)
     db_path = Path(config.get("storage_path", ""))
     if not db_path.exists():
         return {"created": False, "reason": "db_not_found", "dry_run": dry_run}
+    validation = validate_liquidation_plan(config_path, plan_path, kis_balance_path)
+    if not validation["valid"]:
+        return {"created": False, "reason": validation["reason"], "validation": validation, "dry_run": dry_run}
+    kis_balances = load_kis_balance_json(kis_balance_path)
     blockers = reset_blockers(db_path)
     if blockers["open_order_count"] or blockers["pending_manual_request_count"] or blockers["sync_required_count"] or blockers["lot_mismatch_count"]:
         return {"created": False, "reason": "liquidation_request_blocked_by_pending_work", "blockers": blockers, "dry_run": dry_run}
-    plan = liquidation_plan(config_path, Path("exports"), dry_run=True)
+    plan = liquidation_plan(config_path, Path("exports"), dry_run=True, kis_balances=kis_balances)
     items = plan["items"]
+    ineligible = [item for item in items if not item.get("eligible_for_liquidation_request")]
+    if ineligible:
+        return {"created": False, "reason": "liquidation_plan_not_eligible", "ineligible_count": len(ineligible), "block_reasons": sorted({str(item.get("block_reason")) for item in ineligible}), "dry_run": dry_run}
     if dry_run:
         return {"created": False, "reason": "dry_run", "request_count": len(items), "dry_run": True}
     now = datetime.now().isoformat(timespec="seconds")
@@ -361,6 +618,8 @@ def create_liquidation_manual_requests(config_path: Path, confirm: str, dry_run:
                     now,
                 ),
             )
+    if plan_path is not None:
+        _update_plan_status(plan_path, "USED", "manual_sell_requests_created")
     return {"created": True, "request_count": len(items), "dry_run": False}
 
 
@@ -382,6 +641,9 @@ def main() -> None:
     parser.add_argument("--archive", action="store_true")
     parser.add_argument("--liquidation-plan", action="store_true")
     parser.add_argument("--create-liquidation-requests", action="store_true")
+    parser.add_argument("--kis-balance-json", default="")
+    parser.add_argument("--liquidation-plan-file", default="")
+    parser.add_argument("--plan-max-age-minutes", type=int, default=DEFAULT_PLAN_MAX_AGE_MINUTES)
     parser.add_argument("--reset-db", action="store_true")
     parser.add_argument("--confirm", default="")
     parser.add_argument("--dry-run", action="store_true", default=True)
@@ -396,9 +658,16 @@ def main() -> None:
     if args.apply_config:
         result["config"] = apply_expansion_config(config_path, args.profile, dry_run)
     if args.liquidation_plan:
-        result["liquidation_plan"] = liquidation_plan(config_path, Path("exports"), dry_run)
+        balances = load_kis_balance_json(Path(args.kis_balance_json)) if args.kis_balance_json else None
+        result["liquidation_plan"] = liquidation_plan(config_path, Path("exports"), dry_run, balances, Path(args.kis_balance_json) if args.kis_balance_json else None, args.plan_max_age_minutes)
     if args.create_liquidation_requests:
-        result["liquidation_requests"] = create_liquidation_manual_requests(config_path, args.confirm, dry_run)
+        result["liquidation_requests"] = create_liquidation_manual_requests(
+            config_path,
+            args.confirm,
+            dry_run,
+            Path(args.kis_balance_json) if args.kis_balance_json else None,
+            Path(args.liquidation_plan_file) if args.liquidation_plan_file else None,
+        )
     if args.reset_db:
         result["reset_db"] = reset_db(config_path, args.confirm, dry_run)
     print(json.dumps(result, ensure_ascii=False, indent=2))

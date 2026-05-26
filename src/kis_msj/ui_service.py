@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import shutil
@@ -322,6 +323,79 @@ class UIService:
             "execution_mapping": raw_mapping,
         }
 
+    def new_season_status(self) -> dict[str, Any]:
+        positions = self.positions()
+        lots = self.lots()
+        orders = self.orders()
+        manual_requests = self.manual_order_requests()
+        open_lots = [lot for lot in lots if int(lot.get("remaining_quantity") or 0) > 0 and lot.get("status") != "CLOSED"]
+        pending_order_statuses = {"REQUESTED", "PARTIAL", "SUBMITTED", "ACCEPTED", "PENDING", "OPEN", "NEW"}
+        pending_manual_statuses = {"REQUESTED", "PROCESSING", "ACCEPTED", "SUBMITTED", "PENDING", "OPEN", "NEW", "CREATED", "RETRYING"}
+        pending_orders = [order for order in orders if str(order.get("status") or "") in pending_order_statuses]
+        pending_manual = [request for request in manual_requests if str(request.get("status") or "") in pending_manual_statuses]
+        sync_required = [position for position in positions if position.get("sync_status") == PositionLifecycle.SYNC_REQUIRED.value or position.get("position_state") == PositionLifecycle.SYNC_REQUIRED.value]
+        lot_mismatch = [position for position in positions if position.get("lot_quantity_mismatch")]
+        db_hash = _stable_hash(
+            [
+                {
+                    "lot_id": lot.get("lot_id"),
+                    "code": lot.get("code"),
+                    "remaining_quantity": lot.get("remaining_quantity"),
+                    "buy_price": lot.get("buy_price"),
+                    "status": lot.get("status"),
+                    "buy_filled_at": lot.get("buy_filled_at"),
+                }
+                for lot in sorted(open_lots, key=lambda item: (str(item.get("code")), str(item.get("lot_id"))))
+            ]
+        )
+        latest_plan = self._latest_liquidation_plan()
+        plan = latest_plan.get("plan") or {}
+        db_matches = bool(plan) and plan.get("db_open_lot_hash") == db_hash
+        plan_expired = False
+        if plan.get("expires_at"):
+            try:
+                plan_expired = datetime.now() > datetime.fromisoformat(str(plan["expires_at"]))
+            except ValueError:
+                plan_expired = True
+        block_reason = ""
+        if not plan:
+            block_reason = "liquidation_plan_missing"
+        elif plan.get("status") != "ACTIVE":
+            block_reason = "liquidation_plan_not_active"
+        elif not db_matches:
+            block_reason = "liquidation_plan_db_changed"
+        elif plan_expired:
+            block_reason = "liquidation_plan_snapshot_expired"
+        elif pending_orders or pending_manual:
+            block_reason = "liquidation_plan_pending_work_created"
+        elif sync_required:
+            block_reason = "liquidation_plan_sync_required"
+        elif lot_mismatch:
+            block_reason = "liquidation_plan_lot_mismatch"
+        return {
+            "open_lot_count": len(open_lots),
+            "pending_order_count": len(pending_orders),
+            "pending_manual_request_count": len(pending_manual),
+            "sync_required_count": len(sync_required),
+            "lot_mismatch_count": len(lot_mismatch),
+            "risk_profile": self.config.risk.profile,
+            "db_open_lot_hash": db_hash,
+            "current_plan_exists": bool(plan),
+            "plan_path": latest_plan.get("path", ""),
+            "plan_id": plan.get("plan_id", ""),
+            "plan_created_at": plan.get("created_at", ""),
+            "plan_db_snapshot_at": plan.get("db_snapshot_at", ""),
+            "plan_kis_balance_snapshot_at": plan.get("kis_balance_snapshot_at", ""),
+            "plan_status": plan.get("status", ""),
+            "plan_expires_at": plan.get("expires_at", ""),
+            "plan_expired": plan_expired,
+            "plan_db_matches_current": db_matches,
+            "plan_kis_snapshot_hash": plan.get("kis_snapshot_hash", ""),
+            "request_creation_possible": block_reason == "",
+            "block_reason": block_reason,
+            "guidance": self._new_season_guidance(block_reason),
+        }
+
     def risk_banner(self, config: BotConfig) -> dict[str, Any]:
         warnings = []
         if config.order.live_trading:
@@ -459,6 +533,49 @@ class UIService:
             ],
         }
 
+    def review_required_list(self) -> dict[str, Any]:
+        rows = []
+        for position in self.positions():
+            if position.get("position_state") != PositionLifecycle.REVIEW_REQUIRED.value and not position.get("needs_review"):
+                continue
+            status = self.review_status(str(position.get("code") or ""))
+            lots = [lot for lot in self.lots() if lot.get("code") == position.get("code") and int(lot.get("remaining_quantity") or 0) > 0 and lot.get("status") != "CLOSED"]
+            stale = [lot for lot in lots if lot.get("stale_lot")]
+            profit_lots = [lot for lot in lots if float(lot.get("unrealized_pnl_rate") or 0) >= 0]
+            rows.append(
+                {
+                    "code": position.get("code", ""),
+                    "name": position.get("name", ""),
+                    "position_state": position.get("position_state", ""),
+                    "review_reason": position.get("review_reason", ""),
+                    "review_created_at": position.get("review_created_at", ""),
+                    "review_trigger_values": position.get("review_trigger_values", ""),
+                    "current_pnl_rate": position.get("profit_loss_pct", 0),
+                    "open_lot_count": len(lots),
+                    "stale_lot_count": len(stale),
+                    "db_quantity": position.get("quantity", 0),
+                    "sync_status": position.get("sync_status", ""),
+                    "lot_quantity_mismatch": bool(position.get("lot_quantity_mismatch")),
+                    "can_recheck": True,
+                    "profitable_lot_count": len(profit_lots),
+                    "active_reasons": status["active_reasons"],
+                    "trigger_values": status["trigger_values"],
+                    "recommended_actions": status["recommended_actions"],
+                    "release_requirements": self._review_release_requirements(status),
+                }
+            )
+        self._append_audit_log("review_required_list_viewed", {"count": len(rows)})
+        return {
+            "items": rows,
+            "count": len(rows),
+            "force_clear_available": False,
+            "guide": [
+                "REVIEW_REQUIRED는 조건을 무시하고 강제 해제하지 않습니다.",
+                "수동매도 후에는 체결 동기화/reconciliation 확인 뒤 상태 재평가를 실행하세요.",
+                "acknowledge는 확인 기록만 남기며 BUY 차단을 해제하지 않습니다.",
+            ],
+        }
+
     def review_recheck(self, code: str) -> dict[str, Any]:
         code = str(code).zfill(6)
         from .storage import StateStore
@@ -561,6 +678,45 @@ class UIService:
             "stale_lot_review_age_weeks": self.config.strategy.stale_lot_review_age_weeks,
         }
         return {"reasons": reasons, "values": values}
+
+    def _review_release_requirements(self, status: dict[str, Any]) -> list[str]:
+        reasons = set(status.get("active_reasons") or [])
+        values = status.get("trigger_values") or {}
+        requirements = []
+        if "symbol_loss_review" in reasons:
+            requirements.append(f"현재 손익률이 기준({values.get('review_symbol_loss_rate')})보다 회복되어야 합니다.")
+        if "too_many_open_lots" in reasons:
+            requirements.append(f"OPEN LOT 수가 허용 기준({values.get('max_lots')}) 이하가 되어야 합니다.")
+        if "stale_lot_review_age" in reasons:
+            requirements.append("장기 STALE LOT 조건이 해소되거나 수동 정리 후 reconciliation이 완료되어야 합니다.")
+        if "sync_required" in reasons:
+            requirements.append("DB와 KIS 잔고 동기화 불일치를 먼저 해결해야 합니다.")
+        if not requirements:
+            requirements.append("현재 review trigger는 해소된 것으로 보입니다. 상태 재평가를 실행할 수 있습니다.")
+        return requirements
+
+    def _latest_liquidation_plan(self) -> dict[str, Any]:
+        export_dir = Path("exports")
+        candidates = sorted(export_dir.glob("liquidation_plan_*.json")) if export_dir.exists() else []
+        for path in reversed(candidates):
+            try:
+                return {"path": str(path), "plan": json.loads(path.read_text(encoding="utf-8"))}
+            except (OSError, json.JSONDecodeError):
+                continue
+        return {"path": "", "plan": {}}
+
+    def _new_season_guidance(self, block_reason: str) -> str:
+        messages = {
+            "": "전량매도 예정표가 현재 보유 상태와 일치합니다.",
+            "liquidation_plan_missing": "전량매도 예정표를 새로 생성해야 합니다.",
+            "liquidation_plan_not_active": "전량매도 예정표가 ACTIVE 상태가 아닙니다. 새로 생성해주세요.",
+            "liquidation_plan_db_changed": "전량매도 예정표 생성 후 보유 LOT이 변경되었습니다. 새로 생성해야 합니다.",
+            "liquidation_plan_snapshot_expired": "KIS 잔고 확인 자료가 만료되었습니다. 다시 확인해주세요.",
+            "liquidation_plan_pending_work_created": "예정표 생성 후 미체결 주문 또는 미처리 수동 요청이 생겼습니다.",
+            "liquidation_plan_sync_required": "SYNC_REQUIRED 종목이 있어 전량매도 요청 생성이 차단됩니다.",
+            "liquidation_plan_lot_mismatch": "LOT 수량 불일치가 있어 전량매도 요청 생성이 차단됩니다.",
+        }
+        return messages.get(block_reason, block_reason)
 
     def positions(self) -> list[dict[str, Any]]:
         return self._table("positions")
@@ -1108,6 +1264,11 @@ def _mask_sensitive(value: str) -> str:
         masked = re.sub(rf"({part}[^=\s:]*[=:]\s*)[^,\s}}]+", rf"\1***", masked, flags=re.IGNORECASE)
     masked = re.sub(r"\b\d{8,}\b", "***", masked)
     return masked
+
+
+def _stable_hash(value: Any) -> str:
+    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _parse_key_values(body: str) -> dict[str, str]:

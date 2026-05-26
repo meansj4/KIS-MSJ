@@ -100,6 +100,8 @@ INDEX_HTML = r"""<!doctype html>
     <button onclick="loadConfig()">Config</button>
     <button onclick="loadRuntime()">Runtime Control</button>
     <button onclick="loadManualOrders()">수동 주문 요청</button>
+    <button onclick="loadNewSeason()">새 시즌 준비</button>
+    <button onclick="loadReviewRequired()">수동검토 필요</button>
   </div>
   <section id="content">Loading...</section>
 </main>
@@ -319,6 +321,9 @@ function rowsForTable(tableId) {
     const disabled = Number(row.remaining_quantity || 0) <= 0 || String(row.status || '') === 'CLOSED' ? 'disabled' : '';
     return `<div class="rowActions"><button ${disabled} onclick="openManualSell('${esc(row.code)}','${esc(row.lot_id)}',${Number(row.remaining_quantity || 0)})">수동 매도</button></div>`;
   }
+  if (tableId === 'reviewRequired') {
+    return `<div class="rowActions"><button onclick="reviewRecheck('${esc(row.code)}')">상태 재평가</button><button onclick="reviewAck('${esc(row.code)}')">확인/메모</button><button onclick="openStockLots('${esc(row.code)}')">수익권 LOT 보기</button></div>`;
+  }
   return '';
 }
 function sortTable(tableId, key) {
@@ -358,6 +363,8 @@ async function reloadCurrent() {
   if (currentView === 'orders') return loadOrders();
   if (currentView === 'runtime') return loadRuntime();
   if (currentView === 'manual') return loadManualOrders();
+  if (currentView === 'newSeason') return loadNewSeason();
+  if (currentView === 'reviewRequired') return loadReviewRequired();
   if (currentView === 'logs') return loadLogs();
   if (currentView === 'config') return renderConfig();
   return loadDashboard();
@@ -492,6 +499,36 @@ async function loadManualOrders() {
   </div>
   <h3>미리보기 / 생성 결과</h3><pre id="manualResult"></pre>
   <h3>수동 주문 요청 목록</h3>${table(requests, 'manualRequests')}`;
+}
+async function loadNewSeason() {
+  currentView = 'newSeason';
+  const s = await api('/api/new-season/status');
+  document.getElementById('content').innerHTML = `<h2>새 시즌 준비</h2>
+  <div class="manualBox"><strong>전량매도 예정표 최신성</strong><p>${esc(s.guidance || '')}</p>
+  <p class="muted">전량매도 예정표는 현재 DB OPEN LOT 상태와 KIS 잔고 snapshot 기준으로 생성된 문서입니다. DB/잔고/미체결 요청이 바뀌면 새로 생성해야 합니다.</p></div>
+  ${metrics(s)}
+  <h3>차단 사유 안내</h3>
+  <p class="muted">request_creation_possible=false이면 전량매도 request를 생성하지 않아야 합니다. UI는 KIS 주문 API를 직접 호출하지 않습니다.</p>`;
+}
+async function loadReviewRequired() {
+  currentView = 'reviewRequired';
+  const r = await api('/api/review-required');
+  const rows = r.items || [];
+  document.getElementById('content').innerHTML = `<h2>수동검토 필요</h2>
+  <div class="manualBox"><strong>처리 원칙</strong><p>${(r.guide || []).map(esc).join('<br>')}</p></div>
+  ${table(rows, 'reviewRequired', {actions:true})}
+  <div id="reviewResult"></div>`;
+}
+async function reviewRecheck(code) {
+  const r = await api('/api/review-required/' + encodeURIComponent(code) + '/recheck', {method:'POST', body:JSON.stringify({})});
+  document.getElementById('reviewResult').innerHTML = '<pre>'+esc(JSON.stringify(r, null, 2))+'</pre>';
+  await loadReviewRequired();
+}
+async function reviewAck(code) {
+  const note = prompt('확인 메모를 입력하세요. acknowledge는 BUY 차단을 해제하지 않습니다.', '') || '';
+  const r = await api('/api/review-required/' + encodeURIComponent(code) + '/acknowledge', {method:'POST', body:JSON.stringify({note, acknowledged_by:'local_ui'})});
+  document.getElementById('reviewResult').innerHTML = '<pre>'+esc(JSON.stringify(r, null, 2))+'</pre>';
+  await loadReviewRequired();
 }
 function manualPayload(side) {
   if (side === 'BUY') return {
@@ -648,12 +685,18 @@ class UIHandler(BaseHTTPRequestHandler):
                 "/api/execution-mapping/status": self.service.execution_mapping_status,
                 "/api/reconciliation/status": lambda: self.service.status()["reconciliation"],
                 "/api/runtime": self.service.runtime_status,
+                "/api/new-season/status": self.service.new_season_status,
+                "/api/review-required": self.service.review_required_list,
             }
             if parsed.path.startswith("/api/stocks/"):
                 code = parsed.path.rsplit("/", 1)[-1]
                 self._send_json(self.service.stock_detail(code))
                 return
             if parsed.path.startswith("/api/positions/") and parsed.path.endswith("/review-status"):
+                code = parsed.path.split("/")[3].zfill(6)
+                self._send_json(self.service.review_status(code))
+                return
+            if parsed.path.startswith("/api/review-required/") and parsed.path.endswith("/actions"):
                 code = parsed.path.split("/")[3].zfill(6)
                 self._send_json(self.service.review_status(code))
                 return
@@ -739,6 +782,14 @@ class UIHandler(BaseHTTPRequestHandler):
                 self._send_json(self.service.review_recheck(code))
                 return
             if parsed.path.startswith("/api/positions/") and parsed.path.endswith("/review/acknowledge"):
+                code = parsed.path.split("/")[3].zfill(6)
+                self._send_json(self.service.review_acknowledge(code, data.get("note", ""), data.get("acknowledged_by", "local_ui")))
+                return
+            if parsed.path.startswith("/api/review-required/") and parsed.path.endswith("/recheck"):
+                code = parsed.path.split("/")[3].zfill(6)
+                self._send_json(self.service.review_recheck(code))
+                return
+            if parsed.path.startswith("/api/review-required/") and parsed.path.endswith("/acknowledge"):
                 code = parsed.path.split("/")[3].zfill(6)
                 self._send_json(self.service.review_acknowledge(code, data.get("note", ""), data.get("acknowledged_by", "local_ui")))
                 return

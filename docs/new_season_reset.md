@@ -81,3 +81,35 @@ DB 초기화는 기존 보유/미체결/동기화 상태가 완전히 정리된 
 - `enable_execution_raw_log=true`
 - `live_trading=false` 상태에서 paper/mock 테스트 통과
 - live trading 전환 전 사용자 명시 확인
+## Liquidation plan latestness guard
+
+전량매도 예정표는 고정 문서가 아니라 “생성 시점의 DB OPEN LOT 상태 + KIS 잔고 snapshot”입니다. 따라서 예전에 만든 plan을 나중에 그대로 재사용하면 안 됩니다.
+
+plan 파일에는 다음 메타데이터가 저장됩니다.
+
+- `plan_id`, `created_at`
+- `db_snapshot_at`, `kis_balance_snapshot_at`
+- `source_db_path`, `source_kis_snapshot_path`
+- `db_open_lot_hash`, `kis_snapshot_hash`
+- `open_lot_count`
+- `pending_order_count`
+- `pending_manual_request_count`
+- `sync_required_count`
+- `lot_mismatch_count`
+- `status`: `ACTIVE`, `EXPIRED`, `SUPERSEDED`, `USED`, `BLOCKED`
+- `expires_at`, `max_age_minutes`
+
+새 plan을 생성하면 기존 `ACTIVE` plan은 `SUPERSEDED`로 바뀝니다. 전량매도 manual SELL request를 만들기 직전에는 아래를 다시 검증합니다.
+
+1. confirm text가 `전량매도 요청 확인`인지 확인
+2. plan이 존재하고 `ACTIVE`인지 확인
+3. 현재 DB OPEN LOT hash가 plan의 `db_open_lot_hash`와 같은지 확인
+4. KIS balance snapshot hash가 plan의 `kis_snapshot_hash`와 같은지 확인
+5. plan이 만료되지 않았는지 확인
+6. plan 생성 후 미체결 order나 pending manual request가 생기지 않았는지 확인
+7. `SYNC_REQUIRED` 또는 lot quantity mismatch가 없는지 확인
+8. DB 수량과 KIS snapshot 수량, sellable quantity가 모두 충분한지 확인
+
+검증 실패 시 `manual_order_requests`를 만들지 않으며, KIS 주문 API도 호출하지 않습니다. 차단 사유는 `liquidation_plan_db_changed`, `liquidation_plan_snapshot_expired`, `liquidation_plan_pending_work_created` 같은 `block_reason`으로 남깁니다.
+
+전량매도 request 생성 후에도 DB reset은 바로 허용되지 않습니다. 모든 수동 SELL request와 orders가 종결되고, OPEN LOT 0개, KIS/DB mismatch 없음, `SYNC_REQUIRED` 0개가 확인되어야 reset이 가능합니다.

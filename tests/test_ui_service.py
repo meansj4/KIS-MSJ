@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import sqlite3
 from dataclasses import asdict
 from datetime import datetime
 from unittest.mock import patch
@@ -644,6 +645,101 @@ def test_review_recheck_sync_mismatch_goes_sync_required(tmp_path):
     assert position.position_state == PositionLifecycle.SYNC_REQUIRED.value
     assert position.sync_status == PositionLifecycle.SYNC_REQUIRED.value
     assert position.trading_paused is True
+
+
+def test_review_required_list_returns_guidance_without_force_clear(tmp_path):
+    config_path, db_path, _ = _write_config(tmp_path)
+    store = StateStore(db_path)
+    store.save_position(
+        PositionState(
+            "005930",
+            "Samsung",
+            quantity=1,
+            current_price=7900,
+            cumulative_invested_amount=10000,
+            profit_loss_pct=-21.0,
+            position_state=PositionLifecycle.REVIEW_REQUIRED.value,
+            needs_review=True,
+            auto_buy_enabled=False,
+            review_reason="symbol_loss_review",
+            review_created_at="2026-05-26T09:00:00",
+        )
+    )
+    store.save_lot(
+        LotState(
+            "LOT-REVIEW-LIST",
+            "005930",
+            "2026-05-01T09:05:00",
+            buy_price=10000,
+            buy_quantity=1,
+            buy_amount=10000,
+            remaining_quantity=1,
+            target_profit_pct=6.0,
+            target_sell_price=10600,
+        )
+    )
+    service = UIService(config_path, tmp_path / "runtime.json")
+
+    result = service.review_required_list()
+
+    assert result["count"] == 1
+    assert result["force_clear_available"] is False
+    assert result["items"][0]["code"] == "005930"
+    assert "symbol_loss_review" in result["items"][0]["active_reasons"]
+    assert result["items"][0]["release_requirements"]
+
+
+def test_new_season_status_reports_stale_plan_after_lot_change(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config_path, db_path, _ = _write_config(tmp_path)
+    store = StateStore(db_path)
+    store.save_position(
+        PositionState(
+            "005930",
+            "Samsung",
+            quantity=2,
+            current_price=11000,
+            cumulative_invested_amount=20000,
+            position_state=PositionLifecycle.HOLDING.value,
+        )
+    )
+    store.save_lot(
+        LotState(
+            "LOT-1",
+            "005930",
+            "2026-05-01T09:05:00",
+            buy_price=10000,
+            buy_quantity=2,
+            buy_amount=20000,
+            remaining_quantity=2,
+            target_profit_pct=6.0,
+            target_sell_price=10600,
+        )
+    )
+    service = UIService(config_path, tmp_path / "runtime.json")
+    exports = tmp_path / "exports"
+    exports.mkdir()
+    status = service.new_season_status()
+    plan = {
+        "plan_id": "PLAN-1",
+        "created_at": "2026-05-26T09:00:00",
+        "db_snapshot_at": "2026-05-26T09:00:00",
+        "kis_balance_snapshot_at": "2026-05-26T09:00:00",
+        "db_open_lot_hash": status["db_open_lot_hash"],
+        "kis_snapshot_hash": "abc",
+        "status": "ACTIVE",
+        "expires_at": "2099-01-01T00:00:00",
+    }
+    (exports / "liquidation_plan_test.json").write_text(json.dumps(plan), encoding="utf-8")
+    before = service.new_season_status()
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("UPDATE lots SET remaining_quantity = 1 WHERE lot_id = 'LOT-1'")
+    after = service.new_season_status()
+
+    assert before["plan_db_matches_current"] is True
+    assert before["request_creation_possible"] is True
+    assert after["plan_db_matches_current"] is False
+    assert after["block_reason"] == "liquidation_plan_db_changed"
 
 
 def test_bot_loop_interrupts_promptly_for_runtime_pause(tmp_path):

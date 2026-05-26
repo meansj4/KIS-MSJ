@@ -601,3 +601,42 @@ UI에서 확인해야 할 핵심 항목:
 - Reset/New Season 작업 전: open order, SYNC_REQUIRED, lot mismatch, 미처리 manual order request 여부
 
 초기 확장 운용 권장값은 `expansion_100_safe`입니다. 이 프로파일은 총 투입 한도 2천만 원, 하루 신규 initial buy 10종목, 하루 신규 initial buy 주문금액 200만 원, 전체 OPEN LOT 300개를 기본으로 합니다.
+## 새 시즌 준비 화면과 plan 최신성
+
+UI의 “새 시즌 준비” 탭은 현재 DB 상태를 다시 읽어 다음 값을 보여줍니다.
+
+- OPEN LOT 수
+- 미체결 주문 수
+- 미처리 manual request 수
+- `SYNC_REQUIRED` 수
+- lot quantity mismatch 수
+- 현재 risk profile
+- 최신 liquidation plan의 생성 시각, status, 만료 여부
+- 현재 DB OPEN LOT hash와 plan의 hash 일치 여부
+
+liquidation plan은 과거 파일을 자동 재사용하지 않습니다. plan 생성 후 LOT, 주문, manual request, sync 상태가 바뀌면 `liquidation_plan_db_changed` 또는 `liquidation_plan_pending_work_created` 같은 사유로 전량매도 request 생성이 차단됩니다.
+
+사용자는 “전량매도 예정표가 오래되었습니다”, “보유 LOT이 변경되었습니다”, “KIS 잔고 확인 자료가 만료되었습니다” 같은 문구를 보고 plan을 새로 생성해야 합니다.
+
+## REVIEW_REQUIRED 전용 탭
+
+“수동검토 필요” 탭은 `REVIEW_REQUIRED` 또는 `needs_review=true` 종목을 한곳에 모아 보여줍니다.
+
+표시 정보:
+
+- 종목코드/종목명
+- `review_reason`, `review_created_at`, `review_trigger_values`
+- 현재 평가손익률
+- OPEN LOT 수, STALE LOT 수
+- DB 보유수량
+- sync 상태와 lot quantity mismatch
+- 현재도 남아 있는 trigger reason
+- 해제 조건과 추천 조치
+
+제공 액션:
+
+- 상태 재평가: 현재 DB lots/positions 기준으로 review 조건을 다시 계산합니다. 조건이 해소되면 `HOLDING` 또는 `WAIT_REENTRY` 등으로 복귀할 수 있고, sync mismatch가 있으면 `SYNC_REQUIRED`로 전환됩니다.
+- 확인/메모: 사용자가 확인했다는 기록만 남깁니다. BUY 차단은 해제하지 않습니다.
+- 수동매도 요청으로 이동: UI는 KIS 주문 API를 직접 호출하지 않고 manual order request 경로만 사용합니다.
+
+강제 해제 버튼은 제공하지 않습니다. 조건을 무시하고 `HOLDING`으로 바꾸면 자동매수 재개와 DB/KIS 불일치 위험이 있으므로, 반드시 reconciliation과 상태 재평가를 거쳐야 합니다.
