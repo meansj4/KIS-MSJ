@@ -703,8 +703,8 @@ Snapshot에 필요한 값:
 | --- | --- |
 | `code` / `pdno` / `symbol` | 종목코드. 코드에서는 6자리 문자열로 정규화한다. |
 | `holding_quantity` / `hldg_qty` / `quantity` | 실제 보유수량. 코드 검증에서 수량 비교에 사용한다. |
-| `sellable_quantity` / `ord_psbl_qty` / `available_quantity` | 매도가능수량. 없으면 현재 구현은 보유수량과 같다고 fallback하지만, 실제 전량매도 전에는 반드시 넣는 것을 권장한다. |
-| `generated_at` | 운영자가 snapshot 최신성을 판단하기 위한 권장 메타데이터. 현재 loader는 이 값을 직접 파싱하지 않고, plan 생성 시각과 `max_age_minutes`로 plan 만료를 판단한다. |
+| `sellable_quantity` / `ord_psbl_qty` / `available_quantity` | 매도가능수량. plan preview/dry-run에서는 없으면 보유수량으로 fallback하고 warning을 남길 수 있지만, 실제 liquidation request 생성 단계에서는 필수다. |
+| `generated_at` | snapshot 생성시각. plan preview/dry-run에서는 없으면 warning을 남길 수 있지만, 실제 liquidation request 생성 단계에서는 필수이며 ISO 시간 파싱과 max age 검증을 통과해야 한다. |
 | name/price 등 | 있으면 UI/plan 표시용 |
 
 검증:
@@ -911,10 +911,10 @@ Config 저장 UX는 backup, validation, diff, atomic write, round-trip verify, c
 | --- | --- |
 | 목적 | DB 보유수량과 실제 계좌 잔고 수량 비교 |
 | 입력 | JSON snapshot 파일. 예: `exports/kis_balance_snapshot_YYYYMMDD_HHMMSS.json` |
-| 확인 | code/pdno/symbol, holding_quantity/hldg_qty/quantity, sellable_quantity/ord_psbl_qty/available_quantity. `generated_at`은 권장 메타데이터이며 현재 validator의 필수 파싱 대상은 아니다. |
+| 확인 | code/pdno/symbol, holding_quantity/hldg_qty/quantity, sellable_quantity/ord_psbl_qty/available_quantity, generated_at. dry-run은 일부 누락을 warning으로 허용할 수 있지만 실제 request 생성은 strict 검증을 통과해야 한다. |
 | 절대 금지 | snapshot 없이 전량매도 request 생성 |
 
-현재 구현은 snapshot path를 입력받아 검증한다. KIS 주문 API를 호출하지 않는다. 코드 기준으로는 KIS 잔고 snapshot JSON을 자동 생성하는 기능이 `prepare_new_season.py`에 없다. 운영자는 UI/CLI에 넘길 JSON 파일을 별도로 준비해야 하며, 잔고 조회 자동 생성 기능을 붙일 경우에도 주문 API와 분리된 조회 전용 경로여야 한다.
+현재 구현은 snapshot path를 입력받아 검증한다. KIS 주문 API를 호출하지 않는다. 코드 기준으로는 KIS 잔고 snapshot JSON을 자동 생성하는 기능이 `prepare_new_season.py`에 없다. 운영자는 UI/CLI에 넘길 JSON 파일을 별도로 준비해야 한다. plan preview/dry-run에서는 `generated_at` 또는 `sellable_quantity` 누락을 warning으로 표시할 수 있지만, 실제 manual SELL request 생성 단계에서는 `generated_at` 파싱, snapshot max age, 실제 매도가능수량을 strict 검증한다.
 
 ### 28-7. liquidation plan 생성
 
@@ -994,13 +994,13 @@ snapshot이 없으면 liquidation request 생성은 막혀야 한다. 대표 blo
 
 | 필드 | 필수 | 의미 |
 | --- | --- | --- |
-| `generated_at` | 권장 | snapshot 생성 시각. 운영자가 최신성을 판단하기 위한 메타데이터다. 현재 `load_kis_balance_json()`은 이 값을 직접 파싱하지 않고, plan max age는 plan 생성 시각과 `--plan-max-age-minutes` 기준으로 판단한다. |
+| `generated_at` | request 생성 시 필수 | snapshot 생성 시각. plan preview/dry-run에서는 warning으로 허용 가능하지만, 실제 request 생성 단계에서는 ISO 시간 파싱과 max age 검증을 통과해야 한다. |
 | `source` | 권장 | `kis_balance_snapshot` 등 출처 표시 |
 | `account_id_masked` | 선택 | 계좌 식별용 마스킹 값. 원문 계좌번호 금지 |
 | `positions[].code` / `pdno` / `symbol` | 필수 | 종목코드. 6자리 문자열로 정규화 |
 | `positions[].name` | 권장 | 종목명 |
 | `positions[].holding_quantity` / `hldg_qty` / `quantity` | 필수 | 실제 계좌 보유수량 |
-| `positions[].sellable_quantity` / `ord_psbl_qty` / `available_quantity` | 강력 권장 | 실제 매도가능수량. 현재 구현은 없으면 보유수량으로 fallback하지만, 실전 전량매도 request 생성 전에는 실제 매도가능수량을 포함해야 한다. |
+| `positions[].sellable_quantity` / `ord_psbl_qty` / `available_quantity` | request 생성 시 필수 | 실제 매도가능수량. plan preview/dry-run에서는 없으면 보유수량 fallback + warning이 가능하지만, 실제 request 생성 단계에서는 누락 시 `liquidation_kis_sellable_quantity_missing`으로 차단한다. |
 | `positions[].average_price` | 선택 | 실제 계좌 평균단가. DB LOT 판단에는 직접 쓰지 않음 |
 | `positions[].current_price` | 선택 | 표시/예상금액 계산용 |
 
@@ -1010,7 +1010,10 @@ snapshot이 없으면 liquidation request 생성은 막혀야 한다. 대표 blo
 2. DB position total quantity와도 비교한다.
 3. KIS `holding_quantity`와 DB OPEN LOT quantity가 다르면 `liquidation_kis_balance_mismatch`.
 4. KIS `sellable_quantity`가 request 수량보다 작으면 `liquidation_sellable_quantity_insufficient`.
-5. snapshot이 오래되면 `liquidation_plan_snapshot_expired`.
+5. snapshot의 `generated_at`이 없으면 request 생성 단계에서 `liquidation_kis_balance_snapshot_missing_generated_at`.
+6. `generated_at` 파싱 실패 시 `liquidation_kis_balance_snapshot_invalid_generated_at`.
+7. snapshot age가 max age를 초과하면 `liquidation_kis_balance_snapshot_stale`.
+8. snapshot이 오래된 plan이면 `liquidation_plan_snapshot_expired`.
 
 raw execution mapping과의 차이:
 
@@ -1018,7 +1021,7 @@ raw execution mapping과의 차이:
 | --- | --- | --- |
 | 목적 | 실제 보유/매도가능 수량 확인 | 체결내역 row 필드명 검증 |
 | 사용 시점 | 전량매도 plan/request/reset 전 | 첫 실체결 후 reconciliation 검증 |
-| 핵심 필드 | code/pdno/symbol, holding_quantity/hldg_qty/quantity, sellable_quantity/ord_psbl_qty/available_quantity, generated_at 권장 | order_no, execution_id, filled_at, side, code, price, quantity |
+| 핵심 필드 | code/pdno/symbol, holding_quantity/hldg_qty/quantity, sellable_quantity/ord_psbl_qty/available_quantity, generated_at(request 생성 시 필수) | order_no, execution_id, filled_at, side, code, price, quantity |
 | 없을 때 | 전량매도 request 차단 | raw mapping warning 유지 |
 
 ## 30. API Endpoint / Payload 예시
@@ -1044,6 +1047,11 @@ raw execution mapping과의 차이:
 | `POST /api/new-season/liquidation-plan` | liquidation plan 생성 | 아니오 | DB 내용 변경 없음 |
 | `POST /api/new-season/liquidation-requests` | manual SELL request 생성 | 아니오 | manual_order_requests만 |
 | `POST /api/new-season/reset-db` | DB reset dry-run/실행 | 아니오 | execute+confirm+guard 통과 시 DB 초기화 |
+
+Snapshot strict validation:
+
+- `POST /api/new-season/liquidation-plan`: preview/plan 생성 목적이다. `generated_at` 또는 `sellable_quantity` 누락은 plan의 `snapshot_warnings`, `request_creation_allowed=false`, `request_creation_block_reason`으로 남길 수 있다.
+- `POST /api/new-season/liquidation-requests`: 실제 manual SELL request 생성 직전 strict 모드다. `generated_at` 누락/파싱 실패/age 초과, `sellable_quantity` 누락/부족은 request 생성을 차단한다.
 
 ### 수동 BUY preview 예시
 
@@ -1375,7 +1383,8 @@ DB 초기화 버튼이 비활성인 대표 원인:
 | manual order 표현 | “KIS 직접 주문 API 없음 / manual request 생성 API는 있음”으로 통일한다. |
 | CLI options | `scripts/prepare_new_season.py --help` 기준으로 `--config`, `--archive-root`, `--profile`, `--apply-config`, `--archive`, `--liquidation-plan`, `--create-liquidation-requests`, `--kis-balance-json`, `--liquidation-plan-file`, `--plan-max-age-minutes`, `--reset-db`, `--confirm`, `--dry-run`, `--execute`를 확인했다. 문서에서 `--archive`는 실제 백업 실행 플래그이고, archive root 지정은 `--archive-root`가 맞다. |
 | API routes | `src/kis_msj/ui_server.py` 기준으로 `GET /api/status`, `/api/stocks`, `/api/lots`, `/api/orders`, `/api/fills`, `/api/manual-order-requests`, `POST /api/manual-orders/preview`, `POST /api/manual-orders`, review API, new-season API가 존재함을 확인했다. 옛 `/api/manual-order-preview` 표기는 사용하지 않는다. |
-| KIS snapshot 표현 | 현재 구현은 snapshot JSON 파일을 입력받아 검증하는 구조다. `prepare_new_season.py`에는 KIS 잔고 snapshot 자동 생성 기능이 없으므로 운영자가 별도 JSON을 준비해야 한다. loader는 `code/pdno/symbol`, `holding_quantity/hldg_qty/quantity`, `sellable_quantity/ord_psbl_qty/available_quantity`를 지원하며, `sellable_quantity` 누락 시 보유수량으로 fallback한다. `generated_at`은 권장 메타데이터지만 현재 loader 필수 파싱 대상은 아니다. |
+| KIS snapshot 표현 | 현재 구현은 snapshot JSON 파일을 입력받아 검증하는 구조다. `prepare_new_season.py`에는 KIS 잔고 snapshot 자동 생성 기능이 없으므로 운영자가 별도 JSON을 준비해야 한다. loader는 `code/pdno/symbol`, `holding_quantity/hldg_qty/quantity`, `sellable_quantity/ord_psbl_qty/available_quantity`를 지원한다. preview/dry-run에서는 `generated_at` 또는 `sellable_quantity` 누락을 warning으로 허용할 수 있지만, 실제 request 생성 단계에서는 둘 다 필수다. |
+| Snapshot strict mode | 최신 보강 기준으로 preview/dry-run은 `generated_at` 누락, `sellable_quantity` 누락을 warning으로 plan에 남길 수 있다. 실제 liquidation request 생성 단계에서는 `generated_at`과 실제 `sellable_quantity`가 필수이며, 누락/파싱 실패/age 초과/매도가능수량 부족은 차단한다. |
 | 중복/구버전 문서 | `docs` 폴더의 주요 문서 7개를 확인했으며 같은 목적의 구버전/중복 문서는 발견하지 못했다. |
 | 문서 링크 | 주요 문서 상단의 상대 링크가 실제 파일명과 일치함을 확인했다. |
 | Runbook 명령어 | 저장소 루트 `C:\MSJ\KIS-MSJ`, 필요 시 `$env:PYTHONPATH='src'`, dry-run/execute 구분, confirm text 명시. |

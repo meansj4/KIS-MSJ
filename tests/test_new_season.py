@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import sqlite3
+from datetime import datetime, timedelta
 from pathlib import Path
 
 
@@ -53,9 +54,19 @@ def _seed_liquidation_db(db_path: Path, *, order_status: str = "", manual_status
             connection.execute("INSERT INTO manual_order_requests (request_id, code, side, quantity, lot_id, status) VALUES ('MANUAL-1', '005930', 'SELL', 2, 'LOT-1', ?)", (manual_status,))
 
 
-def _write_balance(tmp_path: Path, *, quantity: int = 2, sellable: int = 2) -> Path:
+def _write_balance(
+    tmp_path: Path,
+    *,
+    quantity: int = 2,
+    sellable: int | None = 2,
+    generated_at: str | None = None,
+) -> Path:
     path = tmp_path / "kis_balance.json"
-    path.write_text(json.dumps([{"code": "005930", "quantity": quantity, "sellable_quantity": sellable}], ensure_ascii=False), encoding="utf-8")
+    row = {"code": "005930", "quantity": quantity}
+    if sellable is not None:
+        row["sellable_quantity"] = sellable
+    payload = {"generated_at": generated_at or datetime.now().isoformat(timespec="seconds"), "positions": [row]}
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     return path
 
 
@@ -218,6 +229,111 @@ def test_liquidation_plan_does_not_create_orders_or_requests(tmp_path) -> None:
     assert result["items"][0]["block_reason"] == "liquidation_kis_balance_fetch_required"
     with sqlite3.connect(db_path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM manual_order_requests").fetchone()[0] == 0
+
+
+def test_liquidation_plan_preview_warns_when_snapshot_metadata_is_missing(tmp_path) -> None:
+    db_path = tmp_path / "state.sqlite3"
+    config_path = _write_config(tmp_path, db_path)
+    _seed_liquidation_db(db_path)
+    balance_path = tmp_path / "kis_balance.json"
+    balance_path.write_text(json.dumps({"positions": [{"code": "005930", "quantity": 2}]}, ensure_ascii=False), encoding="utf-8")
+
+    validation = prepare_new_season.validate_kis_balance_snapshot(balance_path, mode="preview")
+    plan = prepare_new_season.liquidation_plan(
+        config_path,
+        tmp_path / "exports",
+        dry_run=True,
+        kis_balances=validation["balances"],
+        kis_balance_path=balance_path,
+    )
+
+    assert validation["valid"] is True
+    assert "snapshot_generated_at_missing_warning" in plan["snapshot_warnings"]
+    assert "snapshot_sellable_quantity_fallback_warning" in plan["snapshot_warnings"]
+    assert plan["request_creation_allowed"] is False
+    assert plan["request_creation_block_reason"] == "liquidation_kis_balance_snapshot_missing_generated_at"
+
+
+def test_liquidation_request_requires_generated_at_and_sellable_quantity(tmp_path) -> None:
+    db_path = tmp_path / "state.sqlite3"
+    config_path = _write_config(tmp_path, db_path)
+    _seed_liquidation_db(db_path)
+    balance_path = tmp_path / "kis_balance.json"
+    balance_path.write_text(json.dumps({"positions": [{"code": "005930", "quantity": 2}]}, ensure_ascii=False), encoding="utf-8")
+    plan = prepare_new_season.liquidation_plan(
+        config_path,
+        tmp_path / "exports",
+        dry_run=False,
+        kis_balances=prepare_new_season.load_kis_balance_json(balance_path),
+        kis_balance_path=balance_path,
+    )
+
+    result = prepare_new_season.create_liquidation_manual_requests(
+        config_path,
+        prepare_new_season.CONFIRM_LIQUIDATION,
+        dry_run=False,
+        kis_balance_path=balance_path,
+        plan_path=Path(plan["plan_path"]),
+    )
+
+    assert result["reason"] == "liquidation_kis_balance_snapshot_missing_generated_at"
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM manual_order_requests").fetchone()[0] == 0
+
+
+def test_liquidation_request_blocks_missing_sellable_even_when_generated_at_exists(tmp_path) -> None:
+    db_path = tmp_path / "state.sqlite3"
+    config_path = _write_config(tmp_path, db_path)
+    _seed_liquidation_db(db_path)
+    balance_path = _write_balance(tmp_path, sellable=None)
+    plan = prepare_new_season.liquidation_plan(
+        config_path,
+        tmp_path / "exports",
+        dry_run=False,
+        kis_balances=prepare_new_season.load_kis_balance_json(balance_path),
+        kis_balance_path=balance_path,
+    )
+
+    result = prepare_new_season.create_liquidation_manual_requests(
+        config_path,
+        prepare_new_season.CONFIRM_LIQUIDATION,
+        dry_run=False,
+        kis_balance_path=balance_path,
+        plan_path=Path(plan["plan_path"]),
+    )
+
+    assert result["reason"] == "liquidation_kis_sellable_quantity_missing"
+
+
+def test_liquidation_request_blocks_invalid_or_stale_generated_at(tmp_path) -> None:
+    for name, generated_at, expected in [
+        ("invalid", "not-a-time", "liquidation_kis_balance_snapshot_invalid_generated_at"),
+        ("stale", (datetime.now() - timedelta(minutes=120)).isoformat(timespec="seconds"), "liquidation_kis_balance_snapshot_stale"),
+    ]:
+        case_dir = tmp_path / name
+        case_dir.mkdir()
+        db_path = case_dir / "state.sqlite3"
+        config_path = _write_config(case_dir, db_path)
+        _seed_liquidation_db(db_path)
+        balance_path = _write_balance(case_dir, generated_at=generated_at)
+        plan = prepare_new_season.liquidation_plan(
+            config_path,
+            case_dir / "exports",
+            dry_run=False,
+            kis_balances=prepare_new_season.load_kis_balance_json(balance_path),
+            kis_balance_path=balance_path,
+            max_age_minutes=60,
+        )
+
+        result = prepare_new_season.create_liquidation_manual_requests(
+            config_path,
+            prepare_new_season.CONFIRM_LIQUIDATION,
+            dry_run=False,
+            kis_balance_path=balance_path,
+            plan_path=Path(plan["plan_path"]),
+        )
+
+        assert result["reason"] == expected
 
 
 def test_liquidation_manual_requests_require_confirm_and_use_queue_only(tmp_path) -> None:

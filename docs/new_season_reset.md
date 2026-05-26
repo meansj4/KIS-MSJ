@@ -328,6 +328,19 @@ Fields accepted by the current loader:
 - holding quantity: `holding_quantity`, `hldg_qty`, or `quantity`
 - sellable quantity: `sellable_quantity`, `ord_psbl_qty`, or `available_quantity`
 
-`sellable_quantity` falls back to holding quantity if omitted, but real liquidation safety requires an actual sellable quantity from the account snapshot whenever possible. `generated_at` is recommended metadata for the operator/UI, but the current loader does not parse it as a required field. Plan expiration is based on the liquidation plan creation time and `--plan-max-age-minutes`.
+Validation mode is intentionally split:
+
+- Preview / dry-run: missing `generated_at` is allowed with `snapshot_generated_at_missing_warning`. Missing sellable quantity is allowed with holding-quantity fallback plus `snapshot_sellable_quantity_fallback_warning`. The plan can be shown, but `request_creation_allowed` must be false.
+- Create request: `generated_at` is required, must parse as an ISO timestamp, and must be within `--plan-max-age-minutes`. Sellable quantity is required from the snapshot. Missing/invalid/stale snapshot metadata blocks manual SELL request creation.
+
+Request-mode block reasons:
+
+- `liquidation_kis_balance_snapshot_missing_generated_at`
+- `liquidation_kis_balance_snapshot_invalid_generated_at`
+- `liquidation_kis_balance_snapshot_stale`
+- `liquidation_kis_sellable_quantity_missing`
+- `liquidation_sellable_quantity_insufficient`
+
+`sellable_quantity` falls back to holding quantity only for preview/dry-run. Do not use fallback sellable quantity to create actual liquidation requests. Plan expiration also checks the liquidation plan creation time and `--plan-max-age-minutes`.
 
 If the snapshot is missing, stale by plan age, unparsable, or inconsistent with DB quantities, liquidation request creation must be blocked.

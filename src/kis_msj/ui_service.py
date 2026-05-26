@@ -40,6 +40,10 @@ NEW_SEASON_REASON_GUIDE: dict[str, dict[str, str]] = {
     "liquidation_plan_pending_work_created": {"title": "예정표 생성 후 진행 중 작업이 생겼습니다.", "description": "예정표 생성 이후 미체결 주문 또는 미처리 수동 요청이 생겼습니다.", "next_action": "진행 중 작업을 정리하고 예정표를 다시 생성하세요."},
     "liquidation_plan_sync_required": {"title": "동기화가 필요합니다.", "description": "SYNC_REQUIRED 상태가 있어 전량매도 요청 생성이 차단됩니다.", "next_action": "reconciliation을 먼저 완료하세요."},
     "liquidation_plan_lot_mismatch": {"title": "LOT 수량 불일치가 있습니다.", "description": "DB LOT 수량과 포지션/실제 계좌 수량이 맞지 않을 가능성이 있습니다.", "next_action": "수량 불일치를 해결한 뒤 다시 시도하세요."},
+    "liquidation_kis_balance_snapshot_missing_generated_at": {"title": "잔고 snapshot 생성시각이 없습니다.", "description": "실제 전량매도 요청 생성에는 최신성 검증을 위한 generated_at 값이 필요합니다.", "next_action": "generated_at이 포함된 최신 KIS 잔고 snapshot을 준비하세요."},
+    "liquidation_kis_balance_snapshot_invalid_generated_at": {"title": "잔고 snapshot 생성시각을 읽을 수 없습니다.", "description": "generated_at 값이 ISO 시간 형식이 아니어서 최신성 검증을 할 수 없습니다.", "next_action": "generated_at을 예: 2026-05-27T09:30:00+09:00 형식으로 수정한 snapshot을 준비하세요."},
+    "liquidation_kis_balance_snapshot_stale": {"title": "잔고 snapshot이 오래되었습니다.", "description": "snapshot 생성시각이 허용 유효시간을 초과했습니다.", "next_action": "최신 KIS 잔고 snapshot을 다시 준비하고 전량매도 예정표를 재생성하세요."},
+    "liquidation_kis_sellable_quantity_missing": {"title": "매도가능수량이 없습니다.", "description": "실제 전량매도 요청 생성에는 sellable_quantity 또는 ord_psbl_qty 같은 매도가능수량 필드가 필요합니다.", "next_action": "매도가능수량이 포함된 최신 KIS 잔고 snapshot을 준비하세요."},
     "reset_open_lot_exists": {"title": "아직 보유 LOT이 남아 있습니다.", "description": "OPEN LOT이 남아 있어 DB 초기화를 할 수 없습니다.", "next_action": "전량매도와 체결 동기화를 완료하세요."},
     "reset_pending_order_exists": {"title": "미체결 주문이 있습니다.", "description": "진행 중 주문이 있어 DB 초기화를 할 수 없습니다.", "next_action": "주문 상태를 확인하고 종결될 때까지 기다리세요."},
     "reset_pending_manual_request_exists": {"title": "미처리 수동 요청이 있습니다.", "description": "manual_order_requests에 아직 진행 중인 요청이 있습니다.", "next_action": "수동 요청 처리를 완료하세요."},
@@ -397,6 +401,8 @@ class UIService:
             block_reason = "liquidation_plan_db_changed"
         elif plan_expired:
             block_reason = "liquidation_plan_snapshot_expired"
+        elif plan.get("request_creation_allowed") is False and plan.get("request_creation_block_reason"):
+            block_reason = str(plan.get("request_creation_block_reason"))
         elif pending_orders or pending_manual:
             block_reason = "liquidation_plan_pending_work_created"
         elif sync_required:
@@ -812,6 +818,10 @@ class UIService:
             "liquidation_plan_pending_work_created": "예정표 생성 후 미체결 주문 또는 미처리 수동 요청이 생겼습니다.",
             "liquidation_plan_sync_required": "SYNC_REQUIRED 종목이 있어 전량매도 요청 생성이 차단됩니다.",
             "liquidation_plan_lot_mismatch": "LOT 수량 불일치가 있어 전량매도 요청 생성이 차단됩니다.",
+            "liquidation_kis_balance_snapshot_missing_generated_at": "KIS 잔고 snapshot에 generated_at이 없어 실제 요청 생성이 차단됩니다.",
+            "liquidation_kis_balance_snapshot_invalid_generated_at": "KIS 잔고 snapshot의 generated_at 형식을 읽을 수 없습니다.",
+            "liquidation_kis_balance_snapshot_stale": "KIS 잔고 snapshot이 오래되어 최신 상태를 보장할 수 없습니다.",
+            "liquidation_kis_sellable_quantity_missing": "KIS 잔고 snapshot에 실제 매도가능수량이 없어 요청 생성이 차단됩니다.",
         }
         return messages.get(block_reason, block_reason)
 

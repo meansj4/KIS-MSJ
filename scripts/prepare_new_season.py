@@ -26,6 +26,8 @@ TERMINAL_MANUAL_STATUSES = ("FILLED", "CANCELED", "REJECTED", "FAILED", "BLOCKED
 PLAN_ACTIVE_STATUSES = ("ACTIVE",)
 PLAN_TERMINAL_STATUSES = ("EXPIRED", "SUPERSEDED", "USED", "BLOCKED")
 DEFAULT_PLAN_MAX_AGE_MINUTES = 60
+SNAPSHOT_WARN_MISSING_GENERATED_AT = "snapshot_generated_at_missing_warning"
+SNAPSHOT_WARN_SELLABLE_FALLBACK = "snapshot_sellable_quantity_fallback_warning"
 
 KOSPI_100: list[dict[str, Any]] = [
     {"code": "005930", "name": "삼성전자", "sector": "반도체"},
@@ -236,19 +238,88 @@ def apply_expansion_config(config_path: Path, profile: str, dry_run: bool) -> di
     return result
 
 
-def load_kis_balance_json(path: Path | None) -> dict[str, dict[str, int]]:
+def _parse_snapshot_time(value: Any) -> datetime:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError("missing generated_at")
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    return datetime.fromisoformat(text)
+
+
+def validate_kis_balance_snapshot(
+    path: Path | None,
+    *,
+    mode: str = "preview",
+    max_age_minutes: int = DEFAULT_PLAN_MAX_AGE_MINUTES,
+) -> dict[str, Any]:
+    warnings: list[str] = []
+    errors: list[str] = []
     if path is None:
-        return {}
+        return {
+            "valid": False,
+            "reason": "liquidation_kis_balance_fetch_failed",
+            "balances": {},
+            "warnings": warnings,
+            "errors": ["liquidation_kis_balance_fetch_failed"],
+            "generated_at": "",
+            "snapshot_age_minutes": None,
+            "snapshot_validation_mode": mode,
+            "request_creation_allowed": False,
+        }
     raw = json.loads(path.read_text(encoding="utf-8"))
     rows = raw.get("positions", raw) if isinstance(raw, dict) else raw
     result: dict[str, dict[str, int]] = {}
+    generated_at = raw.get("generated_at", "") if isinstance(raw, dict) else ""
+    snapshot_age_minutes: float | None = None
+    try:
+        generated_dt = _parse_snapshot_time(generated_at)
+        now = datetime.now(generated_dt.tzinfo) if generated_dt.tzinfo else datetime.now()
+        snapshot_age_minutes = max(0.0, (now - generated_dt).total_seconds() / 60.0)
+        if max_age_minutes >= 0 and snapshot_age_minutes > max_age_minutes:
+            errors.append("liquidation_kis_balance_snapshot_stale")
+    except ValueError:
+        if generated_at:
+            errors.append("liquidation_kis_balance_snapshot_invalid_generated_at")
+        else:
+            warnings.append(SNAPSHOT_WARN_MISSING_GENERATED_AT)
+            if mode == "create_request":
+                errors.append("liquidation_kis_balance_snapshot_missing_generated_at")
     for row in rows:
         code = str(row.get("code") or row.get("pdno") or row.get("symbol") or "").zfill(6)
         if not code or code == "000000":
             continue
         quantity = int(float(row.get("quantity") or row.get("hldg_qty") or row.get("holding_quantity") or 0))
-        sellable = int(float(row.get("sellable_quantity") or row.get("ord_psbl_qty") or row.get("available_quantity") or quantity))
+        sellable_value = row.get("sellable_quantity")
+        if sellable_value in (None, ""):
+            sellable_value = row.get("ord_psbl_qty")
+        if sellable_value in (None, ""):
+            sellable_value = row.get("available_quantity")
+        if sellable_value in (None, ""):
+            warnings.append(SNAPSHOT_WARN_SELLABLE_FALLBACK)
+            if mode == "create_request":
+                errors.append("liquidation_kis_sellable_quantity_missing")
+            sellable_value = quantity
+        sellable = int(float(sellable_value))
         result[code] = {"holding_quantity": quantity, "sellable_quantity": sellable}
+    reason = errors[0] if errors else ""
+    return {
+        "valid": not errors,
+        "reason": reason,
+        "balances": result,
+        "warnings": sorted(set(warnings)),
+        "errors": sorted(set(errors)),
+        "generated_at": str(generated_at or ""),
+        "snapshot_age_minutes": snapshot_age_minutes,
+        "snapshot_validation_mode": mode,
+        "request_creation_allowed": mode == "create_request" and not errors,
+    }
+
+
+def load_kis_balance_json(path: Path | None) -> dict[str, dict[str, int]]:
+    if path is None:
+        return {}
+    return validate_kis_balance_snapshot(path, mode="preview")["balances"]
     return result
 
 
@@ -328,7 +399,23 @@ def liquidation_plan(
     db_path = Path(config.get("storage_path", ""))
     output_dir.mkdir(parents=True, exist_ok=True)
     items = []
-    kis_balances = kis_balances or {}
+    snapshot_validation = validate_kis_balance_snapshot(kis_balance_path, mode="preview", max_age_minutes=max_age_minutes) if kis_balance_path else {
+        "valid": False,
+        "reason": "liquidation_kis_balance_fetch_required",
+        "balances": kis_balances or {},
+        "warnings": [],
+        "errors": ["liquidation_kis_balance_fetch_required"] if not kis_balances else [],
+        "generated_at": "",
+        "snapshot_age_minutes": None,
+        "snapshot_validation_mode": "preview",
+        "request_creation_allowed": False,
+    }
+    kis_balances = snapshot_validation.get("balances") or kis_balances or {}
+    strict_snapshot_validation = (
+        validate_kis_balance_snapshot(kis_balance_path, mode="create_request", max_age_minutes=max_age_minutes)
+        if kis_balance_path
+        else {**snapshot_validation, "valid": False, "request_creation_allowed": False}
+    )
     source = "db_and_kis_reconciled" if kis_balances else "db_only_dry_run"
     created_at = datetime.now()
     db_snapshot = db_open_lot_snapshot(db_path)
@@ -441,6 +528,13 @@ def liquidation_plan(
         "status_reason": "blocked_by_missing_or_ineligible_snapshot" if status == "BLOCKED" else "",
         "expires_at": (created_at + timedelta(minutes=max_age_minutes)).isoformat(timespec="seconds"),
         "max_age_minutes": max_age_minutes,
+        "snapshot_warnings": snapshot_validation.get("warnings", []),
+        "snapshot_errors": snapshot_validation.get("errors", []),
+        "snapshot_generated_at": snapshot_validation.get("generated_at", ""),
+        "snapshot_age_minutes": snapshot_validation.get("snapshot_age_minutes"),
+        "snapshot_validation_mode": snapshot_validation.get("snapshot_validation_mode", "preview"),
+        "request_creation_allowed": status == "ACTIVE" and bool(strict_snapshot_validation.get("valid")),
+        "request_creation_block_reason": "" if status == "ACTIVE" and bool(strict_snapshot_validation.get("valid")) else (strict_snapshot_validation.get("reason") or ("blocked_by_missing_or_ineligible_snapshot" if status == "BLOCKED" else "")),
         "dry_run": dry_run,
         "order_api_called": False,
         "manual_requests_created": False,
@@ -489,9 +583,16 @@ def validate_liquidation_plan(
     if kis_balance_path is None:
         return {"valid": False, "reason": "liquidation_kis_balance_fetch_failed"}
     try:
-        kis_balances = load_kis_balance_json(kis_balance_path)
+        snapshot_validation = validate_kis_balance_snapshot(
+            kis_balance_path,
+            mode="create_request",
+            max_age_minutes=int(plan.get("max_age_minutes") or max_age_minutes or DEFAULT_PLAN_MAX_AGE_MINUTES),
+        )
     except (OSError, json.JSONDecodeError, ValueError):
         return {"valid": False, "reason": "liquidation_kis_balance_fetch_failed"}
+    if not snapshot_validation["valid"]:
+        return {"valid": False, "reason": snapshot_validation["reason"], "snapshot_validation": snapshot_validation}
+    kis_balances = snapshot_validation["balances"]
     kis_snapshot = kis_balance_snapshot(kis_balances)
     if kis_snapshot["hash"] != plan.get("kis_snapshot_hash"):
         return {"valid": False, "reason": "liquidation_plan_kis_snapshot_changed", "current_kis_snapshot_hash": kis_snapshot["hash"], "plan_kis_snapshot_hash": plan.get("kis_snapshot_hash")}
