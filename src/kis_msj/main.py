@@ -10,7 +10,7 @@ from datetime import datetime, time as day_time
 from pathlib import Path
 from typing import Sequence
 
-from .config import DEFAULT_CONFIG_PATH, BotConfig, load_config, write_default_config
+from .config import DEFAULT_CONFIG_PATH, BotConfig, config_hash, config_to_dict, load_config, write_default_config
 from .kis_client import KisClient, MockKisClient
 from .logger import configure_trade_logger, log_decision
 from .lot_manager import LotManager
@@ -36,6 +36,9 @@ class AutoTrader:
         self.config = config
         self.logger = configure_trade_logger(config.log_path)
         self.store = StateStore(config.storage_path)
+        self.config_hash = config_hash(config)
+        self.store.set_active_config(self.config_hash)
+        self.store.record_config_snapshot(self.config_hash, config_to_dict(config), source="bot_init")
         self.lot_manager = LotManager(config.strategy, self.store.load_lots())
         self.position_manager = PositionManager(config.strategy, self.lot_manager, self.store.load_positions())
         self.risk_manager = RiskManager(config)
@@ -403,8 +406,10 @@ class AutoTrader:
             for lot in lots
         )
         avg_profit_pct = (current_price - position.average_price) / position.average_price * 100.0 if position.average_price else 0.0
-        log_decision(
-            self.logger,
+        decision_data = dict(
+            config_hash=self.config_hash,
+            risk_profile=self.config.risk.profile,
+            lot_sizing_mode=self.config.strategy.lot_sizing_mode,
             code=position.code,
             name=position.name,
             current_price=current_price,
@@ -427,9 +432,9 @@ class AutoTrader:
             lot_sizing_bucket=context.lot_sizing_bucket,
             lot_sizing_locked=context.lot_sizing_locked,
             lot_sizing_locked_at=context.lot_sizing_locked_at,
-            lot_sizing_mode=context.lot_sizing_mode,
             lot_sizing_skip_reason=context.lot_sizing_skip_reason,
             add_buy_lot_band=context.add_buy_lot_band,
+            add_buy_drop_rate=f"{context.target_buy_drop_rate:.4f}",
             current_open_lot_count=context.current_open_lot_count,
             original_lot_base_target_profit_rate=f"{context.original_lot_base_target_profit_rate:.4f}",
             current_base_target_profit_rate=f"{context.current_base_target_profit_rate:.4f}",
@@ -466,6 +471,9 @@ class AutoTrader:
             cycle_sell_median_price=context.cycle_sell_median_price,
             normal_exit_anchor_price=context.normal_exit_anchor_price,
             trailing_exit_anchor_price=context.trailing_exit_anchor_price,
+            normal_reentry_drop_rate=f"{self.config.strategy.normal_reentry_drop_rate:.4f}",
+            trailing_activation_gain=f"{self.config.strategy.trailing_activation_gain:.4f}",
+            trailing_reentry_drop_rate=f"{self.config.strategy.trailing_reentry_drop_rate:.4f}",
             cycle_sell_fill_count=context.cycle_sell_fill_count,
             anchor_single_fill=context.anchor_single_fill,
             anchor_confidence=context.anchor_confidence,
@@ -479,6 +487,10 @@ class AutoTrader:
             cleanup_loss_budget=context.cleanup_loss_budget,
             expected_cleanup_loss=context.expected_cleanup_loss,
             cleanup_allowed=context.cleanup_allowed,
+            cleanup_enabled=self.config.strategy.cleanup_enabled,
+            stale_lot_loss_rate=f"{self.config.strategy.stale_lot_loss_rate:.4f}",
+            stale_lot_min_age_weeks=self.config.strategy.stale_lot_min_age_weeks,
+            review_symbol_loss_rate=f"{self.config.strategy.review_symbol_loss_rate:.4f}",
             cleanup_buy_cooldown_until=context.cleanup_buy_cooldown_until,
             cleanup_reentry_cooldown_until=context.cleanup_reentry_cooldown_until,
             profit_take_lot_count=context.profit_take_lot_count,
@@ -498,6 +510,7 @@ class AutoTrader:
             total_invested_amount=self.total_invested_amount(),
             max_active_symbols=self.config.risk.max_active_symbols,
             max_new_buy_per_day=self.config.risk.max_new_buy_per_day,
+            max_new_buy_amount_per_day=self.config.risk.max_new_buy_amount_per_day,
             max_total_open_lots=self.config.risk.max_total_open_lots,
             max_total_invested_amount=self.config.risk.max_total_invested_amount,
             portfolio_risk_block_reason=portfolio_risk_block_reason or self.portfolio_buy_block_reason(position, None),
@@ -509,6 +522,8 @@ class AutoTrader:
             sync_status=position.sync_status,
             action=action,
         )
+        log_decision(self.logger, **decision_data)
+        self.store.record_decision(decision_data)
 
     def pre_request_block_reason(self, position: PositionState, action, portfolio_preview: str = "") -> str:
         """Return the final guard reason that blocks an action before any order request."""

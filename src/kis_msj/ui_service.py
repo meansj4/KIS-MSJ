@@ -15,7 +15,7 @@ from datetime import datetime, time as day_time
 from pathlib import Path
 from typing import Any
 
-from .config import DEFAULT_CONFIG_PATH, BotConfig, load_config
+from .config import DEFAULT_CONFIG_PATH, BotConfig, config_hash, load_config
 from .kis_client import KisClient
 from .lot_manager import LotManager
 from .models import OrderSide, PositionLifecycle, PositionState
@@ -358,6 +358,26 @@ class UIService:
             "order_status_counts": _count_by(orders, "status"),
             "reconciliation": self.reconciliation_summary(logs),
             "execution_mapping": raw_mapping,
+            "analysis_status": self.analysis_status(positions, lots, fills),
+        }
+
+    def analysis_status(self, positions: list[dict[str, Any]], lots: list[dict[str, Any]], fills: list[dict[str, Any]]) -> dict[str, Any]:
+        config_snapshots = self._table("config_snapshots")
+        decisions = self._table("decisions")
+        closed_lots = [lot for lot in lots if str(lot.get("status") or "") == "CLOSED" or int(lot.get("remaining_quantity") or 0) <= 0]
+        open_lots = [lot for lot in lots if str(lot.get("status") or "") != "CLOSED" and int(lot.get("remaining_quantity") or 0) > 0]
+        dates = {str(fill.get("filled_at") or "")[:10] for fill in fills if str(fill.get("filled_at") or "")}
+        return {
+            "fill_count": len(fills),
+            "closed_lot_count": len(closed_lots),
+            "open_lot_count": len(open_lots),
+            "stale_lot_count": sum(1 for lot in open_lots if lot.get("cleanup_candidate")),
+            "review_required_count": sum(1 for position in positions if position.get("needs_review") or position.get("position_state") == PositionLifecycle.REVIEW_REQUIRED.value),
+            "trading_day_count": len(dates),
+            "config_snapshot_count": len(config_snapshots),
+            "decision_record_count": len(decisions),
+            "current_config_hash": config_hash(self.config),
+            "analysis_export_ready": bool(fills or decisions),
         }
 
     def new_season_status(self) -> dict[str, Any]:
@@ -1355,6 +1375,8 @@ class UIService:
             "live_trading": preview["live_trading"],
             "confirm_text_verified": preview["confirm_text_verified"],
             "status": "REQUESTED",
+            "config_hash": config_hash(self.config),
+            "config_version": config_hash(self.config),
         }
         from .storage import StateStore
 

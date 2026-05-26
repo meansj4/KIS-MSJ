@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -295,3 +296,14 @@ def write_default_config(path: Path = DEFAULT_CONFIG_PATH) -> None:
         )
     )
     path.write_text(json.dumps(sample, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def config_to_dict(config: BotConfig) -> dict[str, Any]:
+    """Return a JSON-serializable config dictionary for snapshots/analysis."""
+    return asdict(config)
+
+
+def config_hash(config: BotConfig) -> str:
+    """Stable hash used to connect decisions/orders/fills to a config snapshot."""
+    payload = json.dumps(config_to_dict(config), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]

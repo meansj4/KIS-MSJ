@@ -552,7 +552,7 @@ async function loadDashboard() {
     risk_blocked_count: s.position_state_counts.RISK_BLOCKED || 0,
     review_required_count: s.position_state_counts.REVIEW_REQUIRED || 0
   };
-  document.getElementById('content').innerHTML = `<h2>대시보드</h2><h3>핵심 요약</h3>${metrics(top)}<h3>봇 상태</h3>${metrics(s.bot)}<h3>계좌/리스크</h3>${metrics(s.account_risk)}<h3>보유 상태별 종목 수</h3>${metrics(s.position_state_counts)}<h3>주문 상태</h3>${metrics(s.order_status_counts)}<h3>경고</h3>${table(s.warnings, 'warnings')}<h3>런타임 제어</h3>${metrics(s.runtime_control)}`;
+  document.getElementById('content').innerHTML = `<h2>대시보드</h2><h3>핵심 요약</h3>${metrics(top)}<h3>Analysis data status</h3>${metrics(s.analysis_status || {})}<h3>봇 상태</h3>${metrics(s.bot)}<h3>계좌/리스크</h3>${metrics(s.account_risk)}<h3>보유 상태별 종목 수</h3>${metrics(s.position_state_counts)}<h3>주문 상태</h3>${metrics(s.order_status_counts)}<h3>경고</h3>${table(s.warnings, 'warnings')}<h3>런타임 제어</h3>${metrics(s.runtime_control)}`;
 }
 async function loadStocks() {
   currentView = 'stocks';
