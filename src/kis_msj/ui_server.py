@@ -285,7 +285,7 @@ const DEFAULT_COLUMNS = {
   stockLots: ['lot_id','code','name','status','buy_price','remaining_quantity','current_price','unrealized_pnl','unrealized_pnl_rate','age_weeks','effective_target_profit_rate','sell_trigger_price','cleanup_candidate','stale_lot','last_sell_reason'],
   orders: ['order_id','code','name','side','status','quantity','limit_price','reason','requested_at','updated_at','lot_id','sell_reason','reentry_type'],
   fills: ['fill_id','execution_id','dedupe_key_type','order_id','code','name','side','price','quantity','filled_at','lot_id','sell_reason','reentry_type'],
-  manualRequests: ['request_id','code','side','quantity','amount','lot_id','status','processing_stale','processing_age_minutes','block_reason','linked_order_id','requested_at','updated_at'],
+  manualRequests: ['request_id','code','side','quantity','amount','lot_id','status','processing_stale','processing_age_minutes','claim_attempt_count','last_processing_error','stale_processing_reason','recovery_block_reason','block_reason','linked_order_id','requested_at','updated_at'],
   reviewRequired: ['code','name','position_state','review_reason','current_pnl_rate','open_lot_count','stale_lot_count','sync_status','lot_quantity_mismatch','profitable_lot_count']
 };
 const columnPrefs = {};
@@ -664,13 +664,19 @@ async function loadManualOrders() {
   <h3>수동 주문 요청 목록</h3>${table(window.manualRequestRows, 'manualRequests')}`;
 }
 async function manualRequestRequeue(requestId) {
-  const r = await api('/api/manual-order-requests/requeue', {method:'POST', body:JSON.stringify({request_id: requestId})});
-  alert(r.requeued ? '재시도 대기 상태로 되돌렸습니다.' : '재시도 대기로 변경하지 못했습니다. linked_order_id 또는 상태를 확인하세요.');
+  const confirmText = prompt("재처리하려면 '수동요청 재처리 확인'을 입력하세요.");
+  if (confirmText === null) return;
+  const operatorNote = prompt("운영자 메모(선택)") || "";
+  const r = await api('/api/manual-order-requests/requeue', {method:'POST', body:JSON.stringify({request_id: requestId, confirm_text: confirmText, operator_note: operatorNote})});
+  alert(r.requeued ? '재시도 대기 상태로 되돌렸습니다.' : ('재시도 대기로 변경하지 못했습니다. 사유: ' + (r.block_reason || 'linked_order_id 또는 상태를 확인하세요.')));
   await loadManualOrders();
 }
 async function manualRequestCancel(requestId) {
-  const r = await api('/api/manual-order-requests/cancel', {method:'POST', body:JSON.stringify({request_id: requestId, reason:'operator_cancel_stale_processing'})});
-  alert(r.canceled ? '차단 처리했습니다.' : '차단 처리하지 못했습니다. linked_order_id 또는 상태를 확인하세요.');
+  const confirmText = prompt("차단 처리하려면 '수동요청 차단 확인'을 입력하세요.");
+  if (confirmText === null) return;
+  const operatorNote = prompt("운영자 메모(선택)") || "";
+  const r = await api('/api/manual-order-requests/cancel', {method:'POST', body:JSON.stringify({request_id: requestId, reason:'operator_cancel_stale_processing', confirm_text: confirmText, operator_note: operatorNote})});
+  alert(r.canceled ? '차단 처리했습니다.' : ('차단 처리하지 못했습니다. 사유: ' + (r.block_reason || 'linked_order_id 또는 상태를 확인하세요.')));
   await loadManualOrders();
 }
 async function loadNewSeason() {
@@ -1219,10 +1225,10 @@ class UIHandler(BaseHTTPRequestHandler):
                 self._send_json(self.service.create_manual_order_request(data))
                 return
             if parsed.path == "/api/manual-order-requests/requeue":
-                self._send_json(self.service.requeue_manual_order_request(str(data.get("request_id", ""))))
+                self._send_json(self.service.requeue_manual_order_request(str(data.get("request_id", "")), str(data.get("confirm_text", "")), str(data.get("operator_note", ""))))
                 return
             if parsed.path == "/api/manual-order-requests/cancel":
-                self._send_json(self.service.cancel_manual_order_request(str(data.get("request_id", "")), str(data.get("reason", "operator_cancel_stale_processing"))))
+                self._send_json(self.service.cancel_manual_order_request(str(data.get("request_id", "")), str(data.get("reason", "operator_cancel_stale_processing")), str(data.get("confirm_text", "")), str(data.get("operator_note", ""))))
                 return
             if parsed.path == "/api/new-season/archive":
                 self._send_json(self.service.new_season_archive(bool(data.get("execute", False))))

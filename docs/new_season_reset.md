@@ -1,149 +1,149 @@
-# 새 시즌 reset/archive 절차
+﻿# ???쒖쫵 reset/archive ?덉감
 
 > Authoritative source: `docs/project_handoff_full.md` is the latest full baseline. `docs/project_handoff_thread_prompt.md` is for starting a new chat, and `docs/project_handoff_summary.md` is the short summary. `local_ui.md`, `strategy_lot_sizing.md`, `new_season_reset.md`, and `expansion_100_config.md` are detailed references. If a reference doc conflicts with the full handoff, use `project_handoff_full.md` as the source of truth.  
-> Last updated: 2026-05-26 / Baseline tests: `153 passed` / Baseline config profile: `expansion_100_safe`. Re-check config, DB, logs, and KIS account state at runtime.
+> Last updated: 2026-05-26 / Baseline tests: `155 passed` / Baseline config profile: `expansion_100_safe`. Re-check config, DB, logs, and KIS account state at runtime.
 
 
-새 시즌 준비는 “기존 테스트/운영 기록을 안전하게 보관하고, 보유/미체결/동기화 상태를 깨끗하게 만든 뒤 새 config로 다시 시작하는 절차”입니다. 바로 DB를 지우면 실제 계좌에는 주식이 남아 있는데 내부 DB만 사라질 수 있으므로, 반드시 백업, 전량매도 예정표, 실제 계좌 잔고 확인, 체결 동기화, DB 초기화 순서로 진행해야 합니다.
+???쒖쫵 以鍮꾨뒗 ?쒓린議??뚯뒪???댁쁺 湲곕줉???덉쟾?섍쾶 蹂닿??섍퀬, 蹂댁쑀/誘몄껜寃??숆린???곹깭瑜?源⑤걮?섍쾶 留뚮뱺 ????config濡??ㅼ떆 ?쒖옉?섎뒗 ?덉감?앹엯?덈떎. 諛붾줈 DB瑜?吏?곕㈃ ?ㅼ젣 怨꾩쥖?먮뒗 二쇱떇???⑥븘 ?덈뒗???대? DB留??щ씪吏????덉쑝誘濡? 諛섎뱶??諛깆뾽, ?꾨웾留ㅻ룄 ?덉젙?? ?ㅼ젣 怨꾩쥖 ?붽퀬 ?뺤씤, 泥닿껐 ?숆린?? DB 珥덇린???쒖꽌濡?吏꾪뻾?댁빞 ?⑸땲??
 
-사용자 친화적 용어:
+?ъ슜??移쒗솕???⑹뼱:
 
-- archive = 이전 시즌 백업
-- liquidation plan = 전량매도 예정표
-- KIS balance snapshot = 실제 계좌 잔고 확인 자료
-- manual SELL request = 봇에게 전량매도 요청
-- reset = DB 초기화
+- archive = ?댁쟾 ?쒖쫵 諛깆뾽
+- liquidation plan = ?꾨웾留ㅻ룄 ?덉젙??
+- KIS balance snapshot = ?ㅼ젣 怨꾩쥖 ?붽퀬 ?뺤씤 ?먮즺
+- manual SELL request = 遊뉗뿉寃??꾨웾留ㅻ룄 ?붿껌
+- reset = DB 珥덇린??
 
-## UI 새 시즌 준비 마법사
+## UI ???쒖쫵 以鍮?留덈쾿??
 
-UI의 “새 시즌 준비” 탭은 아래 순서로 현재 상태와 다음 행동을 보여줍니다.
+UI???쒖깉 ?쒖쫵 以鍮꾟???? ?꾨옒 ?쒖꽌濡??꾩옱 ?곹깭? ?ㅼ쓬 ?됰룞??蹂댁뿬以띾땲??
 
-1. 이전 시즌 백업: DB/config/log를 archive로 보관합니다.
-2. 실제 계좌 잔고 확인: DB 보유수량과 KIS 실제 잔고 비교용 snapshot이 필요합니다.
-3. 전량매도 예정표 생성: 현재 DB와 KIS snapshot 기준으로 매도 대상 LOT을 계산합니다.
-4. 전량매도 요청 생성: UI가 직접 주문하지 않고 `manual_order_requests` 큐에 요청만 만듭니다.
-5. 체결 및 동기화 확인: 주문 체결과 reconciliation 완료 여부를 확인합니다.
-6. DB 초기화: OPEN LOT 0개, 미체결 0개, 미처리 수동 요청 0개, sync mismatch 없음일 때만 가능합니다.
-7. 새 100종목 config 적용 확인: `expansion_100_safe`와 KOSPI 100 후보군을 확인합니다.
-8. 새 시즌 시작 준비 완료: 모든 차단 조건이 해소되면 준비 완료 상태가 표시됩니다.
+1. ?댁쟾 ?쒖쫵 諛깆뾽: DB/config/log瑜?archive濡?蹂닿??⑸땲??
+2. ?ㅼ젣 怨꾩쥖 ?붽퀬 ?뺤씤: DB 蹂댁쑀?섎웾怨?KIS ?ㅼ젣 ?붽퀬 鍮꾧탳??snapshot???꾩슂?⑸땲??
+3. ?꾨웾留ㅻ룄 ?덉젙???앹꽦: ?꾩옱 DB? KIS snapshot 湲곗??쇰줈 留ㅻ룄 ???LOT??怨꾩궛?⑸땲??
+4. ?꾨웾留ㅻ룄 ?붿껌 ?앹꽦: UI媛 吏곸젒 二쇰Ц?섏? ?딄퀬 `manual_order_requests` ?먯뿉 ?붿껌留?留뚮벊?덈떎.
+5. 泥닿껐 諛??숆린???뺤씤: 二쇰Ц 泥닿껐怨?reconciliation ?꾨즺 ?щ?瑜??뺤씤?⑸땲??
+6. DB 珥덇린?? OPEN LOT 0媛? 誘몄껜寃?0媛? 誘몄쿂由??섎룞 ?붿껌 0媛? sync mismatch ?놁쓬???뚮쭔 媛?ν빀?덈떎.
+7. ??100醫낅ぉ config ?곸슜 ?뺤씤: `expansion_100_safe`? KOSPI 100 ?꾨낫援곗쓣 ?뺤씤?⑸땲??
+8. ???쒖쫵 ?쒖옉 以鍮??꾨즺: 紐⑤뱺 李⑤떒 議곌굔???댁냼?섎㈃ 以鍮??꾨즺 ?곹깭媛 ?쒖떆?⑸땲??
 
-현재 UI에서는 아래 작업도 직접 실행할 수 있습니다.
+?꾩옱 UI?먯꽌???꾨옒 ?묒뾽??吏곸젒 ?ㅽ뻾?????덉뒿?덈떎.
 
-- 백업 dry-run / 백업 생성
-- KIS 잔고 snapshot JSON 경로를 입력해 전량매도 예정표 dry-run / 생성
-- 예정표 파일 경로와 `전량매도 요청 확인` 문구를 입력해 manual SELL request dry-run / 생성
-- `RESET 확인` 문구를 입력해 reset dry-run / DB 초기화 실행
+- 諛깆뾽 dry-run / 諛깆뾽 ?앹꽦
+- KIS ?붽퀬 snapshot JSON 寃쎈줈瑜??낅젰???꾨웾留ㅻ룄 ?덉젙??dry-run / ?앹꽦
+- ?덉젙???뚯씪 寃쎈줈? `?꾨웾留ㅻ룄 ?붿껌 ?뺤씤` 臾멸뎄瑜??낅젰??manual SELL request dry-run / ?앹꽦
+- `RESET ?뺤씤` 臾멸뎄瑜??낅젰??reset dry-run / DB 珥덇린???ㅽ뻾
 
-주의: UI 버튼도 KIS 주문 API를 직접 호출하지 않습니다. 전량매도 요청 생성은 `manual_order_requests` 큐에 `SELL / REQUESTED`를 넣는 작업이며, 실제 주문은 실행 중인 Bot Core가 기존 runtime pause, risk guard, open order guard, order_manager 경로를 거쳐 처리합니다.
+二쇱쓽: UI 踰꾪듉??KIS 二쇰Ц API瑜?吏곸젒 ?몄텧?섏? ?딆뒿?덈떎. ?꾨웾留ㅻ룄 ?붿껌 ?앹꽦? `manual_order_requests` ?먯뿉 `SELL / REQUESTED`瑜??ｋ뒗 ?묒뾽?대ŉ, ?ㅼ젣 二쇰Ц? ?ㅽ뻾 以묒씤 Bot Core媛 湲곗〈 runtime pause, risk guard, open order guard, order_manager 寃쎈줈瑜?嫄곗퀜 泥섎━?⑸땲??
 
-`request_creation_possible=false`는 내부 상태값입니다. UI에서는 대신 “전량매도 요청 생성 불가”, “전량매도 예정표가 없습니다”, “KIS 잔고 확인 자료가 만료되었습니다” 같은 사용자용 문구와 다음 행동을 먼저 표시합니다.
+`request_creation_possible=false`???대? ?곹깭媛믪엯?덈떎. UI?먯꽌??????쒖쟾?됰ℓ???붿껌 ?앹꽦 遺덇??? ?쒖쟾?됰ℓ???덉젙?쒓? ?놁뒿?덈떎?? ?쏫IS ?붽퀬 ?뺤씤 ?먮즺媛 留뚮즺?섏뿀?듬땲?ㅲ?媛숈? ?ъ슜?먯슜 臾멸뎄? ?ㅼ쓬 ?됰룞??癒쇱? ?쒖떆?⑸땲??
 
-plan status 의미:
+plan status ?섎?:
 
-- `ACTIVE`: 현재 전량매도 예정표가 유효합니다.
-- `EXPIRED`: 예정표가 오래되어 새로 만들어야 합니다.
-- `SUPERSEDED`: 더 최신 예정표가 있어 이 예정표는 사용할 수 없습니다.
-- `USED`: 이미 전량매도 요청 생성에 사용된 예정표입니다.
-- `BLOCKED`: 차단 사유가 있어 사용할 수 없습니다.
+- `ACTIVE`: ?꾩옱 ?꾨웾留ㅻ룄 ?덉젙?쒓? ?좏슚?⑸땲??
+- `EXPIRED`: ?덉젙?쒓? ?ㅻ옒?섏뼱 ?덈줈 留뚮뱾?댁빞 ?⑸땲??
+- `SUPERSEDED`: ??理쒖떊 ?덉젙?쒓? ?덉뼱 ???덉젙?쒕뒗 ?ъ슜?????놁뒿?덈떎.
+- `USED`: ?대? ?꾨웾留ㅻ룄 ?붿껌 ?앹꽦???ъ슜???덉젙?쒖엯?덈떎.
+- `BLOCKED`: 李⑤떒 ?ъ쑀媛 ?덉뼱 ?ъ슜?????놁뒿?덈떎.
 
-DB 초기화 가능 조건:
+DB 珥덇린??媛??議곌굔:
 
-- OPEN LOT 0개
-- 미체결 주문 0개
-- 미처리 manual request 0개
-- `SYNC_REQUIRED` 0개
-- lot quantity mismatch 0개
-- 실제 계좌 잔고와 DB 수량 불일치 없음
+- OPEN LOT 0媛?
+- 誘몄껜寃?二쇰Ц 0媛?
+- 誘몄쿂由?manual request 0媛?
+- `SYNC_REQUIRED` 0媛?
+- lot quantity mismatch 0媛?
+- ?ㅼ젣 怨꾩쥖 ?붽퀬? DB ?섎웾 遺덉씪移??놁쓬
 
-이 절차는 기존 운영 기록을 보존한 뒤 새 후보군과 새 리스크 한도로 다시 시작하기 위한 안전 장치입니다. 스크립트 기본값은 dry-run이며, 실거래 주문 API를 호출하지 않습니다.
+???덉감??湲곗〈 ?댁쁺 湲곕줉??蹂댁〈???????꾨낫援곌낵 ??由ъ뒪???쒕룄濡??ㅼ떆 ?쒖옉?섍린 ?꾪븳 ?덉쟾 ?μ튂?낅땲?? ?ㅽ겕由쏀듃 湲곕낯媛믪? dry-run?대ŉ, ?ㅺ굅??二쇰Ц API瑜??몄텧?섏? ?딆뒿?덈떎.
 
-## 기본 원칙
+## 湲곕낯 ?먯튃
 
-- 기존 config, DB, logs는 삭제하지 않고 `archive/reset_YYYYMMDD_HHMMSS/` 아래로 복사합니다.
-- DB 초기화는 `RESET 확인` 문구가 있어야 하며, open order 또는 sync mismatch가 있으면 차단됩니다.
-- 전량매도는 즉시 주문하지 않고 liquidation plan 파일만 생성합니다.
-- 전량매도 요청이 필요하면 별도 확인 후 manual order request 경로로만 처리해야 합니다.
-- manual SELL request가 생성되더라도 실제 fill 전에는 lots/positions가 바뀌면 안 됩니다.
+- 湲곗〈 config, DB, logs????젣?섏? ?딄퀬 `archive/reset_YYYYMMDD_HHMMSS/` ?꾨옒濡?蹂듭궗?⑸땲??
+- DB 珥덇린?붾뒗 `RESET ?뺤씤` 臾멸뎄媛 ?덉뼱???섎ŉ, open order ?먮뒗 sync mismatch媛 ?덉쑝硫?李⑤떒?⑸땲??
+- ?꾨웾留ㅻ룄??利됱떆 二쇰Ц?섏? ?딄퀬 liquidation plan ?뚯씪留??앹꽦?⑸땲??
+- ?꾨웾留ㅻ룄 ?붿껌???꾩슂?섎㈃ 蹂꾨룄 ?뺤씤 ??manual order request 寃쎈줈濡쒕쭔 泥섎━?댁빞 ?⑸땲??
+- manual SELL request媛 ?앹꽦?섎뜑?쇰룄 ?ㅼ젣 fill ?꾩뿉??lots/positions媛 諛붾뚮㈃ ???⑸땲??
 
-## dry-run 점검
+## dry-run ?먭?
 
 ```powershell
 $env:PYTHONPATH='src'; .\.venv\Scripts\python.exe scripts\prepare_new_season.py --config config\lot_auto_trader.json --archive --apply-config --liquidation-plan --profile expansion_100_safe --dry-run
 ```
 
-이 명령은 어떤 파일도 삭제하거나 변경하지 않고, archive/config/liquidation 계획을 JSON으로 미리 보여줍니다.
+??紐낅졊? ?대뼡 ?뚯씪????젣?섍굅??蹂寃쏀븯吏 ?딄퀬, archive/config/liquidation 怨꾪쉷??JSON?쇰줈 誘몃━ 蹂댁뿬以띾땲??
 
-## archive + 새 config 적용
+## archive + ??config ?곸슜
 
 ```powershell
 $env:PYTHONPATH='src'; .\.venv\Scripts\python.exe scripts\prepare_new_season.py --config config\lot_auto_trader.json --archive --apply-config --profile expansion_100_safe --execute
 ```
 
-동작:
+?숈옉:
 
-- 현재 config/DB/log를 archive 폴더에 백업합니다.
-- config의 후보 종목을 KOSPI 100 후보군으로 교체합니다.
-- `risk.profile=expansion_100_safe`를 적용합니다.
-- `live_trading=false`, `cleanup_enabled=false`, `ui_manual_trading_enabled=false`, `enable_execution_raw_log=true`로 시작합니다.
+- ?꾩옱 config/DB/log瑜?archive ?대뜑??諛깆뾽?⑸땲??
+- config???꾨낫 醫낅ぉ??KOSPI 100 ?꾨낫援곗쑝濡?援먯껜?⑸땲??
+- `risk.profile=expansion_100_safe`瑜??곸슜?⑸땲??
+- `live_trading=false`, `cleanup_enabled=false`, `ui_manual_trading_enabled=false`, `enable_execution_raw_log=true`濡??쒖옉?⑸땲??
 
-## DB 초기화
+## DB 珥덇린??
 
-DB 초기화는 기존 보유/미체결/동기화 상태가 완전히 정리된 뒤에만 수행해야 합니다.
+DB 珥덇린?붾뒗 湲곗〈 蹂댁쑀/誘몄껜寃??숆린???곹깭媛 ?꾩쟾???뺣━???ㅼ뿉留??섑뻾?댁빞 ?⑸땲??
 
 ```powershell
-$env:PYTHONPATH='src'; .\.venv\Scripts\python.exe scripts\prepare_new_season.py --config config\lot_auto_trader.json --reset-db --confirm "RESET 확인" --execute
+$env:PYTHONPATH='src'; .\.venv\Scripts\python.exe scripts\prepare_new_season.py --config config\lot_auto_trader.json --reset-db --confirm "RESET ?뺤씤" --execute
 ```
 
-차단 조건:
+李⑤떒 議곌굔:
 
-- orders에 `REQUESTED`, `PARTIAL`, `SUBMITTED`, `ACCEPTED`, `PENDING`, `OPEN`, `NEW` 같은 진행 중 주문이 남아 있음
-- manual_order_requests에 `REQUESTED`, `PROCESSING`, `ACCEPTED`, `SUBMITTED`, `PENDING`, `OPEN`, `NEW`, `CREATED`, `RETRYING` 같은 진행 중 요청이 남아 있음
-- OPEN LOT이 남아 있음
-- positions에 `SYNC_REQUIRED` 상태가 있음
-- positions에 lot quantity mismatch가 있음
-- KIS/DB balance mismatch가 있음
+- orders??`REQUESTED`, `PARTIAL`, `SUBMITTED`, `ACCEPTED`, `PENDING`, `OPEN`, `NEW` 媛숈? 吏꾪뻾 以?二쇰Ц???⑥븘 ?덉쓬
+- manual_order_requests??`REQUESTED`, `PROCESSING`, `ACCEPTED`, `SUBMITTED`, `PENDING`, `OPEN`, `NEW`, `CREATED`, `RETRYING` 媛숈? 吏꾪뻾 以??붿껌???⑥븘 ?덉쓬
+- OPEN LOT???⑥븘 ?덉쓬
+- positions??`SYNC_REQUIRED` ?곹깭媛 ?덉쓬
+- positions??lot quantity mismatch媛 ?덉쓬
+- KIS/DB balance mismatch媛 ?덉쓬
 
-## 전량매도 계획
+## ?꾨웾留ㅻ룄 怨꾪쉷
 
 ```powershell
 $env:PYTHONPATH='src'; .\.venv\Scripts\python.exe scripts\prepare_new_season.py --config config\lot_auto_trader.json --liquidation-plan --kis-balance-json exports\kis_balance_snapshot.json --execute
 ```
 
-이 명령은 `exports/liquidation_plan_YYYYMMDD_HHMMSS.json` 파일을 만듭니다. 주문 요청은 만들지 않습니다.
+??紐낅졊? `exports/liquidation_plan_YYYYMMDD_HHMMSS.json` ?뚯씪??留뚮벊?덈떎. 二쇰Ц ?붿껌? 留뚮뱾吏 ?딆뒿?덈떎.
 
-계획 확인 항목:
+怨꾪쉷 ?뺤씤 ??ぉ:
 
-- 종목 코드
+- 醫낅ぉ 肄붾뱶
 - LOT ID
-- DB 잔여수량
-- 현재가 기준 예상 매도금액
-- 예상 손익
+- DB ?붿뿬?섎웾
+- ?꾩옱媛 湲곗? ?덉긽 留ㅻ룄湲덉븸
+- ?덉긽 ?먯씡
 
-실제 매도 전 확인:
+?ㅼ젣 留ㅻ룄 ???뺤씤:
 
-- KIS 실제 잔고와 DB OPEN LOT 수량이 일치하는지 확인
-- 미체결 주문이 없는지 확인
-- 수동매도 요청은 Bot Core/manual_order_requests 경로로만 생성
-- 체결 reconciliation 후 lots remaining quantity가 0인지 확인
+- KIS ?ㅼ젣 ?붽퀬? DB OPEN LOT ?섎웾???쇱튂?섎뒗吏 ?뺤씤
+- 誘몄껜寃?二쇰Ц???녿뒗吏 ?뺤씤
+- ?섎룞留ㅻ룄 ?붿껌? Bot Core/manual_order_requests 寃쎈줈濡쒕쭔 ?앹꽦
+- 泥닿껐 reconciliation ??lots remaining quantity媛 0?몄? ?뺤씤
 
-## 첫 운영 전 체크리스트
+## 泥??댁쁺 ??泥댄겕由ъ뒪??
 
-- DB 백업 완료
-- 기존 logs archive 완료
-- 기존 config archive 완료
-- 기존 보유 전량매도 완료 여부 확인
-- KIS 잔고와 DB positions/lots 불일치 없음
-- manual_order_requests 미처리 `REQUESTED` 없음
-- orders 중 `REQUESTED`/`PARTIAL` 없음
-- fills 중 미반영 항목 없음
+- DB 諛깆뾽 ?꾨즺
+- 湲곗〈 logs archive ?꾨즺
+- 湲곗〈 config archive ?꾨즺
+- 湲곗〈 蹂댁쑀 ?꾨웾留ㅻ룄 ?꾨즺 ?щ? ?뺤씤
+- KIS ?붽퀬? DB positions/lots 遺덉씪移??놁쓬
+- manual_order_requests 誘몄쿂由?`REQUESTED` ?놁쓬
+- orders 以?`REQUESTED`/`PARTIAL` ?놁쓬
+- fills 以?誘몃컲????ぉ ?놁쓬
 - `enable_execution_raw_log=true`
-- `live_trading=false` 상태에서 paper/mock 테스트 통과
-- live trading 전환 전 사용자 명시 확인
+- `live_trading=false` ?곹깭?먯꽌 paper/mock ?뚯뒪???듦낵
+- live trading ?꾪솚 ???ъ슜??紐낆떆 ?뺤씤
 ## Liquidation plan latestness guard
 
-전량매도 예정표는 고정 문서가 아니라 “생성 시점의 DB OPEN LOT 상태 + KIS 잔고 snapshot”입니다. 따라서 예전에 만든 plan을 나중에 그대로 재사용하면 안 됩니다.
+?꾨웾留ㅻ룄 ?덉젙?쒕뒗 怨좎젙 臾몄꽌媛 ?꾨땲???쒖깮???쒖젏??DB OPEN LOT ?곹깭 + KIS ?붽퀬 snapshot?앹엯?덈떎. ?곕씪???덉쟾??留뚮뱺 plan???섏쨷??洹몃?濡??ъ궗?⑺븯硫????⑸땲??
 
-plan 파일에는 다음 메타데이터가 저장됩니다.
+plan ?뚯씪?먮뒗 ?ㅼ쓬 硫뷀??곗씠?곌? ??λ맗?덈떎.
 
 - `plan_id`, `created_at`
 - `db_snapshot_at`, `kis_balance_snapshot_at`
@@ -157,46 +157,46 @@ plan 파일에는 다음 메타데이터가 저장됩니다.
 - `status`: `ACTIVE`, `EXPIRED`, `SUPERSEDED`, `USED`, `BLOCKED`
 - `expires_at`, `max_age_minutes`
 
-새 plan을 생성하면 기존 `ACTIVE` plan은 `SUPERSEDED`로 바뀝니다. 전량매도 manual SELL request를 만들기 직전에는 아래를 다시 검증합니다.
+??plan???앹꽦?섎㈃ 湲곗〈 `ACTIVE` plan? `SUPERSEDED`濡?諛붾앸땲?? ?꾨웾留ㅻ룄 manual SELL request瑜?留뚮뱾湲?吏곸쟾?먮뒗 ?꾨옒瑜??ㅼ떆 寃利앺빀?덈떎.
 
-1. confirm text가 `전량매도 요청 확인`인지 확인
-2. plan이 존재하고 `ACTIVE`인지 확인
-3. 현재 DB OPEN LOT hash가 plan의 `db_open_lot_hash`와 같은지 확인
-4. KIS balance snapshot hash가 plan의 `kis_snapshot_hash`와 같은지 확인
-5. plan이 만료되지 않았는지 확인
-6. plan 생성 후 미체결 order나 pending manual request가 생기지 않았는지 확인
-7. `SYNC_REQUIRED` 또는 lot quantity mismatch가 없는지 확인
-8. DB 수량과 KIS snapshot 수량, sellable quantity가 모두 충분한지 확인
+1. confirm text媛 `?꾨웾留ㅻ룄 ?붿껌 ?뺤씤`?몄? ?뺤씤
+2. plan??議댁옱?섍퀬 `ACTIVE`?몄? ?뺤씤
+3. ?꾩옱 DB OPEN LOT hash媛 plan??`db_open_lot_hash`? 媛숈?吏 ?뺤씤
+4. KIS balance snapshot hash媛 plan??`kis_snapshot_hash`? 媛숈?吏 ?뺤씤
+5. plan??留뚮즺?섏? ?딆븯?붿? ?뺤씤
+6. plan ?앹꽦 ??誘몄껜寃?order??pending manual request媛 ?앷린吏 ?딆븯?붿? ?뺤씤
+7. `SYNC_REQUIRED` ?먮뒗 lot quantity mismatch媛 ?녿뒗吏 ?뺤씤
+8. DB ?섎웾怨?KIS snapshot ?섎웾, sellable quantity媛 紐⑤몢 異⑸텇?쒖? ?뺤씤
 
-검증 실패 시 `manual_order_requests`를 만들지 않으며, KIS 주문 API도 호출하지 않습니다. 차단 사유는 `liquidation_plan_db_changed`, `liquidation_plan_snapshot_expired`, `liquidation_plan_pending_work_created` 같은 `block_reason`으로 남깁니다.
+寃利??ㅽ뙣 ??`manual_order_requests`瑜?留뚮뱾吏 ?딆쑝硫? KIS 二쇰Ц API???몄텧?섏? ?딆뒿?덈떎. 李⑤떒 ?ъ쑀??`liquidation_plan_db_changed`, `liquidation_plan_snapshot_expired`, `liquidation_plan_pending_work_created` 媛숈? `block_reason`?쇰줈 ?④퉩?덈떎.
 
-전량매도 request 생성 후에도 DB reset은 바로 허용되지 않습니다. 모든 수동 SELL request와 orders가 종결되고, OPEN LOT 0개, KIS/DB mismatch 없음, `SYNC_REQUIRED` 0개가 확인되어야 reset이 가능합니다.
-## UI 마법사 방식으로 진행하기
+?꾨웾留ㅻ룄 request ?앹꽦 ?꾩뿉??DB reset? 諛붾줈 ?덉슜?섏? ?딆뒿?덈떎. 紐⑤뱺 ?섎룞 SELL request? orders媛 醫낃껐?섍퀬, OPEN LOT 0媛? KIS/DB mismatch ?놁쓬, `SYNC_REQUIRED` 0媛쒓? ?뺤씤?섏뼱??reset??媛?ν빀?덈떎.
+## UI 留덈쾿??諛⑹떇?쇰줈 吏꾪뻾?섍린
 
-UI의 `새 시즌 New Season` 탭은 개발자용 내부 flag를 그대로 보여주는 화면이 아니라, 사용자가 다음 행동을 알 수 있게 단계형 마법사로 구성합니다.
+UI??`???쒖쫵 New Season` ??? 媛쒕컻?먯슜 ?대? flag瑜?洹몃?濡?蹂댁뿬二쇰뒗 ?붾㈃???꾨땲?? ?ъ슜?먭? ?ㅼ쓬 ?됰룞???????덇쾶 ?④퀎??留덈쾿?щ줈 援ъ꽦?⑸땲??
 
-가장 쉬운 사용법은 `새 시즌 준비 계속 진행` 버튼을 누르는 것입니다. 이 버튼은 현재 상태를 확인한 뒤 한 단계씩만 진행합니다.
+媛???ъ슫 ?ъ슜踰뺤? `???쒖쫵 以鍮?怨꾩냽 吏꾪뻾` 踰꾪듉???꾨Ⅴ??寃껋엯?덈떎. ??踰꾪듉? ?꾩옱 ?곹깭瑜??뺤씤???????④퀎?⑸쭔 吏꾪뻾?⑸땲??
 
-1. **이전 시즌 백업**: 버튼을 처음 누르면 config/DB/log archive 백업 생성을 확인합니다.
-2. **실제 계좌 잔고 확인**: OPEN LOT이 있으면 KIS 잔고 snapshot JSON 경로가 필요합니다. 이 단계는 주문이 아니라 잔고 비교 자료 준비입니다.
-3. **전량매도 예정표 생성**: 현재 DB OPEN LOT과 KIS 잔고 snapshot을 기준으로 새 plan을 만듭니다. 기존 ACTIVE plan은 새 plan 생성 시 더 이상 사용하지 않게 됩니다.
-4. **전량매도 요청 생성**: plan이 유효하고 DB/KIS 수량이 맞으며 미체결/미처리 요청이 없을 때만 `manual_order_requests`에 SELL 요청을 만듭니다. 확인 문구는 `전량매도 요청 확인`입니다.
-5. **체결 및 동기화 확인**: UI는 주문 API를 직접 호출하지 않습니다. 실행 중인 Bot Core가 manual request를 기존 order_manager 경로로 처리하고, fill/reconciliation이 끝나야 다음 단계로 갈 수 있습니다.
-6. **DB 초기화**: OPEN LOT 0개, 진행 중 주문 0개, 진행 중 manual request 0개, sync mismatch 없음일 때만 가능합니다. 확인 문구는 `RESET 확인`입니다.
-7. **새 config 적용 확인**: `expansion_100_safe` profile과 100종목 후보군이 적용되어 있으면 새 시즌 준비 완료로 표시됩니다.
+1. **?댁쟾 ?쒖쫵 諛깆뾽**: 踰꾪듉??泥섏쓬 ?꾨Ⅴ硫?config/DB/log archive 諛깆뾽 ?앹꽦???뺤씤?⑸땲??
+2. **?ㅼ젣 怨꾩쥖 ?붽퀬 ?뺤씤**: OPEN LOT???덉쑝硫?KIS ?붽퀬 snapshot JSON 寃쎈줈媛 ?꾩슂?⑸땲?? ???④퀎??二쇰Ц???꾨땲???붽퀬 鍮꾧탳 ?먮즺 以鍮꾩엯?덈떎.
+3. **?꾨웾留ㅻ룄 ?덉젙???앹꽦**: ?꾩옱 DB OPEN LOT怨?KIS ?붽퀬 snapshot??湲곗??쇰줈 ??plan??留뚮벊?덈떎. 湲곗〈 ACTIVE plan? ??plan ?앹꽦 ?????댁긽 ?ъ슜?섏? ?딄쾶 ?⑸땲??
+4. **?꾨웾留ㅻ룄 ?붿껌 ?앹꽦**: plan???좏슚?섍퀬 DB/KIS ?섎웾??留욎쑝硫?誘몄껜寃?誘몄쿂由??붿껌???놁쓣 ?뚮쭔 `manual_order_requests`??SELL ?붿껌??留뚮벊?덈떎. ?뺤씤 臾멸뎄??`?꾨웾留ㅻ룄 ?붿껌 ?뺤씤`?낅땲??
+5. **泥닿껐 諛??숆린???뺤씤**: UI??二쇰Ц API瑜?吏곸젒 ?몄텧?섏? ?딆뒿?덈떎. ?ㅽ뻾 以묒씤 Bot Core媛 manual request瑜?湲곗〈 order_manager 寃쎈줈濡?泥섎━?섍퀬, fill/reconciliation???앸굹???ㅼ쓬 ?④퀎濡?媛????덉뒿?덈떎.
+6. **DB 珥덇린??*: OPEN LOT 0媛? 吏꾪뻾 以?二쇰Ц 0媛? 吏꾪뻾 以?manual request 0媛? sync mismatch ?놁쓬???뚮쭔 媛?ν빀?덈떎. ?뺤씤 臾멸뎄??`RESET ?뺤씤`?낅땲??
+7. **??config ?곸슜 ?뺤씤**: `expansion_100_safe` profile怨?100醫낅ぉ ?꾨낫援곗씠 ?곸슜?섏뼱 ?덉쑝硫????쒖쫵 以鍮??꾨즺濡??쒖떆?⑸땲??
 
-버튼이 비활성화되거나 진행이 막힐 때는 내부 값보다 사용자용 안내를 먼저 봅니다.
+踰꾪듉??鍮꾪솢?깊솕?섍굅??吏꾪뻾??留됲옄 ?뚮뒗 ?대? 媛믩낫???ъ슜?먯슜 ?덈궡瑜?癒쇱? 遊낅땲??
 
-- `liquidation_plan_missing`: 전량매도 예정표를 생성해야 합니다.
-- `liquidation_plan_db_changed`: 예정표 생성 후 보유 LOT이 바뀌었으므로 예정표를 다시 만들어야 합니다.
-- `liquidation_plan_snapshot_expired`: KIS 잔고 확인 자료가 오래되었으므로 snapshot을 다시 준비해야 합니다.
-- `liquidation_plan_pending_work_created`: 미체결 주문 또는 미처리 manual request가 있어 먼저 완료를 기다려야 합니다.
-- `reset_open_lot_exists`: 아직 OPEN LOT이 남아 있어 DB 초기화가 불가능합니다.
-- `reset_pending_order_exists`: 미체결 주문이 있어 DB 초기화가 불가능합니다.
-- `reset_pending_manual_request_exists`: 미처리 manual request가 있어 DB 초기화가 불가능합니다.
-- `reset_sync_required`: DB와 실제 계좌 동기화 확인이 먼저 필요합니다.
+- `liquidation_plan_missing`: ?꾨웾留ㅻ룄 ?덉젙?쒕? ?앹꽦?댁빞 ?⑸땲??
+- `liquidation_plan_db_changed`: ?덉젙???앹꽦 ??蹂댁쑀 LOT??諛붾뚯뿀?쇰?濡??덉젙?쒕? ?ㅼ떆 留뚮뱾?댁빞 ?⑸땲??
+- `liquidation_plan_snapshot_expired`: KIS ?붽퀬 ?뺤씤 ?먮즺媛 ?ㅻ옒?섏뿀?쇰?濡?snapshot???ㅼ떆 以鍮꾪빐???⑸땲??
+- `liquidation_plan_pending_work_created`: 誘몄껜寃?二쇰Ц ?먮뒗 誘몄쿂由?manual request媛 ?덉뼱 癒쇱? ?꾨즺瑜?湲곕떎?ㅼ빞 ?⑸땲??
+- `reset_open_lot_exists`: ?꾩쭅 OPEN LOT???⑥븘 ?덉뼱 DB 珥덇린?붽? 遺덇??ν빀?덈떎.
+- `reset_pending_order_exists`: 誘몄껜寃?二쇰Ц???덉뼱 DB 珥덇린?붽? 遺덇??ν빀?덈떎.
+- `reset_pending_manual_request_exists`: 誘몄쿂由?manual request媛 ?덉뼱 DB 珥덇린?붽? 遺덇??ν빀?덈떎.
+- `reset_sync_required`: DB? ?ㅼ젣 怨꾩쥖 ?숆린???뺤씤??癒쇱? ?꾩슂?⑸땲??
 
-이 UI 흐름은 KIS 주문 API를 직접 호출하지 않으며, 전량매도도 Bot Core가 기존 runtime pause, risk guard, open order guard, order_manager 경로를 통과한 뒤에만 처리합니다.
+??UI ?먮쫫? KIS 二쇰Ц API瑜?吏곸젒 ?몄텧?섏? ?딆쑝硫? ?꾨웾留ㅻ룄??Bot Core媛 湲곗〈 runtime pause, risk guard, open order guard, order_manager 寃쎈줈瑜??듦낵???ㅼ뿉留?泥섎━?⑸땲??
 
 
 
@@ -288,13 +288,13 @@ $env:PYTHONPATH='src'; .\.venv\Scripts\python.exe scripts\prepare_new_season.py 
 Manual SELL request dry-run:
 
 ```powershell
-$env:PYTHONPATH='src'; .\.venv\Scripts\python.exe scripts\prepare_new_season.py --config config\lot_auto_trader.json --create-liquidation-requests --liquidation-plan-file exports\liquidation_plan_...json --kis-balance-json exports\kis_balance_snapshot.json --confirm "전량매도 요청 확인" --dry-run
+$env:PYTHONPATH='src'; .\.venv\Scripts\python.exe scripts\prepare_new_season.py --config config\lot_auto_trader.json --create-liquidation-requests --liquidation-plan-file exports\liquidation_plan_...json --kis-balance-json exports\kis_balance_snapshot.json --confirm "?꾨웾留ㅻ룄 ?붿껌 ?뺤씤" --dry-run
 ```
 
 Manual SELL request execute:
 
 ```powershell
-$env:PYTHONPATH='src'; .\.venv\Scripts\python.exe scripts\prepare_new_season.py --config config\lot_auto_trader.json --create-liquidation-requests --liquidation-plan-file exports\liquidation_plan_...json --kis-balance-json exports\kis_balance_snapshot.json --confirm "전량매도 요청 확인" --execute
+$env:PYTHONPATH='src'; .\.venv\Scripts\python.exe scripts\prepare_new_season.py --config config\lot_auto_trader.json --create-liquidation-requests --liquidation-plan-file exports\liquidation_plan_...json --kis-balance-json exports\kis_balance_snapshot.json --confirm "?꾨웾留ㅻ룄 ?붿껌 ?뺤씤" --execute
 ```
 
 This creates `manual_order_requests` only. It does not call KIS order APIs. The running Bot Core must consume the requests through the existing guard and `order_manager` path.
@@ -302,13 +302,13 @@ This creates `manual_order_requests` only. It does not call KIS order APIs. The 
 DB reset dry-run:
 
 ```powershell
-$env:PYTHONPATH='src'; .\.venv\Scripts\python.exe scripts\prepare_new_season.py --config config\lot_auto_trader.json --reset-db --confirm "RESET 확인" --dry-run
+$env:PYTHONPATH='src'; .\.venv\Scripts\python.exe scripts\prepare_new_season.py --config config\lot_auto_trader.json --reset-db --confirm "RESET ?뺤씤" --dry-run
 ```
 
 DB reset execute:
 
 ```powershell
-$env:PYTHONPATH='src'; .\.venv\Scripts\python.exe scripts\prepare_new_season.py --config config\lot_auto_trader.json --reset-db --confirm "RESET 확인" --execute
+$env:PYTHONPATH='src'; .\.venv\Scripts\python.exe scripts\prepare_new_season.py --config config\lot_auto_trader.json --reset-db --confirm "RESET ?뺤씤" --execute
 ```
 
 DB reset execute is allowed only when OPEN LOT is 0, in-progress orders are 0, in-progress manual requests are 0, `SYNC_REQUIRED` is 0, lot mismatch is 0, and KIS/DB balance mismatch is absent.
@@ -344,3 +344,4 @@ Request-mode block reasons:
 `sellable_quantity` falls back to holding quantity only for preview/dry-run. Do not use fallback sellable quantity to create actual liquidation requests. Plan expiration also checks the liquidation plan creation time and `--plan-max-age-minutes`.
 
 If the snapshot is missing, stale by plan age, unparsable, or inconsistent with DB quantities, liquidation request creation must be blocked.
+

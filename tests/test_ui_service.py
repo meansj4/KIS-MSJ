@@ -595,7 +595,7 @@ def test_manual_request_with_linked_order_is_not_claimed_again(tmp_path):
 
 
 def test_processing_manual_request_stale_requeue_and_cancel_are_safe(tmp_path):
-    config_path, db_path, _ = _write_config(tmp_path, manual_enabled=True)
+    config_path, db_path, log_path = _write_config(tmp_path, manual_enabled=True)
     store = StateStore(db_path)
     old_started_at = (datetime.now() - timedelta(minutes=30)).isoformat(timespec="seconds")
     store.create_manual_order_request(
@@ -627,14 +627,24 @@ def test_processing_manual_request_stale_requeue_and_cancel_are_safe(tmp_path):
     stuck = service.manual_order_requests()[0]
     assert stuck["processing_stale"] is True
     assert stuck["safe_requeue_allowed"] is True
-    assert service.requeue_manual_order_request("MANUAL-STUCK")["requeued"] is True
+    assert service.requeue_manual_order_request("MANUAL-STUCK", "수동요청 재처리 확인", "operator checked no linked order")["requeued"] is True
     requeued = store.manual_order_requests()[0]
     assert requeued["status"] == "REQUESTED"
     assert store.claim_manual_order_request("MANUAL-STUCK") is not None
-    assert service.cancel_manual_order_request("MANUAL-STUCK")["canceled"] is True
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE manual_order_requests SET processing_started_at = ? WHERE request_id = 'MANUAL-STUCK'",
+            (old_started_at,),
+        )
+    assert service.cancel_manual_order_request("MANUAL-STUCK", confirm_text="수동요청 차단 확인", operator_note="operator blocks stale request")["canceled"] is True
     canceled = store.manual_order_requests()[0]
     assert canceled["status"] == "BLOCKED"
     assert canceled["block_reason"] == "operator_cancel_stale_processing"
+    log_text = Path(log_path).read_text(encoding="utf-8")
+    assert "manual_order_request_requeued" in log_text
+    assert "manual_order_request_blocked_by_operator" in log_text
+    assert "previous_processing_started_at" in log_text
+    assert "claim_attempt_count" in log_text
 
 
 def test_linked_processing_manual_request_cannot_be_requeued_or_canceled(tmp_path):
@@ -669,9 +679,91 @@ def test_linked_processing_manual_request_cannot_be_requeued_or_canceled(tmp_pat
     request = service.manual_order_requests()[0]
     assert request["processing_stale"] is False
     assert request["safe_requeue_allowed"] is False
-    assert service.requeue_manual_order_request("MANUAL-LINKED-PROCESSING")["requeued"] is False
-    assert service.cancel_manual_order_request("MANUAL-LINKED-PROCESSING")["canceled"] is False
+    assert service.requeue_manual_order_request("MANUAL-LINKED-PROCESSING", "수동요청 재처리 확인")["requeued"] is False
+    assert service.cancel_manual_order_request("MANUAL-LINKED-PROCESSING", confirm_text="수동요청 차단 확인")["canceled"] is False
     assert store.manual_order_requests()[0]["status"] == "PROCESSING"
+
+
+def test_processing_manual_request_recovery_requires_stale_and_confirm(tmp_path):
+    config_path, db_path, log_path = _write_config(tmp_path, manual_enabled=True)
+    store = StateStore(db_path)
+    started_at = datetime.now().isoformat(timespec="seconds")
+    store.create_manual_order_request(
+        {
+            "request_id": "MANUAL-NOT-STALE",
+            "source": "local_ui_manual",
+            "requested_by": "test",
+            "requested_at": started_at,
+            "code": "005930",
+            "side": "BUY",
+            "amount": 30000,
+            "quantity": 1,
+            "preview_json": "{}",
+            "runtime_snapshot_json": "{}",
+            "live_trading": False,
+            "confirm_text_verified": True,
+            "status": "PROCESSING",
+            "processing_started_at": started_at,
+        }
+    )
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE manual_order_requests SET processing_started_at = ? WHERE request_id = 'MANUAL-NOT-STALE'",
+            (started_at,),
+        )
+    service = UIService(config_path, tmp_path / "runtime.json")
+
+    request = service.manual_order_requests()[0]
+    assert request["processing_stale"] is False
+    assert request["safe_requeue_allowed"] is False
+    assert service.requeue_manual_order_request("MANUAL-NOT-STALE", "수동요청 재처리 확인")["block_reason"] == "manual_request_processing_not_stale"
+    assert service.cancel_manual_order_request("MANUAL-NOT-STALE", confirm_text="수동요청 차단 확인")["block_reason"] == "manual_request_processing_not_stale"
+    assert service.requeue_manual_order_request("MANUAL-NOT-STALE", "wrong")["block_reason"] == "manual_request_requeue_confirm_text_required"
+    assert store.manual_order_requests()[0]["status"] == "PROCESSING"
+
+
+def test_stale_processing_manual_request_recovery_blocks_open_order_or_pending_request(tmp_path):
+    config_path, db_path, _ = _write_config(tmp_path, manual_enabled=True)
+    store = StateStore(db_path)
+    old_started_at = (datetime.now() - timedelta(minutes=30)).isoformat(timespec="seconds")
+    for request_id in ("MANUAL-OPEN-ORDER", "MANUAL-PENDING"):
+        store.create_manual_order_request(
+            {
+                "request_id": request_id,
+                "source": "local_ui_manual",
+                "requested_by": "test",
+                "requested_at": old_started_at,
+                "code": "005930",
+                "side": "SELL",
+                "amount": 10000,
+                "quantity": 1,
+                "lot_id": "LOT-1",
+                "preview_json": "{}",
+                "runtime_snapshot_json": "{}",
+                "live_trading": False,
+                "confirm_text_verified": True,
+                "status": "PROCESSING",
+                "processing_started_at": old_started_at,
+            }
+        )
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE manual_order_requests SET processing_started_at = ? WHERE request_id IN ('MANUAL-OPEN-ORDER', 'MANUAL-PENDING')",
+            (old_started_at,),
+        )
+    store.record_order(
+        OrderResult(
+            OrderRequest("005930", "Samsung", OrderSide.SELL, 1, 10000, "manual_sell", lot_id="LOT-1"),
+            "ORDER-OPEN",
+            OrderStatus.REQUESTED,
+        )
+    )
+    service = UIService(config_path, tmp_path / "runtime.json")
+    assert service.requeue_manual_order_request("MANUAL-OPEN-ORDER", "수동요청 재처리 확인")["block_reason"] == "manual_request_open_order_exists"
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("DELETE FROM orders")
+    assert service.requeue_manual_order_request("MANUAL-OPEN-ORDER", "수동요청 재처리 확인")["block_reason"] == "manual_request_pending_request_exists"
 
 
 def test_manual_buy_blocks_when_lot_sizing_bucket_changes_after_preview(tmp_path):

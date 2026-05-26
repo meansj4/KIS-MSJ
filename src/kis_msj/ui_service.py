@@ -25,6 +25,10 @@ from .strategy import LotGridStrategy, StrategyAction
 SENSITIVE_PARTS = ("account", "acct", "cano", "acnt", "appkey", "appsecret", "token", "authorization", "auth")
 RISK_FLAGS = ("trading_halted", "administrative_issue", "investment_alert", "audit_opinion_issue", "delisting_risk", "accounting_issue", "liquidity_warning")
 MANUAL_PROCESSING_STALE_MINUTES = 10
+MANUAL_REQUEUE_CONFIRM_TEXT = "수동요청 재처리 확인"
+MANUAL_CANCEL_CONFIRM_TEXT = "수동요청 차단 확인"
+MANUAL_PENDING_STATUSES = {"REQUESTED", "PROCESSING", "ACCEPTED", "SUBMITTED", "PENDING", "OPEN", "NEW", "CREATED", "RETRYING"}
+ORDER_PENDING_STATUSES = {"REQUESTED", "PARTIAL", "SUBMITTED", "ACCEPTED", "PENDING", "OPEN", "NEW"}
 
 NEW_SEASON_REASON_GUIDE: dict[str, dict[str, str]] = {
     "": {"title": "진행 가능", "description": "현재 단계의 조건을 만족했습니다.", "next_action": "다음 단계로 진행하세요."},
@@ -361,10 +365,8 @@ class UIService:
         orders = self.orders()
         manual_requests = self.manual_order_requests()
         open_lots = [lot for lot in lots if int(lot.get("remaining_quantity") or 0) > 0 and lot.get("status") != "CLOSED"]
-        pending_order_statuses = {"REQUESTED", "PARTIAL", "SUBMITTED", "ACCEPTED", "PENDING", "OPEN", "NEW"}
-        pending_manual_statuses = {"REQUESTED", "PROCESSING", "ACCEPTED", "SUBMITTED", "PENDING", "OPEN", "NEW", "CREATED", "RETRYING"}
-        pending_orders = [order for order in orders if str(order.get("status") or "") in pending_order_statuses]
-        pending_manual = [request for request in manual_requests if str(request.get("status") or "") in pending_manual_statuses]
+        pending_orders = [order for order in orders if str(order.get("status") or "") in ORDER_PENDING_STATUSES]
+        pending_manual = [request for request in manual_requests if str(request.get("status") or "") in MANUAL_PENDING_STATUSES]
         sync_required = [position for position in positions if position.get("sync_status") == PositionLifecycle.SYNC_REQUIRED.value or position.get("position_state") == PositionLifecycle.SYNC_REQUIRED.value]
         lot_mismatch = [position for position in positions if position.get("lot_quantity_mismatch")]
         db_hash = _stable_hash(
@@ -1044,12 +1046,8 @@ class UIService:
 
     def manual_order_requests(self) -> list[dict[str, Any]]:
         rows = self._table("manual_order_requests")
-        now = datetime.now()
         for row in rows:
-            started_at = _parse_datetime(str(row.get("processing_started_at") or ""))
-            age_minutes = None
-            if started_at:
-                age_minutes = max(0.0, (now - started_at.replace(tzinfo=None)).total_seconds() / 60.0)
+            age_minutes = self._processing_age_minutes(row)
             row["processing_age_minutes"] = round(age_minutes, 3) if age_minutes is not None else None
             row["processing_stale"] = bool(
                 row.get("status") == "PROCESSING"
@@ -1059,23 +1057,125 @@ class UIService:
             )
             if row["processing_stale"] and not row.get("stale_processing_reason"):
                 row["stale_processing_reason"] = "manual_request_processing_stale_no_linked_order"
-            row["safe_requeue_allowed"] = bool(row["processing_stale"] and not row.get("linked_order_id"))
-            row["safe_cancel_allowed"] = bool(row.get("status") == "PROCESSING" and not row.get("linked_order_id"))
+            recovery_block = self._manual_recovery_block_reason(row)
+            row["recovery_block_reason"] = recovery_block
+            row["safe_requeue_allowed"] = bool(row["processing_stale"] and not recovery_block)
+            row["safe_cancel_allowed"] = bool(row["processing_stale"] and not recovery_block)
         return rows
 
-    def requeue_manual_order_request(self, request_id: str) -> dict[str, Any]:
+    def requeue_manual_order_request(self, request_id: str, confirm_text: str = "", operator_note: str = "") -> dict[str, Any]:
         from .storage import StateStore
 
+        row = self._manual_request_by_id(request_id)
+        block_reason = self._manual_recovery_block_reason(row)
+        if confirm_text != MANUAL_REQUEUE_CONFIRM_TEXT:
+            block_reason = "manual_request_requeue_confirm_text_required"
+        if block_reason:
+            self._append_audit_log(
+                "manual_order_request_requeued",
+                self._manual_recovery_audit_payload(row, request_id, False, block_reason, operator_note),
+            )
+            return {"requeued": False, "request_id": request_id, "block_reason": block_reason, "order_api_called": False, "lots_positions_fills_changed": False}
         ok = StateStore(self.config.storage_path).requeue_stale_manual_order_request(request_id)
-        self._append_audit_log("manual_order_request_requeue_requested", {"request_id": request_id, "success": ok})
-        return {"requeued": ok, "request_id": request_id, "order_api_called": False, "lots_positions_fills_changed": False}
+        self._append_audit_log(
+            "manual_order_request_requeued",
+            self._manual_recovery_audit_payload(row, request_id, ok, "operator_requeue_stale_processing", operator_note),
+        )
+        return {"requeued": ok, "request_id": request_id, "block_reason": "" if ok else "manual_request_requeue_failed", "order_api_called": False, "lots_positions_fills_changed": False}
 
-    def cancel_manual_order_request(self, request_id: str, reason: str = "operator_cancel_stale_processing") -> dict[str, Any]:
+    def cancel_manual_order_request(self, request_id: str, reason: str = "operator_cancel_stale_processing", confirm_text: str = "", operator_note: str = "") -> dict[str, Any]:
         from .storage import StateStore
 
+        row = self._manual_request_by_id(request_id)
+        block_reason = self._manual_recovery_block_reason(row)
+        if confirm_text != MANUAL_CANCEL_CONFIRM_TEXT:
+            block_reason = "manual_request_block_confirm_text_required"
+        if block_reason:
+            self._append_audit_log(
+                "manual_order_request_blocked_by_operator",
+                self._manual_recovery_audit_payload(row, request_id, False, block_reason, operator_note),
+            )
+            return {"canceled": False, "request_id": request_id, "block_reason": block_reason, "order_api_called": False, "lots_positions_fills_changed": False}
         ok = StateStore(self.config.storage_path).cancel_stale_manual_order_request(request_id, reason)
-        self._append_audit_log("manual_order_request_cancel_requested", {"request_id": request_id, "reason": reason, "success": ok})
-        return {"canceled": ok, "request_id": request_id, "order_api_called": False, "lots_positions_fills_changed": False}
+        self._append_audit_log(
+            "manual_order_request_blocked_by_operator",
+            self._manual_recovery_audit_payload(row, request_id, ok, reason, operator_note),
+        )
+        return {"canceled": ok, "request_id": request_id, "block_reason": "" if ok else "manual_request_block_failed", "order_api_called": False, "lots_positions_fills_changed": False}
+
+    def _manual_request_by_id(self, request_id: str) -> dict[str, Any] | None:
+        for row in self._table("manual_order_requests"):
+            if str(row.get("request_id") or "") == request_id:
+                return row
+        return None
+
+    def _processing_age_minutes(self, row: dict[str, Any]) -> float | None:
+        started_at = _parse_datetime(str(row.get("processing_started_at") or ""))
+        if not started_at:
+            return None
+        return max(0.0, (datetime.now() - started_at.replace(tzinfo=None)).total_seconds() / 60.0)
+
+    def _manual_recovery_block_reason(self, row: dict[str, Any] | None) -> str:
+        if row is None:
+            return "manual_request_not_found"
+        if row.get("status") != "PROCESSING":
+            return "manual_request_not_processing"
+        if row.get("linked_order_id"):
+            return "manual_request_linked_order_exists"
+        age_minutes = self._processing_age_minutes(row)
+        if age_minutes is None or age_minutes < MANUAL_PROCESSING_STALE_MINUTES:
+            return "manual_request_processing_not_stale"
+        code = str(row.get("code") or "").zfill(6)
+        side = str(row.get("side") or "")
+        lot_id = str(row.get("lot_id") or "")
+        request_id = str(row.get("request_id") or "")
+        for order in self.orders():
+            if str(order.get("status") or "") not in ORDER_PENDING_STATUSES:
+                continue
+            if str(order.get("code") or "").zfill(6) != code:
+                continue
+            if lot_id and str(order.get("lot_id") or "") not in {"", lot_id}:
+                continue
+            return "manual_request_open_order_exists"
+        for request in self._table("manual_order_requests"):
+            if str(request.get("request_id") or "") == request_id:
+                continue
+            if str(request.get("status") or "") not in MANUAL_PENDING_STATUSES:
+                continue
+            same_code = str(request.get("code") or "").zfill(6) == code
+            same_lot = bool(lot_id and str(request.get("lot_id") or "") == lot_id)
+            if same_code or same_lot:
+                return "manual_request_pending_request_exists"
+        positions = {str(row.get("code") or "").zfill(6): row for row in self.positions()}
+        position = positions.get(code, {})
+        if position.get("sync_status") == PositionLifecycle.SYNC_REQUIRED.value or position.get("position_state") == PositionLifecycle.SYNC_REQUIRED.value:
+            return "sync_required"
+        if position.get("position_state") == PositionLifecycle.RISK_BLOCKED.value:
+            return "risk_blocked_buy_sell_blocked"
+        if side == OrderSide.SELL.value:
+            lots = {str(lot.get("lot_id") or ""): lot for lot in self.lots()}
+            lot = lots.get(lot_id)
+            if not lot:
+                return "lot_not_found"
+            remaining = int(lot.get("remaining_quantity") or 0)
+            if str(lot.get("status") or "") == "CLOSED" or remaining <= 0:
+                return "closed_lot"
+            quantity = int(row.get("quantity") or 0)
+            if quantity > remaining:
+                return "quantity_exceeds_remaining"
+        return ""
+
+    def _manual_recovery_audit_payload(self, row: dict[str, Any] | None, request_id: str, success: bool, reason: str, operator_note: str) -> dict[str, Any]:
+        return {
+            "request_id": request_id,
+            "success": success,
+            "reason": reason,
+            "previous_status": row.get("status") if row else "",
+            "previous_processing_started_at": row.get("processing_started_at") if row else "",
+            "claim_attempt_count": row.get("claim_attempt_count") if row else 0,
+            "linked_order_id": row.get("linked_order_id") if row else "",
+            "operator_note": operator_note,
+        }
 
     def manual_order_preview(self, payload: dict[str, Any]) -> dict[str, Any]:
         config = self.config
