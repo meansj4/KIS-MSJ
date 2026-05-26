@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import sqlite3
+import uuid
 from dataclasses import asdict
 from datetime import datetime, time as day_time
 from pathlib import Path
@@ -97,6 +98,7 @@ CONFIG_METADATA: tuple[dict[str, Any], ...] = (
     {"section": "Paths / Account / Upstream", "key": "upstream_watch.fetch", "label_ko": "upstream fetch 수행", "description_ko": "true이면 upstream 확인 시 fetch를 시도할 수 있습니다.", "type": "boolean", "unit": "bool", "display_format": "boolean", "config_format": "boolean", "warning_level": "warning", "requires_restart": True},
     {"section": "Paths / Account / Upstream", "key": "loop_interval_seconds", "label_ko": "봇 루프 간격", "description_ko": "자동매매 메인 루프 반복 간격입니다.", "type": "number", "unit": "초", "display_format": "number", "config_format": "number", "warning_level": "normal", "requires_restart": True},
     {"section": "Paths / Account / Upstream", "key": "max_loop_count", "label_ko": "최대 루프 수", "description_ko": "테스트용 최대 루프 수입니다. 비어 있으면 제한이 없습니다.", "type": "number", "unit": "회", "display_format": "nullable_integer", "config_format": "nullable_integer", "warning_level": "normal", "requires_restart": True},
+    {"section": "UI / Manual Orders", "key": "ui_manual_trading_enabled", "label_ko": "수동 주문 요청 활성화", "description_ko": "true이면 UI가 manual order request를 생성할 수 있습니다. UI가 직접 주문 API를 호출하지는 않습니다.", "type": "boolean", "unit": "bool", "display_format": "boolean", "config_format": "boolean", "warning_level": "critical", "requires_restart": True, "danger_confirm_required": True},
 )
 
 
@@ -298,6 +300,132 @@ class UIService:
             row["position_lots_reflected"] = True
         return rows
 
+    def manual_order_requests(self) -> list[dict[str, Any]]:
+        return self._table("manual_order_requests")
+
+    def manual_order_preview(self, payload: dict[str, Any]) -> dict[str, Any]:
+        config = self.config
+        side = str(payload.get("side", "")).upper()
+        code = str(payload.get("code", "")).zfill(6)
+        quantity = int(payload.get("quantity") or 0)
+        amount = int(payload.get("amount") or 0)
+        lot_id = str(payload.get("lot_id") or "")
+        positions = {row["code"]: row for row in self.positions()}
+        position = positions.get(code, {"code": code, "position_state": PositionLifecycle.NEVER_BOUGHT.value})
+        lots = {row["lot_id"]: row for row in self.lots()}
+        lot = lots.get(lot_id, {})
+        current_price = int(payload.get("current_price") or position.get("current_price") or lot.get("current_price") or 0)
+        runtime = self.runtime_status()
+        block_reasons: list[str] = []
+        if not config.ui_manual_trading_enabled:
+            block_reasons.append("ui_manual_trading_disabled")
+        if side not in {OrderSide.BUY.value, OrderSide.SELL.value}:
+            block_reasons.append("invalid_side")
+        if runtime.get("all_orders_paused"):
+            block_reasons.append("runtime_all_orders_paused")
+        if position.get("sync_status") == PositionLifecycle.SYNC_REQUIRED.value or position.get("position_state") == PositionLifecycle.SYNC_REQUIRED.value:
+            block_reasons.append("sync_required")
+        if position.get("position_state") == PositionLifecycle.RISK_BLOCKED.value:
+            block_reasons.append("risk_blocked_buy_sell_blocked")
+        if current_price <= 0:
+            block_reasons.append("current_price_missing")
+        if side == OrderSide.BUY.value:
+            if runtime.get("buy_paused"):
+                block_reasons.append("runtime_buy_paused")
+            if self._has_open_order(code, OrderSide.BUY.value):
+                block_reasons.append("open_buy_order_exists")
+            if quantity <= 0 and amount > 0 and current_price > 0:
+                quantity = amount // current_price
+            if amount <= 0 and quantity > 0 and current_price > 0:
+                amount = quantity * current_price
+            if quantity <= 0:
+                block_reasons.append("quantity_below_one")
+            if amount <= 0:
+                block_reasons.append("amount_missing")
+        if side == OrderSide.SELL.value:
+            if runtime.get("sell_paused"):
+                block_reasons.append("runtime_sell_paused")
+            if not lot_id or not lot:
+                block_reasons.append("lot_not_found")
+            remaining = int(lot.get("remaining_quantity") or 0)
+            if str(lot.get("status") or "") == "CLOSED" or remaining <= 0:
+                block_reasons.append("closed_lot")
+            if self._has_open_order(code, OrderSide.SELL.value, lot_id):
+                block_reasons.append("open_sell_order_exists")
+            if quantity <= 0:
+                quantity = remaining
+            if quantity > remaining:
+                block_reasons.append("quantity_exceeds_remaining")
+            amount = quantity * current_price if current_price > 0 else 0
+        estimated_pnl = 0
+        estimated_pnl_rate = 0.0
+        estimated_fee_tax = 0
+        if side == OrderSide.SELL.value and lot and current_price > 0:
+            buy_price = int(lot.get("buy_price") or 0)
+            estimated_pnl = (current_price - buy_price) * quantity
+            estimated_pnl_rate = (current_price - buy_price) / buy_price if buy_price else 0.0
+            estimated_fee_tax = int(round(amount * config.strategy.estimated_fee_tax_pct / 100.0))
+        confirm_text = str(payload.get("confirm_text") or "")
+        confirm_required = bool(config.order.live_trading)
+        confirm_text_verified = (not confirm_required) or confirm_text == "수동주문 확인"
+        if confirm_required and not confirm_text_verified:
+            block_reasons.append("confirm_text_required")
+        preview = {
+            "can_create": not block_reasons,
+            "block_reasons": block_reasons,
+            "source": "local_ui_manual",
+            "requested_by": str(payload.get("requested_by") or "local_ui"),
+            "code": code,
+            "name": position.get("name") or lot.get("name", ""),
+            "side": side,
+            "quantity": quantity,
+            "amount": amount,
+            "lot_id": lot_id,
+            "current_price": current_price,
+            "estimated_order_amount": amount,
+            "estimated_realized_pnl": estimated_pnl,
+            "estimated_realized_pnl_rate": estimated_pnl_rate,
+            "estimated_fee_tax": estimated_fee_tax,
+            "runtime_snapshot": runtime,
+            "live_trading": config.order.live_trading,
+            "confirm_required": confirm_required,
+            "confirm_text_verified": confirm_text_verified,
+            "position_state": position.get("position_state", ""),
+            "open_order_exists": self._has_open_order(code, side, lot_id if side == OrderSide.SELL.value else ""),
+        }
+        self._append_audit_log("manual_order_request_previewed", preview)
+        return preview
+
+    def create_manual_order_request(self, payload: dict[str, Any]) -> dict[str, Any]:
+        preview = self.manual_order_preview(payload)
+        if not preview["can_create"]:
+            self._append_audit_log("manual_order_request_blocked", preview)
+            return {"created": False, "preview": preview, "errors": preview["block_reasons"]}
+        request_id = f"MANUAL-{datetime.now().strftime('%Y%m%d%H%M%S%f')}-{uuid.uuid4().hex[:8]}"
+        now = datetime.now().isoformat(timespec="seconds")
+        request = {
+            "request_id": request_id,
+            "source": "local_ui_manual",
+            "requested_by": preview["requested_by"],
+            "requested_at": now,
+            "code": preview["code"],
+            "side": preview["side"],
+            "amount": preview["amount"],
+            "quantity": preview["quantity"],
+            "lot_id": preview["lot_id"],
+            "order_type": "LIMIT_POLICY",
+            "preview_json": json.dumps(preview, ensure_ascii=False),
+            "runtime_snapshot_json": json.dumps(preview["runtime_snapshot"], ensure_ascii=False),
+            "live_trading": preview["live_trading"],
+            "confirm_text_verified": preview["confirm_text_verified"],
+            "status": "REQUESTED",
+        }
+        from .storage import StateStore
+
+        StateStore(self.config.storage_path).create_manual_order_request(request)
+        self._append_audit_log("manual_order_request_created", request)
+        return {"created": True, "request_id": request_id, "preview": preview}
+
     def parse_log_events(self, limit: int = 300) -> list[str]:
         log_path = Path(self.config.log_path)
         if not log_path.exists():
@@ -485,6 +613,22 @@ class UIService:
                 return []
         return [_normalize_row(dict(row)) for row in rows]
 
+    def _has_open_order(self, code: str, side: str, lot_id: str = "") -> bool:
+        for order in self.orders():
+            if order.get("code") != code or order.get("side") != side or order.get("status") not in {"REQUESTED", "PARTIAL"}:
+                continue
+            if side == OrderSide.SELL.value and lot_id and order.get("lot_id") != lot_id:
+                continue
+            return True
+        return False
+
+    def _append_audit_log(self, event: str, payload: dict[str, Any]) -> None:
+        log_path = Path(self.config.log_path)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        item = " ".join(f"{key}={json.dumps(value, ensure_ascii=False, default=str)}" for key, value in payload.items())
+        with log_path.open("a", encoding="utf-8") as output:
+            output.write(f"{datetime.now().isoformat(timespec='seconds')} INFO {event} {item}\n")
+
     def _latest_log_time(self) -> str:
         for line in reversed(self.parse_log_events(200)):
             if len(line) >= 19:
@@ -590,7 +734,7 @@ def _count_by(rows: list[dict[str, Any]], key: str) -> dict[str, int]:
 
 def _normalize_row(row: dict[str, Any]) -> dict[str, Any]:
     for key, value in list(row.items()):
-        if key in {"needs_review", "auto_buy_enabled", "danger_state", "lot_quantity_mismatch", "trading_paused", "sell_completed", "partial_sold", "cleanup_candidate", "cleanup_flag", "anchor_single_fill"}:
+        if key in {"needs_review", "auto_buy_enabled", "danger_state", "lot_quantity_mismatch", "trading_paused", "sell_completed", "partial_sold", "cleanup_candidate", "cleanup_flag", "anchor_single_fill", "live_trading", "confirm_text_verified"}:
             row[key] = bool(value)
     return row
 

@@ -424,5 +424,6 @@
   "storage_path": "C:\\MSJ\\KIS-MSJ\\data\\lot_auto_trader_real_test.sqlite3",
   "log_path": "C:\\MSJ\\KIS-MSJ\\logs\\lot_auto_trader.log",
   "loop_interval_seconds": 15,
-  "max_loop_count": null
+  "max_loop_count": null,
+  "ui_manual_trading_enabled": false
 }

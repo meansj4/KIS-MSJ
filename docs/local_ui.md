@@ -398,3 +398,95 @@ UI 로그 표시는 아래 키 또는 계좌번호처럼 보이는 긴 숫자를
 - 수량 0 또는 예산 부족
 
 감사 로그에는 `requested_by`, `requested_at`, `source`, `code`, `side`, `quantity`, `amount`, `lot_id`, `preview`, `runtime_snapshot`, `live_trading`, `confirm_text_verified` 를 남기는 것을 권장합니다.
+
+## UI 표시 규칙 / 한글화 규칙
+
+테이블 화면은 사용자가 먼저 의미를 이해할 수 있도록 한글 라벨을 기본으로 표시하고, 디버깅을 위해 내부 key를 작은 회색 monospace 글씨로 함께 표시합니다.
+
+예:
+
+- 보유 상태 / `position_state`
+- 잔여 수량 / `remaining_quantity`
+- 평가손익률 / `unrealized_pnl_rate`
+- 중복방지 키 / `dedupe_key_type`
+
+상태값은 badge 형태로 표시합니다.
+
+- `HOLDING`: 보유 중
+- `WAIT_REENTRY`: 재진입 대기
+- `REVIEW_REQUIRED`: 수동 검토 필요
+- `RISK_BLOCKED`: 위험 차단
+- `SYNC_REQUIRED`: 동기화 필요
+- `OPEN`: 미청산
+- `CLOSED`: 청산 완료
+- `REQUESTED`: 요청됨
+- `PARTIAL`: 부분체결
+- `FILLED`: 체결완료
+- `CANCELED`: 취소됨
+- `REJECTED`: 거절됨
+- `BUY`: 매수
+- `SELL`: 매도
+
+색상 규칙:
+
+- 수익/양수: 초록 계열
+- 손실/음수: 빨강 계열
+- 주의/대기/부분체결: 주황 계열
+- 위험/차단/거절/동기화 필요: 빨강 계열
+- 일반 상태: 파랑 또는 회색 계열
+
+표시 규칙:
+
+- 빈 값, `None`, 빈 문자열은 `-` 로 표시합니다.
+- 숫자, 금액, 수량, 손익률 계열 컬럼은 우측 정렬합니다.
+- raw key와 내부 값은 작은 회색 monospace 스타일로 병기합니다.
+- `skip_reason`, `final_block_reason`, `action_execution_state`, `dedupe_key_type` 은 가능한 경우 한글 설명을 badge와 함께 표시합니다.
+
+## 수동 주문 요청 구현 상태
+
+수동 주문은 UI가 직접 주문 API를 호출하지 않고 `manual_order_requests` 큐에 요청만 생성하는 구조로 구현합니다.
+
+저장 위치:
+
+- SQLite table: `manual_order_requests`
+
+주요 필드:
+
+- `request_id`
+- `source`
+- `requested_by`
+- `requested_at`
+- `code`
+- `side`
+- `amount`
+- `quantity`
+- `lot_id`
+- `order_type`
+- `preview_json`
+- `runtime_snapshot_json`
+- `live_trading`
+- `confirm_text_verified`
+- `status`
+- `block_reason`
+- `linked_order_id`
+- `created_at`
+- `updated_at`
+
+기본값:
+
+- `ui_manual_trading_enabled=false`
+
+이 값이 false이면 UI 버튼과 API 요청 생성이 모두 차단됩니다.
+
+처리 흐름:
+
+1. UI가 preview API로 차단 조건과 예상 금액/손익을 계산합니다.
+2. live trading이면 사용자가 `수동주문 확인` 문구를 입력해야 합니다.
+3. UI가 `manual_order_requests` 에 요청을 생성합니다.
+4. Bot Core가 `REQUESTED` 상태 요청을 읽습니다.
+5. Bot Core가 runtime pause, risk guard, open order guard, live trading confirm, symbol/lot 상태를 검증합니다.
+6. 통과한 요청만 기존 `order_manager` 경로로 주문 요청됩니다.
+7. 체결은 기존 reconciliation 또는 즉시 체결 확인 경로로 `fills` 에 저장됩니다.
+8. `lots` 와 `positions` 는 fill insert 성공 후에만 갱신됩니다.
+
+UI 서버는 KIS 주문 API를 직접 호출하지 않습니다.

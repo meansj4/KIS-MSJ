@@ -113,7 +113,14 @@ const LABELS = {
   position_lots_reflected:'포지션/LOT 반영 여부',
   all_orders_paused:'전체 주문 일시정지', buy_paused:'매수 일시정지', sell_paused:'매도 일시정지',
   cleanup_paused:'Cleanup 일시정지', reentry_paused:'재진입 일시정지', updated_at:'갱신시각',
-  updated_by:'수정자', expires_at:'만료시각'
+  updated_by:'수정자', expires_at:'만료시각', source:'출처', requested_by:'요청자',
+  requested_at:'요청시각', amount:'금액', order_type:'주문 유형', preview_json:'미리보기 JSON',
+  runtime_snapshot_json:'런타임 상태 JSON', live_trading:'실거래 여부', confirm_text_verified:'확인 문구 검증',
+  block_reason:'차단 사유', linked_order_id:'연결 주문 ID', created_at:'생성시각',
+  market_value:'평가금액', total_quantity:'총 수량', realized_pnl:'실현손익',
+  target_sell_price:'목표 매도가', target_profit_pct:'목표수익률', sell_completed:'매도 완료',
+  partial_sold:'부분 매도', estimated_fee_tax:'예상 수수료/세금', last_order_id:'최근 주문 ID',
+  last_order_status:'최근 주문 상태', sync_status:'동기화 상태', review_reason:'검토 사유'
 };
 const VALUE_LABELS = {
   HOLDING:'보유 중', NEVER_BOUGHT:'미매수', WAIT_REENTRY:'재진입 대기',
@@ -128,7 +135,18 @@ const VALUE_LABELS = {
   risk_blocked_buy_sell_blocked:'위험 차단 상태라 매수/매도 모두 차단', sync_required:'동기화 필요로 차단',
   review_required:'수동 검토 필요로 매수 차단'
 };
-function labelFor(key) { return LABELS[key] || key; }
+function labelFor(key) { return LABELS[key] || humanizeKey(key); }
+function humanizeKey(key) {
+  const parts = String(key).split('_').map(p => ({
+    code:'종목코드', name:'종목명', current:'현재', price:'가격', quantity:'수량',
+    remaining:'잔여', buy:'매수', sell:'매도', order:'주문', fill:'체결',
+    filled:'체결', requested:'요청', created:'생성', updated:'갱신', status:'상태',
+    reason:'사유', amount:'금액', rate:'비율', pct:'비율', pnl:'손익',
+    profit:'수익', loss:'손실', lot:'LOT', id:'ID', flag:'여부', count:'수',
+    time:'시각', date:'일자', side:'매수/매도'
+  }[p] || p));
+  return parts.join(' ');
+}
 function valueLabel(v) { return VALUE_LABELS[String(v)] || String(v); }
 function headerLabel(key) { return `${esc(labelFor(key))}<span class="key">${esc(key)}</span>`; }
 function isNumericKey(key) { return /(price|amount|quantity|count|pct|rate|pnl|loss|profit|age|limit|total|cash|value)/i.test(key); }
@@ -275,43 +293,64 @@ async function loadRuntime() {
 async function runtime(path) { await api(path, {method:'POST'}); await loadRuntime(); }
 async function loadManualOrders() {
   currentView = 'manual';
-  document.getElementById('content').innerHTML = `<h2>수동 주문 요청 구조 검토</h2>
-  <div class="manualBox"><strong>현재 상태: 구현 보류 / 기본 비활성</strong><p>이 화면은 설계 안내입니다. UI 서버는 KIS 주문 API를 직접 호출하지 않으며, 수동 주문 요청도 아직 생성하지 않습니다.</p></div>
-  <h3>권장 데이터 모델</h3><pre>{
-  "request_id": "MANUAL-...",
-  "source": "local_ui_manual",
-  "requested_by": "operator",
-  "requested_at": "ISO timestamp",
-  "code": "005930",
-  "side": "BUY or SELL",
-  "amount": 30000,
-  "quantity": 1,
-  "lot_id": "sell only",
-  "preview": {},
-  "runtime_snapshot": {},
-  "live_trading": true,
-  "confirm_text_verified": true,
-  "status": "REQUESTED"
-}</pre>
-  <h3>안전한 처리 흐름</h3>
-  <ol>
-    <li>UI는 preview만 계산하고 주문 API를 호출하지 않습니다.</li>
-    <li>최종 확인 후 manual order request만 생성합니다.</li>
-    <li>봇이 요청을 읽고 기존 runtime pause, risk guard, open order guard, live trading guard를 적용합니다.</li>
-    <li>주문은 기존 order_manager 경로로만 생성합니다.</li>
-    <li>체결은 기존 reconciliation 또는 즉시 체결 확인으로 fills에 기록합니다.</li>
-    <li>lots/positions는 fill insert 성공 후에만 갱신합니다.</li>
-  </ol>
-  <h3>차단 조건</h3>
-  <ul>
-    <li>ui_manual_trading_enabled=false</li>
-    <li>SYNC_REQUIRED 또는 RISK_BLOCKED</li>
-    <li>runtime all/buy/sell/cleanup/reentry pause</li>
-    <li>동일 종목 또는 동일 LOT open order 존재</li>
-    <li>CLOSED LOT 매도 요청</li>
-    <li>수량 0 또는 예산 부족</li>
-  </ul>
-  <p class="warn">paper mode에서 request 생성, audit log, Bot Core 소비, reconciliation 반영까지 검증한 뒤 live trading에서 단계적으로 열어야 합니다.</p>`;
+  const cfg = await api('/api/config');
+  const requests = await api('/api/manual-order-requests');
+  document.getElementById('content').innerHTML = `<h2>수동 주문 요청</h2>
+  <div class="manualBox"><strong>현재 기능 상태</strong><p>ui_manual_trading_enabled=${esc(cfg.ui_manual_trading_enabled)}. UI는 KIS 주문 API를 직접 호출하지 않고 manual_order_requests 큐에 요청만 생성합니다.</p></div>
+  <div class="grid">
+    <div class="controlCard">
+      <h3>수동 매수 요청</h3>
+      <input id="manualBuyCode" placeholder="종목코드 예: 005930">
+      <input id="manualBuyAmount" placeholder="주문금액">
+      <input id="manualBuyQty" placeholder="수량 선택 입력">
+      <input id="manualBuyConfirm" placeholder="live trading이면 '수동주문 확인' 입력">
+      <p><button ${cfg.ui_manual_trading_enabled ? '' : 'disabled'} onclick="previewManual('BUY')">매수 미리보기</button>
+      <button ${cfg.ui_manual_trading_enabled ? '' : 'disabled'} onclick="createManual('BUY')">요청 생성</button></p>
+      <small class="muted">비활성 상태에서는 설정에서 수동 주문 요청 기능이 비활성화되어 있습니다.</small>
+    </div>
+    <div class="controlCard">
+      <h3>LOT 수동 매도 요청</h3>
+      <input id="manualSellCode" placeholder="종목코드">
+      <input id="manualSellLot" placeholder="LOT ID">
+      <input id="manualSellQty" placeholder="매도 수량, 비우면 전량">
+      <input id="manualSellConfirm" placeholder="live trading이면 '수동주문 확인' 입력">
+      <p><button ${cfg.ui_manual_trading_enabled ? '' : 'disabled'} onclick="previewManual('SELL')">매도 미리보기</button>
+      <button ${cfg.ui_manual_trading_enabled ? '' : 'disabled'} onclick="createManual('SELL')">요청 생성</button></p>
+      <small class="muted">CLOSED LOT, open SELL order, RISK_BLOCKED, SYNC_REQUIRED, runtime sell pause 상태에서는 차단됩니다.</small>
+    </div>
+  </div>
+  <h3>미리보기 / 생성 결과</h3><pre id="manualResult"></pre>
+  <h3>수동 주문 요청 목록</h3>${table(requests, 'manualRequests')}`;
+}
+function manualPayload(side) {
+  if (side === 'BUY') return {
+    side:'BUY',
+    code:document.getElementById('manualBuyCode').value,
+    amount:Number(document.getElementById('manualBuyAmount').value || 0),
+    quantity:Number(document.getElementById('manualBuyQty').value || 0),
+    confirm_text:document.getElementById('manualBuyConfirm').value,
+    requested_by:'local_ui'
+  };
+  return {
+    side:'SELL',
+    code:document.getElementById('manualSellCode').value,
+    lot_id:document.getElementById('manualSellLot').value,
+    quantity:Number(document.getElementById('manualSellQty').value || 0),
+    confirm_text:document.getElementById('manualSellConfirm').value,
+    requested_by:'local_ui'
+  };
+}
+async function previewManual(side) {
+  const r = await api('/api/manual-orders/preview', {method:'POST', body:JSON.stringify(manualPayload(side))});
+  document.getElementById('manualResult').textContent = JSON.stringify(r, null, 2);
+}
+async function createManual(side) {
+  const preview = await api('/api/manual-orders/preview', {method:'POST', body:JSON.stringify(manualPayload(side))});
+  if (!preview.can_create) { document.getElementById('manualResult').textContent = JSON.stringify(preview, null, 2); return; }
+  if (!confirm('manual order request를 생성합니다. 실제 주문은 Bot Core가 별도로 처리합니다. 계속할까요?')) return;
+  const r = await api('/api/manual-orders', {method:'POST', body:JSON.stringify(manualPayload(side))});
+  document.getElementById('manualResult').textContent = JSON.stringify(r, null, 2);
+  await loadManualOrders();
 }
 async function loadConfig() {
   currentView = 'config';
@@ -430,6 +469,7 @@ class UIHandler(BaseHTTPRequestHandler):
                 "/api/lots": self.service.lots,
                 "/api/orders": self.service.orders,
                 "/api/fills": self.service.fills,
+                "/api/manual-order-requests": self.service.manual_order_requests,
                 "/api/decisions": self.service.parse_decision_logs,
                 "/api/risk/summary": lambda: self.service.status()["account_risk"],
                 "/api/execution-mapping/status": self.service.execution_mapping_status,
@@ -501,6 +541,12 @@ class UIHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/decision-preview":
                 self._send_json(self.service.decision_preview(data.get("code"), data.get("current_price")))
+                return
+            if parsed.path == "/api/manual-orders/preview":
+                self._send_json(self.service.manual_order_preview(data))
+                return
+            if parsed.path == "/api/manual-orders":
+                self._send_json(self.service.create_manual_order_request(data))
                 return
             if parsed.path == "/api/reconciliation/dry-run":
                 self._send_json({"dry_run": True, "order_api_called": False, "status": self.service.status()["reconciliation"]})

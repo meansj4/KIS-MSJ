@@ -176,6 +176,31 @@ class StateStore:
             _ensure_column(connection, "orders", "sell_reason", "TEXT NOT NULL DEFAULT 'UNKNOWN'")
             _ensure_column(connection, "orders", "reentry_type", "TEXT NOT NULL DEFAULT 'NONE'")
             _ensure_column(connection, "orders", "cleanup_flag", "INTEGER NOT NULL DEFAULT 0")
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS manual_order_requests (
+                    request_id TEXT PRIMARY KEY,
+                    source TEXT NOT NULL,
+                    requested_by TEXT NOT NULL,
+                    requested_at TEXT NOT NULL,
+                    code TEXT NOT NULL,
+                    side TEXT NOT NULL,
+                    amount INTEGER NOT NULL DEFAULT 0,
+                    quantity INTEGER NOT NULL DEFAULT 0,
+                    lot_id TEXT NOT NULL DEFAULT '',
+                    order_type TEXT NOT NULL DEFAULT 'LIMIT_POLICY',
+                    preview_json TEXT NOT NULL DEFAULT '{}',
+                    runtime_snapshot_json TEXT NOT NULL DEFAULT '{}',
+                    live_trading INTEGER NOT NULL DEFAULT 0,
+                    confirm_text_verified INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'REQUESTED',
+                    block_reason TEXT NOT NULL DEFAULT '',
+                    linked_order_id TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
 
     def _backup_before_migration_if_needed(self, connection: sqlite3.Connection) -> None:
         if self._migration_backup_done or not self._db_existed_before_init:
@@ -215,6 +240,7 @@ class StateStore:
             "lots": {"cleanup_candidate", "age_weeks", "base_target_profit_rate", "effective_target_profit_rate", "last_sell_reason"},
             "fills": {"execution_id", "sell_reason", "reentry_type"},
             "orders": {"requested_at", "sell_reason", "reentry_type", "cleanup_flag"},
+            "manual_order_requests": {"request_id", "source", "requested_by", "requested_at", "code", "side", "amount", "quantity", "lot_id", "order_type", "preview_json", "runtime_snapshot_json", "live_trading", "confirm_text_verified", "status", "block_reason", "linked_order_id", "created_at", "updated_at"},
         }
         missing = False
         for table, columns in expected_columns.items():
@@ -561,9 +587,73 @@ class StateStore:
         filled_at = _parse_timestamp(str(row["filled_at"]))
         return (datetime.now() - filled_at).total_seconds()
 
+    def create_manual_order_request(self, request: dict[str, object]) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO manual_order_requests (
+                    request_id, source, requested_by, requested_at, code, side, amount, quantity, lot_id,
+                    order_type, preview_json, runtime_snapshot_json, live_trading, confirm_text_verified,
+                    status, block_reason, linked_order_id
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    request["request_id"],
+                    request.get("source", "local_ui_manual"),
+                    request.get("requested_by", "local_ui"),
+                    request.get("requested_at", datetime.now().isoformat(timespec="seconds")),
+                    request["code"],
+                    request["side"],
+                    int(request.get("amount") or 0),
+                    int(request.get("quantity") or 0),
+                    request.get("lot_id", ""),
+                    request.get("order_type", "LIMIT_POLICY"),
+                    request.get("preview_json", "{}"),
+                    request.get("runtime_snapshot_json", "{}"),
+                    int(bool(request.get("live_trading", False))),
+                    int(bool(request.get("confirm_text_verified", False))),
+                    request.get("status", "REQUESTED"),
+                    request.get("block_reason", ""),
+                    request.get("linked_order_id", ""),
+                ),
+            )
+
+    def manual_order_requests(self, status: str | None = None) -> list[dict[str, object]]:
+        query = "SELECT * FROM manual_order_requests"
+        params: tuple[object, ...] = ()
+        if status is not None:
+            query += " WHERE status = ?"
+            params = (status,)
+        query += " ORDER BY created_at DESC"
+        with self._connect() as connection:
+            try:
+                rows = connection.execute(query, params).fetchall()
+            except sqlite3.Error:
+                return []
+        return [_normalize_row(dict(row)) for row in rows]
+
+    def update_manual_order_request(self, request_id: str, *, status: str, block_reason: str = "", linked_order_id: str = "") -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE manual_order_requests
+                SET status = ?, block_reason = ?, linked_order_id = COALESCE(NULLIF(?, ''), linked_order_id), updated_at = CURRENT_TIMESTAMP
+                WHERE request_id = ?
+                """,
+                (status, block_reason, linked_order_id, request_id),
+            )
+
 
 def _bools(data: dict[str, object]) -> dict[str, object]:
     return {key: int(value) if isinstance(value, bool) else value for key, value in data.items()}
+
+
+def _normalize_row(row: dict[str, object]) -> dict[str, object]:
+    for key in ("live_trading", "confirm_text_verified"):
+        if key in row:
+            row[key] = bool(row[key])
+    return row
 
 
 def _ensure_column(connection: sqlite3.Connection, table: str, column: str, definition: str) -> None:

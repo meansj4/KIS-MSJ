@@ -172,6 +172,7 @@ class BotConfig:
     log_path: str = str(PROJECT_ROOT / "logs" / "lot_auto_trader.log")
     loop_interval_seconds: float = 15.0
     max_loop_count: int | None = None
+    ui_manual_trading_enabled: bool = False
 
 
 def load_config(path: Path = DEFAULT_CONFIG_PATH) -> BotConfig:
@@ -191,6 +192,7 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> BotConfig:
         log_path=str(raw.get("log_path", base.log_path)),
         loop_interval_seconds=float(raw.get("loop_interval_seconds", base.loop_interval_seconds)),
         max_loop_count=raw.get("max_loop_count", base.max_loop_count),
+        ui_manual_trading_enabled=bool(raw.get("ui_manual_trading_enabled", base.ui_manual_trading_enabled)),
     )
 
 

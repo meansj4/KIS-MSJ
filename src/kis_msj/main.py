@@ -22,7 +22,7 @@ from .price_provider import PriceSampler
 from .risk_manager import RiskManager
 from .runtime_control import load_runtime_control, runtime_block_reason
 from .storage import StateStore
-from .strategy import LotGridStrategy
+from .strategy import LotGridStrategy, StrategyAction
 from .upstream_watcher import UpstreamWatcher
 
 
@@ -76,6 +76,7 @@ class AutoTrader:
         self.reconcile_open_orders()
         snapshot = self.startup_sync()
         account_risk = self.risk_manager.account_buy_allowed(snapshot, self.position_manager.positions)
+        self.process_manual_order_requests(snapshot, account_risk)
         for stock in self.config.stocks:
             if not stock.enabled:
                 continue
@@ -87,6 +88,106 @@ class AutoTrader:
             self.evaluate(position, snapshot, account_risk)
         self.store.save_positions(self.position_manager.positions.values())
         self.store.save_lots(self.lot_manager.lots.values())
+
+    def process_manual_order_requests(self, snapshot: AccountSnapshot, account_risk) -> None:
+        for manual in self.store.manual_order_requests("REQUESTED"):
+            request_id = str(manual["request_id"])
+            code = str(manual["code"]).zfill(6)
+            side = OrderSide(str(manual["side"]))
+            position = self.position_manager.get(code)
+            try:
+                block_reason = self.manual_request_block_reason(manual, position, account_risk)
+                if block_reason:
+                    self.store.update_manual_order_request(request_id, status="BLOCKED", block_reason=block_reason)
+                    self.logger.warning(
+                        "manual_order_request_blocked request_id=%s code=%s side=%s reason=%s",
+                        request_id,
+                        code,
+                        side.value,
+                        block_reason,
+                    )
+                    continue
+                samples = self.price_sampler.sample(position.code, position.name)
+                stable, stable_reason = self.price_sampler.stable(samples, self.config.risk.max_price_sample_volatility_pct)
+                current_price = samples[-1].price if samples else 0
+                if not stable or current_price <= 0:
+                    reason = stable_reason or "current_price_missing"
+                    self.store.update_manual_order_request(request_id, status="BLOCKED", block_reason=reason)
+                    self.logger.warning("manual_order_request_blocked request_id=%s code=%s side=%s reason=%s", request_id, code, side.value, reason)
+                    continue
+                position = self.position_manager.refresh_from_lots(code, current_price)
+                action = self.manual_action_from_request(manual, current_price)
+                final_block_reason = self.pre_request_block_reason(position, action)
+                if final_block_reason:
+                    self.store.update_manual_order_request(request_id, status="BLOCKED", block_reason=final_block_reason)
+                    self.logger.warning("manual_order_request_blocked request_id=%s code=%s side=%s reason=%s", request_id, code, side.value, final_block_reason)
+                    continue
+                order_request = self.order_manager.build_request(position, action, current_price)
+                if order_request is None:
+                    self.store.update_manual_order_request(request_id, status="BLOCKED", block_reason="quantity_below_one")
+                    continue
+                result, fill = self.order_manager.submit_and_confirm(order_request)
+                self.store.update_manual_order_request(request_id, status="SUBMITTED", linked_order_id=result.order_id)
+                self.logger.info(
+                    "manual_order_request_submitted_to_order_manager request_id=%s code=%s side=%s order_id=%s status=%s",
+                    request_id,
+                    code,
+                    side.value,
+                    result.order_id,
+                    result.status.value,
+                )
+                if fill is None:
+                    continue
+                updated = self.position_manager.apply_fill(fill)
+                self.store.save_position(updated)
+                self.store.save_lots(self.lot_manager.lots.values())
+                self.store.update_manual_order_request(request_id, status="FILLED", linked_order_id=result.order_id)
+            except Exception as error:  # noqa: BLE001
+                self.store.update_manual_order_request(request_id, status="FAILED", block_reason=type(error).__name__)
+                self.logger.exception("manual_order_request_failed request_id=%s code=%s side=%s error=%s", request_id, code, side.value, error)
+
+    def manual_request_block_reason(self, manual: dict[str, object], position: PositionState, account_risk) -> str:
+        if not self.config.ui_manual_trading_enabled:
+            return "ui_manual_trading_disabled"
+        if not bool(manual.get("confirm_text_verified")):
+            return "confirm_text_required"
+        if position.sync_status == PositionLifecycle.SYNC_REQUIRED.value or position.position_state == PositionLifecycle.SYNC_REQUIRED.value:
+            return "sync_required"
+        stock_config = next((stock for stock in self.config.stocks if stock.code == position.code), None)
+        if position.danger_state or position.position_state == PositionLifecycle.RISK_BLOCKED.value or (stock_config is not None and stock_config.danger_state):
+            return "risk_blocked_buy_sell_blocked"
+        side = OrderSide(str(manual["side"]))
+        if side is OrderSide.BUY and not account_risk.allowed:
+            return "|".join(account_risk.reasons) or "account_risk_blocked"
+        if side is OrderSide.BUY and self.store.has_open_order(position.code, OrderSide.BUY):
+            return "open_buy_order_exists"
+        if side is OrderSide.SELL:
+            lot_id = str(manual.get("lot_id") or "")
+            lot = self.lot_manager.lots.get(lot_id)
+            if lot is None:
+                return "lot_not_found"
+            if lot.remaining_quantity <= 0 or lot.status == "CLOSED":
+                return "closed_lot"
+            if int(manual.get("quantity") or 0) > lot.remaining_quantity:
+                return "quantity_exceeds_remaining"
+            if self.store.has_open_order(position.code, OrderSide.SELL, lot_id):
+                return "open_sell_order_exists"
+        return ""
+
+    def manual_action_from_request(self, manual: dict[str, object], current_price: int) -> StrategyAction:
+        side = OrderSide(str(manual["side"]))
+        if side is OrderSide.BUY:
+            amount = int(manual.get("amount") or 0)
+            quantity = int(manual.get("quantity") or 0)
+            if amount <= 0 and quantity > 0:
+                amount = quantity * current_price
+            return StrategyAction(OrderSide.BUY, amount, None, "local_ui_manual")
+        lot_id = str(manual.get("lot_id") or "")
+        quantity = int(manual.get("quantity") or 0)
+        lot = self.lot_manager.lots.get(lot_id)
+        if lot is not None and quantity <= 0:
+            quantity = lot.remaining_quantity
+        return StrategyAction(OrderSide.SELL, 0, quantity, "local_ui_manual", lot_id=lot_id, target_lot=lot, sell_reason=SellReason.MANUAL_SYNC.value)
 
     def reconcile_open_orders(self) -> None:
         for fill in self.order_manager.reconcile_open_orders():
