@@ -411,6 +411,33 @@
         "add_lot_count": 1
       }
     ],
+    "target_profit_lot_bands": [
+      {
+        "min_lots": 1,
+        "max_lots": 2,
+        "target_profit_rate": 0.06
+      },
+      {
+        "min_lots": 3,
+        "max_lots": 4,
+        "target_profit_rate": 0.05
+      },
+      {
+        "min_lots": 5,
+        "max_lots": 6,
+        "target_profit_rate": 0.04
+      },
+      {
+        "min_lots": 7,
+        "max_lots": 8,
+        "target_profit_rate": 0.03
+      },
+      {
+        "min_lots": 9,
+        "max_lots": 10,
+        "target_profit_rate": 0.02
+      }
+    ],
     "max_lots_per_symbol_default": 10,
     "exposure_buy_bands": [
       {

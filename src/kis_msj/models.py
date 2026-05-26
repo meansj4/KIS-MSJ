@@ -144,6 +144,11 @@ class PositionState:
     trailing_reentry_count_today: int = 0
     trailing_reentry_count_date: str = ""
     review_reason: str = ""
+    review_created_at: str = ""
+    review_trigger_values: str = ""
+    review_acknowledged_at: str = ""
+    review_acknowledged_by: str = ""
+    review_note: str = ""
     skip_reason: str = ""
     entry_price_for_lot_sizing: int = 0
     lot_unit_amount: int = 0

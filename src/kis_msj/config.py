@@ -75,6 +75,13 @@ class AddBuyLotBand:
 
 
 @dataclass(frozen=True)
+class TargetProfitLotBand:
+    min_lots: int
+    max_lots: int
+    target_profit_rate: float
+
+
+@dataclass(frozen=True)
 class StrategyConfig:
     initial_buy_amount: int = 30_000
     auto_buy_limit: int = 300_000
@@ -120,6 +127,13 @@ class StrategyConfig:
         AddBuyLotBand(5, 6, 0.08, 1),
         AddBuyLotBand(7, 8, 0.10, 1),
         AddBuyLotBand(9, 10, 0.12, 1),
+    )
+    target_profit_lot_bands: tuple[TargetProfitLotBand, ...] = (
+        TargetProfitLotBand(1, 2, 0.06),
+        TargetProfitLotBand(3, 4, 0.05),
+        TargetProfitLotBand(5, 6, 0.04),
+        TargetProfitLotBand(7, 8, 0.03),
+        TargetProfitLotBand(9, 10, 0.02),
     )
     max_lots_per_symbol_default: int = 10
     exposure_buy_bands: tuple[BuyBand, ...] = (
@@ -246,6 +260,7 @@ def _strategy(raw: dict[str, Any], base: StrategyConfig) -> StrategyConfig:
     data["exposure_sell_bands"] = tuple(SellBand(**item) for item in raw.get("exposure_sell_bands", asdict(base)["exposure_sell_bands"]))
     data["price_lot_bands"] = tuple(PriceLotBand(**item) for item in raw.get("price_lot_bands", asdict(base)["price_lot_bands"]))
     data["add_buy_lot_bands"] = tuple(AddBuyLotBand(**item) for item in raw.get("add_buy_lot_bands", asdict(base)["add_buy_lot_bands"]))
+    data["target_profit_lot_bands"] = tuple(TargetProfitLotBand(**item) for item in raw.get("target_profit_lot_bands", asdict(base)["target_profit_lot_bands"]))
     return StrategyConfig(**data)
 
 

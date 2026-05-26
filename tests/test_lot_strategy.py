@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta
 
+import pytest
+
 from kis_msj.config import BotConfig, OrderConfig, RiskConfig, StrategyConfig
 from kis_msj.lot_manager import LotManager
 from kis_msj.models import AccountSnapshot, LotState, OrderSide, PositionLifecycle, PositionState, ReentryType, SellReason, TradeFill
@@ -712,6 +714,14 @@ def test_lot_sizing_lot_count_bands_and_max_lots_block() -> None:
     assert "6%" in action.reason
     assert strategy.context(position, 9400).add_buy_lot_band == "3-4"
 
+    for _ in range(9):
+        add_lot(positions, "000660", 10100, 1)
+    position_9 = positions.refresh_from_lots("000660", 8700)
+    allowed_10th = strategy.decide(position_9, 8700, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position_9))
+
+    assert allowed_10th is not None
+    assert strategy.context(position_9, 8700).current_open_lot_count == 9
+
     for _ in range(7):
         add_lot(positions, "005930", 10100, 1)
     position = positions.refresh_from_lots("005930", 8700)
@@ -719,6 +729,23 @@ def test_lot_sizing_lot_count_bands_and_max_lots_block() -> None:
 
     assert blocked is None
     assert position.skip_reason == "max_lots_per_symbol_reached"
+
+
+def test_lot_sizing_open_lot_count_excludes_closed_lots_for_max_lot_boundary() -> None:
+    _, lots, positions, strategy, risk, snapshot = setup_strategy(StrategyConfig())
+    for _ in range(10):
+        add_lot(positions, "005930", 10100, 1)
+    closed = next(iter(lots.lots.values()))
+    closed.remaining_quantity = 0
+    closed.status = "CLOSED"
+    position = positions.refresh_from_lots("005930", 8700)
+
+    action = strategy.decide(position, 8700, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    context = strategy.context(position, 8700)
+
+    assert context.current_open_lot_count == 9
+    assert action is not None
+    assert action.side is OrderSide.BUY
 
 
 def test_lot_sizing_high_price_band_max_lots_three_blocks_after_three_lots() -> None:
@@ -746,3 +773,67 @@ def test_lot_sizing_migrates_existing_open_lot_without_quantity_change() -> None
     assert sizing["lot_unit_amount"] == 30000
     assert position.skip_reason == "lot_sizing_migrated"
     assert lot.remaining_quantity == 3
+
+
+def test_lot_sizing_sell_target_uses_current_lot_band_not_original_lot_target() -> None:
+    _, lots, positions, strategy, risk, snapshot = setup_strategy(StrategyConfig())
+    first = add_lot(positions, "005930", 10000, 1)
+    for _ in range(4):
+        add_lot(positions, "005930", 10000, 1)
+    position = positions.refresh_from_lots("005930", 10400)
+
+    action = strategy.decide(position, 10400, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    context = strategy.context(position, 10400)
+
+    assert first.base_target_profit_rate == pytest.approx(0.06)
+    assert context.target_profit_source == "current_lot_band"
+    assert context.target_profit_lot_band == "5-6"
+    assert context.current_base_target_profit_rate == pytest.approx(0.04)
+    assert all(lot.effective_target_profit_rate <= 0.04 for lot in lots.open_lots("005930"))
+    assert action is not None
+    assert action.side is OrderSide.SELL
+    assert action.sell_reason == SellReason.PROFIT_TAKE.value
+
+
+def test_lot_sizing_age_decay_applies_to_current_lot_band_target() -> None:
+    _, lots, positions, strategy, risk, snapshot = setup_strategy(StrategyConfig(estimated_fee_tax_pct=0))
+    old = add_lot(positions, "005930", 10000, 1)
+    age_lot(old, 4)
+    for _ in range(4):
+        add_lot(positions, "005930", 10000, 1)
+    position = positions.refresh_from_lots("005930", 10200)
+
+    action = strategy.decide(position, 10200, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+
+    assert old.effective_target_profit_rate == pytest.approx(0.02, abs=0.001)
+    assert action is not None
+    assert action.lot_id == old.lot_id
+    assert action.sell_reason == SellReason.PROFIT_TAKE.value
+
+
+def test_lot_sizing_dynamic_target_does_not_change_realized_pnl_sell_reason_rules() -> None:
+    _, _, positions, strategy, risk, snapshot = setup_strategy(StrategyConfig(cleanup_enabled=True, estimated_fee_tax_pct=0), daily_profit_loss=10_000)
+    lot = add_lot(positions, "005930", 10000, 1)
+    age_lot(lot, 12)
+    for _ in range(4):
+        add_lot(positions, "005930", 10000, 1)
+    position = positions.refresh_from_lots("005930", 9800)
+
+    action = strategy.decide(position, 9800, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+
+    assert action is not None
+    assert action.sell_reason == SellReason.CLEANUP_SELL.value
+
+
+def test_legacy_mode_keeps_exposure_based_target_profit_behavior() -> None:
+    _, _, positions, strategy, risk, snapshot = setup_strategy(StrategyConfig(lot_sizing_mode="legacy_exposure_bands"))
+    for _ in range(5):
+        add_lot(positions, "005930", 10000, 1)
+    position = positions.refresh_from_lots("005930", 10400)
+
+    action = strategy.decide(position, 10400, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    context = strategy.context(position, 10400)
+
+    assert context.target_profit_source == "exposure_sell_band"
+    assert context.target_profit_rate == pytest.approx(0.06)
+    assert action is None or action.side is not OrderSide.SELL

@@ -534,6 +534,116 @@ def test_manual_buy_blocks_when_lot_sizing_bucket_changes_after_preview(tmp_path
     assert not trader.store.load_lots()
 
 
+def test_review_recheck_clears_review_when_triggers_are_resolved(tmp_path):
+    config_path, db_path, _ = _write_config(tmp_path)
+    store = StateStore(db_path)
+    store.save_position(
+        PositionState(
+            "005930",
+            "Samsung",
+            quantity=1,
+            current_price=11000,
+            cumulative_invested_amount=10000,
+            position_state=PositionLifecycle.REVIEW_REQUIRED.value,
+            needs_review=True,
+            auto_buy_enabled=False,
+            review_reason="symbol_loss_review",
+            review_created_at="2026-05-26T09:00:00",
+        )
+    )
+    store.save_lot(
+        LotState(
+            "LOT-REVIEW",
+            "005930",
+            "2026-05-01T09:05:00",
+            buy_price=10000,
+            buy_quantity=1,
+            buy_amount=10000,
+            remaining_quantity=1,
+            target_profit_pct=6.0,
+            target_sell_price=10600,
+        )
+    )
+    service = UIService(config_path, tmp_path / "runtime.json")
+
+    result = service.review_recheck("005930")
+    position = StateStore(db_path).load_positions()["005930"]
+
+    assert result["event"] == "review_required_cleared"
+    assert position.position_state == PositionLifecycle.HOLDING.value
+    assert position.needs_review is False
+    assert position.auto_buy_enabled is True
+
+
+def test_review_recheck_keeps_review_when_triggers_remain_and_ack_does_not_unblock(tmp_path):
+    config_path, db_path, _ = _write_config(tmp_path)
+    store = StateStore(db_path)
+    store.save_position(
+        PositionState(
+            "005930",
+            "Samsung",
+            quantity=1,
+            current_price=7900,
+            cumulative_invested_amount=10000,
+            profit_loss_pct=-21.0,
+            position_state=PositionLifecycle.REVIEW_REQUIRED.value,
+            needs_review=True,
+            auto_buy_enabled=False,
+            review_reason="symbol_loss_review",
+        )
+    )
+    store.save_lot(
+        LotState(
+            "LOT-REVIEW-ACTIVE",
+            "005930",
+            "2026-05-01T09:05:00",
+            buy_price=10000,
+            buy_quantity=1,
+            buy_amount=10000,
+            remaining_quantity=1,
+            target_profit_pct=6.0,
+            target_sell_price=10600,
+        )
+    )
+    service = UIService(config_path, tmp_path / "runtime.json")
+
+    result = service.review_recheck("005930")
+    ack = service.review_acknowledge("005930", note="checked", acknowledged_by="tester")
+    position = StateStore(db_path).load_positions()["005930"]
+
+    assert result["event"] == "review_required_still_active"
+    assert "symbol_loss_review" in result["active_reasons"]
+    assert ack["buy_block_still_active"] is True
+    assert position.position_state == PositionLifecycle.REVIEW_REQUIRED.value
+    assert position.review_acknowledged_by == "tester"
+    assert position.review_note == "checked"
+    assert position.auto_buy_enabled is False
+
+
+def test_review_recheck_sync_mismatch_goes_sync_required(tmp_path):
+    config_path, db_path, _ = _write_config(tmp_path)
+    store = StateStore(db_path)
+    store.save_position(
+        PositionState(
+            "005930",
+            "Samsung",
+            current_price=10000,
+            position_state=PositionLifecycle.REVIEW_REQUIRED.value,
+            needs_review=True,
+            lot_quantity_mismatch=True,
+        )
+    )
+    service = UIService(config_path, tmp_path / "runtime.json")
+
+    result = service.review_recheck("005930")
+    position = StateStore(db_path).load_positions()["005930"]
+
+    assert result["event"] == "review_required_still_active"
+    assert position.position_state == PositionLifecycle.SYNC_REQUIRED.value
+    assert position.sync_status == PositionLifecycle.SYNC_REQUIRED.value
+    assert position.trading_paused is True
+
+
 def test_bot_loop_interrupts_promptly_for_runtime_pause(tmp_path):
     config = BotConfig(
         stocks=(StockConfig("005930", "Samsung"),),

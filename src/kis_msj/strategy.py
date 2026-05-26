@@ -82,10 +82,18 @@ class StrategyContext:
     max_lots_per_symbol: int = 0
     lot_sizing_bucket: str = ""
     lot_sizing_locked: bool = False
+    lot_sizing_locked_at: str = ""
     lot_sizing_mode: str = ""
     lot_sizing_skip_reason: str = ""
     add_buy_lot_band: str = ""
     current_open_lot_count: int = 0
+    original_lot_base_target_profit_rate: float = 0.0
+    current_base_target_profit_rate: float = 0.0
+    target_profit_source: str = ""
+    target_profit_lot_band: str = ""
+    effective_target_profit_rate: float = 0.0
+    lot_age_weeks: float = 0.0
+    age_decay_rate: float = 0.0
 
 
 class LotGridStrategy:
@@ -229,8 +237,9 @@ class LotGridStrategy:
         profit_candidates: list[LotState] = []
         cleanup_candidates: list[tuple[LotState, int, bool]] = []
         budget = self.cleanup_loss_budget(snapshot)
+        current_base_rate, _, _ = self.lot_manager.current_target_profit_info(position.code, position.cumulative_invested_amount)
         for lot in self.lot_manager.open_lots(position.code):
-            self.lot_manager.update_lot_target_metadata(lot, current_price)
+            self.lot_manager.update_lot_target_metadata(lot, current_price, current_base_target_profit_rate=current_base_rate)
             realized_rate = lot.profit_pct_at(current_price) / 100.0
             quantity = lot.remaining_quantity
             net_pnl = self.calculate_expected_realized_pnl(lot, current_price, quantity)
@@ -291,7 +300,8 @@ class LotGridStrategy:
         highest = self.lot_manager.highest_open_buy_lot(position.code)
         open_lot_vwap = self.lot_manager.open_lot_vwap_buy_price(position.code)
         median_open = self.lot_manager.median_open_buy_price(position.code)
-        target_profit = self.lot_manager.target_profit_pct(exposure) if exposure > 0 else 0.0
+        current_base_rate, target_profit_lot_band, target_profit_source = self.lot_manager.current_target_profit_info(position.code, exposure)
+        target_profit = current_base_rate * 100.0 if exposure > 0 else 0.0
         buy_plan = self.lot_manager.buy_plan(exposure)
         reference_buy_price, reference_buy_source = self._reference_buy_price(position)
         reference_sell = self._reference_sell_lot(position)
@@ -300,6 +310,7 @@ class LotGridStrategy:
         stale_lots = self.lot_manager.stale_lots(position.code, current_price) if exposure > 0 else []
         normal_reentry, trailing_reentry = self.check_reentry_conditions(position, current_price)
         sell_candidate = self._sell_candidate(position, current_price, snapshot) if exposure > 0 else None
+        selected_target_lot = sell_candidate[0] if sell_candidate else (profit_take_lots[0] if profit_take_lots else (self.lot_manager.open_lots(position.code)[0] if self.lot_manager.open_lots(position.code) else None))
         cleanup_budget = self.cleanup_loss_budget(snapshot)
         buy_condition = False
         if reference_buy_price and buy_plan:
@@ -321,7 +332,7 @@ class LotGridStrategy:
             reference_buy_source=reference_buy_source,
             reference_sell_price=reference_sell.buy_price if reference_sell else 0,
             target_buy_drop_rate=(buy_plan[0] / 100.0) if buy_plan else 0.0,
-            target_profit_rate=target_profit / 100.0,
+            target_profit_rate=current_base_rate if exposure > 0 else 0.0,
             buy_condition_met=buy_condition,
             sell_signal_met=self._sell_signal_met(position, current_price, target_profit),
             profitable_lots=";".join(lot.lot_id for lot in profit_take_lots) or "NONE",
@@ -363,10 +374,18 @@ class LotGridStrategy:
             max_lots_per_symbol=position.max_lots_per_symbol,
             lot_sizing_bucket=position.lot_sizing_bucket,
             lot_sizing_locked=bool(position.lot_unit_amount),
+            lot_sizing_locked_at=position.lot_sizing_locked_at,
             lot_sizing_mode=position.lot_sizing_mode,
             lot_sizing_skip_reason=self.lot_sizing_buy_block_reason(position, current_price, sizing, next_buy_amount=position.lot_unit_amount or int(sizing.get("lot_unit_amount", 0)), open_lot_count=open_lot_count) if self._lot_sizing_enabled() else "",
             add_buy_lot_band=add_buy_lot_band,
             current_open_lot_count=open_lot_count,
+            original_lot_base_target_profit_rate=selected_target_lot.base_target_profit_rate if selected_target_lot else 0.0,
+            current_base_target_profit_rate=current_base_rate if exposure > 0 else 0.0,
+            target_profit_source=target_profit_source if exposure > 0 else "",
+            target_profit_lot_band=target_profit_lot_band if exposure > 0 else "",
+            effective_target_profit_rate=selected_target_lot.effective_target_profit_rate if selected_target_lot else 0.0,
+            lot_age_weeks=selected_target_lot.age_weeks if selected_target_lot else 0.0,
+            age_decay_rate=self.config.strategy.age_decay_rate,
         )
 
     def _position_state(self, position: PositionState) -> str:

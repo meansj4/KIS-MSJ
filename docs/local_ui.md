@@ -1,5 +1,27 @@
 # KIS LOT Bot Local UI and Control API
 
+## REVIEW_REQUIRED 처리 가이드
+
+`REVIEW_REQUIRED`는 "자동 로직만으로 계속 매수/정리하기에는 사람이 한 번 봐야 한다"는 상태입니다. 이 상태에서는 신규 BUY와 추가 BUY가 차단되고, 수익권 또는 본전 이상 LOT의 `PROFIT_TAKE` SELL은 허용됩니다. 손실 확정인 `CLEANUP_SELL`은 기본적으로 차단합니다.
+
+UI의 종목 상세와 review API는 아래 정보를 보여줍니다.
+
+- `review_reason`: 수동 검토가 된 대표 사유
+- `review_created_at`: 처음 수동 검토 상태가 된 시각
+- `review_trigger_values`: 당시 손실률, OPEN LOT 수, exposure, stale LOT ID 등 근거 값
+- 현재도 조건이 남아 있는지 여부
+- 추천 조치: 추가매수 중단, 수익권 LOT 정리, reconciliation 확인, 상태 재평가
+
+지원 API:
+
+- `GET /api/positions/{code}/review-status`
+- `POST /api/positions/{code}/review/recheck`
+- `POST /api/positions/{code}/review/acknowledge`
+
+`review/recheck`는 현재 DB의 lots/positions 기준으로 review 조건을 다시 계산합니다. 조건이 해소되면 OPEN LOT이 있는 종목은 `HOLDING`으로, OPEN LOT이 없고 profit exit 이력이 있으면 `WAIT_REENTRY`로 복귀할 수 있습니다. 실제 잔고/LOT 불일치가 있으면 `SYNC_REQUIRED`로 보냅니다.
+
+`review/acknowledge`는 사용자가 확인했다는 기록만 남깁니다. 조건이 아직 남아 있으면 `REVIEW_REQUIRED`와 BUY 차단은 계속 유지됩니다. 조건을 무시하고 강제로 `HOLDING`으로 바꾸는 기능은 기본 UI에서 제공하지 않습니다.
+
 이 문서는 현재 구현된 localhost Web UI/API를 기준으로, 향후 Windows 로컬 런처와 Android 원격 관제를 확장할 때 지켜야 할 구조와 보안 원칙을 정리합니다.
 
 ## 현재 역할

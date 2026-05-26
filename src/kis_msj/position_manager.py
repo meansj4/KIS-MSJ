@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 from statistics import median
 
@@ -63,9 +64,21 @@ class PositionManager:
         elif any(lot.age_weeks >= self.config.stale_lot_review_age_weeks for lot in stale_lots):
             review_reason = "stale_lot_review_age"
         if review_reason:
+            now = datetime.now().isoformat(timespec="seconds")
             position.needs_review = True
             position.auto_buy_enabled = False
             position.review_reason = review_reason
+            position.review_created_at = position.review_created_at or now
+            position.review_trigger_values = json.dumps(
+                {
+                    "position_pnl_rate": position.profit_loss_pct / 100.0,
+                    "open_lot_count": len(lots),
+                    "exposure": exposure,
+                    "stale_lot_ids": [lot.lot_id for lot in stale_lots],
+                    "current_price": current_price,
+                },
+                ensure_ascii=False,
+            )
         position.position_state = self._lifecycle_for(position, bool(lots))
         position.last_update_time = datetime.now().isoformat(timespec="seconds")
         return position

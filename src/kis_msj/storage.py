@@ -99,6 +99,11 @@ class StateStore:
             _ensure_column(connection, "positions", "trailing_reentry_count_today", "INTEGER NOT NULL DEFAULT 0")
             _ensure_column(connection, "positions", "trailing_reentry_count_date", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(connection, "positions", "review_reason", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "positions", "review_created_at", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "positions", "review_trigger_values", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "positions", "review_acknowledged_at", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "positions", "review_acknowledged_by", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "positions", "review_note", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(connection, "positions", "skip_reason", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(connection, "positions", "entry_price_for_lot_sizing", "INTEGER NOT NULL DEFAULT 0")
             _ensure_column(connection, "positions", "lot_unit_amount", "INTEGER NOT NULL DEFAULT 0")
@@ -244,6 +249,11 @@ class StateStore:
                 "trailing_reentry_count_today",
                 "trailing_reentry_count_date",
                 "review_reason",
+                "review_created_at",
+                "review_trigger_values",
+                "review_acknowledged_at",
+                "review_acknowledged_by",
+                "review_note",
                 "skip_reason",
                 "entry_price_for_lot_sizing",
                 "lot_unit_amount",
@@ -286,6 +296,11 @@ class StateStore:
             data.setdefault("reentry_anchor_price", 0)
             data.setdefault("last_reentry_type", "NONE")
             data.setdefault("review_reason", "")
+            data.setdefault("review_created_at", "")
+            data.setdefault("review_trigger_values", "")
+            data.setdefault("review_acknowledged_at", "")
+            data.setdefault("review_acknowledged_by", "")
+            data.setdefault("review_note", "")
             data.setdefault("skip_reason", "")
             for key in ("needs_review", "auto_buy_enabled", "danger_state", "lot_quantity_mismatch", "trading_paused", "anchor_single_fill"):
                 data[key] = bool(data[key])

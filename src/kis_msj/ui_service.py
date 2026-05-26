@@ -222,6 +222,18 @@ def _lot_sizing_config_metadata() -> list[dict[str, Any]]:
         },
         {
             "section": "Strategy",
+            "key": "strategy.target_profit_lot_bands",
+            "label_ko": "LOT 수 기준 매도 목표수익률 구간",
+            "description_ko": "cycle locked LOT sizing 모드에서는 LOT을 매수했을 때 저장된 목표수익률이 아니라, 매도 판단 시점의 현재 OPEN LOT 수 구간으로 모든 OPEN LOT의 기본 목표수익률을 다시 계산합니다. 예를 들어 현재 5~6 LOT 구간이면 예전에 산 LOT도 현재 구간 target_profit_rate를 기준으로 age_decay_rate를 적용합니다.",
+            "type": "json",
+            "unit": "bands",
+            "display_format": "json",
+            "config_format": "json",
+            "warning_level": "warning",
+            "requires_restart": True,
+        },
+        {
+            "section": "Strategy",
             "key": "strategy.max_lots_per_symbol_default",
             "label_ko": "종목당 기본 최대 LOT 수",
             "description_ko": "가격대별 band에 max_lots가 따로 없을 때 적용하는 기본 최대 OPEN LOT 수입니다. 이 수에 도달하면 BUY는 max_lots_per_symbol_reached로 차단되고 SELL은 계속 허용됩니다.",
@@ -411,7 +423,135 @@ class UIService:
             "open_lot_count": len(open_lots),
             "strategy_context": asdict(context) if context else {},
             "recent_decisions": [item for item in self.parse_decision_logs(300) if item.get("code") == code][-50:],
+            "review_status": self.review_status(code),
         }
+
+    def review_status(self, code: str) -> dict[str, Any]:
+        code = str(code).zfill(6)
+        position = next((item for item in self.positions() if item.get("code") == code), {"code": code})
+        triggers = self._review_triggers(position)
+        return {
+            "code": code,
+            "position_state": position.get("position_state", ""),
+            "needs_review": bool(position.get("needs_review")),
+            "review_reason": position.get("review_reason", ""),
+            "review_created_at": position.get("review_created_at", ""),
+            "review_trigger_values": position.get("review_trigger_values", ""),
+            "review_acknowledged_at": position.get("review_acknowledged_at", ""),
+            "review_acknowledged_by": position.get("review_acknowledged_by", ""),
+            "review_note": position.get("review_note", ""),
+            "active_reasons": triggers["reasons"],
+            "trigger_values": triggers["values"],
+            "still_active": bool(triggers["reasons"]),
+            "recommended_actions": [
+                "추가매수는 중단하고 수익권 LOT의 PROFIT_TAKE SELL 가능 여부를 먼저 확인하세요.",
+                "수동매도 후 KIS 잔고와 내부 LOT 수량이 맞는지 reconciliation 상태를 확인하세요.",
+                "조건이 해소되었다면 상태 재평가를 실행하세요. 강제 해제는 기본 제공하지 않습니다.",
+            ],
+        }
+
+    def review_recheck(self, code: str) -> dict[str, Any]:
+        code = str(code).zfill(6)
+        from .storage import StateStore
+
+        store = StateStore(self.config.storage_path)
+        positions = store.load_positions()
+        position = positions.get(code, PositionState(code=code))
+        triggers = self._review_triggers(asdict(position))
+        now = datetime.now().isoformat(timespec="seconds")
+        if "sync_required" in triggers["reasons"]:
+            position.sync_status = PositionLifecycle.SYNC_REQUIRED.value
+            position.position_state = PositionLifecycle.SYNC_REQUIRED.value
+            position.trading_paused = True
+            position.auto_buy_enabled = False
+            position.skip_reason = "sync_required"
+            event = "review_required_still_active"
+        elif triggers["reasons"]:
+            position.needs_review = True
+            position.auto_buy_enabled = False
+            position.position_state = PositionLifecycle.REVIEW_REQUIRED.value
+            position.review_reason = triggers["reasons"][0]
+            position.review_created_at = position.review_created_at or now
+            position.review_trigger_values = json.dumps(triggers["values"], ensure_ascii=False)
+            event = "review_required_still_active"
+        else:
+            position.needs_review = False
+            position.auto_buy_enabled = True
+            position.review_reason = ""
+            position.review_trigger_values = ""
+            position.skip_reason = ""
+            open_lots = [lot for lot in self.lots() if lot.get("code") == code and int(lot.get("remaining_quantity") or 0) > 0 and lot.get("status") != "CLOSED"]
+            if open_lots:
+                position.position_state = PositionLifecycle.HOLDING.value
+            elif position.position_state == PositionLifecycle.COOLDOWN_AFTER_CLEANUP.value and position.cleanup_reentry_cooldown_until:
+                position.position_state = PositionLifecycle.COOLDOWN_AFTER_CLEANUP.value
+            elif position.last_fill_side == OrderSide.SELL.value or any(lot.get("code") == code for lot in self.lots()):
+                position.position_state = PositionLifecycle.WAIT_REENTRY.value
+            else:
+                position.position_state = PositionLifecycle.NEVER_BOUGHT.value
+            event = "review_required_cleared"
+        store.save_position(position)
+        payload = {"code": code, "event": event, "active_reasons": triggers["reasons"], "trigger_values": triggers["values"]}
+        self._append_audit_log("review_status_rechecked", payload)
+        self._append_audit_log(event, payload)
+        return {"rechecked": True, **payload, "position_state": position.position_state}
+
+    def review_acknowledge(self, code: str, note: str = "", acknowledged_by: str = "local_ui") -> dict[str, Any]:
+        code = str(code).zfill(6)
+        from .storage import StateStore
+
+        store = StateStore(self.config.storage_path)
+        positions = store.load_positions()
+        position = positions.get(code, PositionState(code=code))
+        position.review_acknowledged_at = datetime.now().isoformat(timespec="seconds")
+        position.review_acknowledged_by = acknowledged_by or "local_ui"
+        position.review_note = note
+        store.save_position(position)
+        payload = {
+            "code": code,
+            "review_acknowledged_at": position.review_acknowledged_at,
+            "review_acknowledged_by": position.review_acknowledged_by,
+            "review_note": position.review_note,
+            "position_state": position.position_state,
+            "buy_block_still_active": position.position_state == PositionLifecycle.REVIEW_REQUIRED.value or position.needs_review,
+        }
+        self._append_audit_log("review_acknowledged", payload)
+        return payload
+
+    def _review_triggers(self, position: dict[str, Any]) -> dict[str, Any]:
+        code = str(position.get("code") or "").zfill(6)
+        open_lots = [lot for lot in self.lots() if lot.get("code") == code and int(lot.get("remaining_quantity") or 0) > 0 and lot.get("status") != "CLOSED"]
+        exposure = sum(int(lot.get("remaining_quantity") or 0) * int(lot.get("buy_price") or 0) for lot in open_lots)
+        open_lot_count = len(open_lots)
+        stale_lot_ids = [
+            str(lot.get("lot_id") or "")
+            for lot in open_lots
+            if bool(lot.get("stale_lot")) and float(lot.get("age_weeks") or 0) >= self.config.strategy.stale_lot_review_age_weeks
+        ]
+        reasons = []
+        pnl_rate = float(position.get("profit_loss_pct") or 0.0) / 100.0
+        if position.get("sync_status") == PositionLifecycle.SYNC_REQUIRED.value or position.get("lot_quantity_mismatch") or position.get("trading_paused"):
+            reasons.append("sync_required")
+        if self.config.strategy.lot_sizing_mode != "cycle_locked_by_entry_price" and exposure > self.config.strategy.auto_buy_limit:
+            reasons.append("auto_buy_limit_exceeded")
+        if pnl_rate <= self.config.strategy.review_symbol_loss_rate and exposure > 0:
+            reasons.append("symbol_loss_review")
+        max_lots = int(position.get("max_lots_per_symbol") or self.config.strategy.max_open_lots_before_review)
+        if max_lots and open_lot_count > max_lots:
+            reasons.append("too_many_open_lots")
+        if stale_lot_ids:
+            reasons.append("stale_lot_review_age")
+        values = {
+            "position_pnl_rate": pnl_rate,
+            "review_symbol_loss_rate": self.config.strategy.review_symbol_loss_rate,
+            "open_lot_count": open_lot_count,
+            "max_lots": max_lots,
+            "exposure": exposure,
+            "auto_buy_limit": self.config.strategy.auto_buy_limit,
+            "stale_lot_ids": stale_lot_ids,
+            "stale_lot_review_age_weeks": self.config.strategy.stale_lot_review_age_weeks,
+        }
+        return {"reasons": reasons, "values": values}
 
     def positions(self) -> list[dict[str, Any]]:
         return self._table("positions")

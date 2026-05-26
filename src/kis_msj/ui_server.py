@@ -653,6 +653,10 @@ class UIHandler(BaseHTTPRequestHandler):
                 code = parsed.path.rsplit("/", 1)[-1]
                 self._send_json(self.service.stock_detail(code))
                 return
+            if parsed.path.startswith("/api/positions/") and parsed.path.endswith("/review-status"):
+                code = parsed.path.split("/")[3].zfill(6)
+                self._send_json(self.service.review_status(code))
+                return
             if parsed.path.startswith("/api/positions/"):
                 code = parsed.path.rsplit("/", 1)[-1].zfill(6)
                 self._send_json(next((item for item in self.service.positions() if item.get("code") == code), {}))
@@ -729,6 +733,14 @@ class UIHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/manual-orders":
                 self._send_json(self.service.create_manual_order_request(data))
+                return
+            if parsed.path.startswith("/api/positions/") and parsed.path.endswith("/review/recheck"):
+                code = parsed.path.split("/")[3].zfill(6)
+                self._send_json(self.service.review_recheck(code))
+                return
+            if parsed.path.startswith("/api/positions/") and parsed.path.endswith("/review/acknowledge"):
+                code = parsed.path.split("/")[3].zfill(6)
+                self._send_json(self.service.review_acknowledge(code, data.get("note", ""), data.get("acknowledged_by", "local_ui")))
                 return
             if parsed.path == "/api/reconciliation/dry-run":
                 self._send_json({"dry_run": True, "order_api_called": False, "status": self.service.status()["reconciliation"]})
