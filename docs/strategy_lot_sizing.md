@@ -1,41 +1,41 @@
-﻿# 媛寃⑸?蹂?LOT sizing
+# 가격대별 LOT sizing
 
 > Authoritative source: `docs/project_handoff_full.md` is the latest full baseline. `docs/project_handoff_thread_prompt.md` is for starting a new chat, and `docs/project_handoff_summary.md` is the short summary. `local_ui.md`, `strategy_lot_sizing.md`, `new_season_reset.md`, and `expansion_100_config.md` are detailed references. If a reference doc conflicts with the full handoff, use `project_handoff_full.md` as the source of truth.  
-> Last updated: 2026-05-26 / Baseline tests: `155 passed` / Baseline config profile: `expansion_100_safe`. Re-check config, DB, logs, and KIS account state at runtime.
+> Last updated: 2026-05-26 / Baseline tests: `156 passed` / Baseline config profile: `expansion_100_safe`. Re-check config, DB, logs, and KIS account state at runtime.
 
 
-??臾몄꽌??KIS LOT ?먮룞嫄곕옒 遊뉗쓽 `cycle_locked_by_entry_price` LOT sizing ?뺤콉???ㅻ챸?⑸땲??
+이 문서는 KIS LOT 자동거래 봇의 `cycle_locked_by_entry_price` LOT sizing 정책을 설명합니다.
 
-## 紐⑹쟻
+## 목적
 
-紐⑤뱺 醫낅ぉ??媛숈? `initial_buy_amount`瑜??곕㈃ 900??醫낅ぉ怨?90,000??醫낅ぉ??LOT 媛쒕뀗???ш쾶 ?щ씪吏묐땲?? 洹몃옒???꾩옱媛 援ш컙蹂꾨줈 1 LOT 湲덉븸怨?醫낅ぉ??理쒕? 湲덉븸???ㅻⅤ寃??뺥븯怨? ??踰?蹂댁쑀 ?ъ씠?댁씠 ?쒖옉?섎㈃ 洹?湲곗???怨좎젙?⑸땲??
+모든 종목에 같은 `initial_buy_amount`를 쓰면 900원 종목과 90,000원 종목의 LOT 개념이 크게 달라집니다. 그래서 현재가 구간별로 1 LOT 금액과 종목당 최대 금액을 다르게 정하고, 한 번 보유 사이클이 시작되면 그 기준을 고정합니다.
 
-## 媛寃⑸?蹂?1 LOT 湲덉븸
+## 가격대별 1 LOT 금액
 
-`strategy.price_lot_bands`媛 ???ъ씠??吏꾩엯 媛寃?湲곗??쇰줈 ?곸슜?⑸땲??
+`strategy.price_lot_bands`가 새 사이클 진입 가격 기준으로 적용됩니다.
 
-- 0~300?? ?먮룞留ㅼ닔 ?쒖쇅
-- 301~1,000?? 1 LOT 3,000?? 醫낅ぉ??理쒕? 30,000??
-- 1,001~10,000?? 1 LOT 10,000?? 醫낅ぉ??理쒕? 100,000??
-- 10,001~30,000?? 1 LOT 30,000?? 醫낅ぉ??理쒕? 300,000??
-- 30,001~100,000?? 1 LOT 100,000?? 醫낅ぉ??理쒕? 1,000,000??
-- 100,001~300,000?? 1 LOT 300,000?? 醫낅ぉ??理쒕? 3,000,000??
-- 300,001~1,000,000?? 1 LOT 1,000,000?? 理쒕? 3 LOT
-- 1,000,001???댁긽: ?먮룞留ㅼ닔 ?쒖쇅
+- 0~300원: 자동매수 제외
+- 301~1,000원: 1 LOT 3,000원, 종목당 최대 30,000원
+- 1,001~10,000원: 1 LOT 10,000원, 종목당 최대 100,000원
+- 10,001~30,000원: 1 LOT 30,000원, 종목당 최대 300,000원
+- 30,001~100,000원: 1 LOT 100,000원, 종목당 최대 1,000,000원
+- 100,001~300,000원: 1 LOT 300,000원, 종목당 최대 3,000,000원
+- 300,001~1,000,000원: 1 LOT 1,000,000원, 최대 3 LOT
+- 1,000,001원 이상: 자동매수 제외
 
-`enabled=false` 援ш컙?먯꽌???먮룞 initial buy, reentry buy, UI manual BUY request媛 李⑤떒?⑸땲??
+`enabled=false` 구간에서는 자동 initial buy, reentry buy, UI manual BUY request가 차단됩니다.
 
-## ?ъ씠??怨좎젙 ?먯튃
+## 사이클 고정 원칙
 
-`lot_sizing_mode = cycle_locked_by_entry_price`?먯꽌??蹂댁쑀 ?ъ씠??理쒖큹 吏꾩엯 ?쒖젏??媛寃⑹쑝濡?LOT sizing??怨좎젙?⑸땲??
+`lot_sizing_mode = cycle_locked_by_entry_price`에서는 보유 사이클 최초 진입 시점의 가격으로 LOT sizing을 고정합니다.
 
-??
+예:
 
-- 理쒖큹 留ㅼ닔 ?꾩옱媛媛 10,100?먯씠硫?`lot_unit_amount = 30,000`
-- ?댄썑 二쇨?媛 9,000?먯쑝濡??대젮媛??媛숈? 蹂댁쑀 ?ъ씠?댁쓽 異붽?留ㅼ닔 湲덉븸? 怨꾩냽 30,000??
-- OPEN LOT??紐⑤몢 ?щ씪吏???WAIT_REENTRY ?먮뒗 cleanup ?댄썑 ?덈줈 吏꾩엯?섎㈃ 洹몃븣??媛寃⑹쑝濡???sizing 怨꾩궛
+- 최초 매수 현재가가 10,100원이면 `lot_unit_amount = 30,000`
+- 이후 주가가 9,000원으로 내려가도 같은 보유 사이클의 추가매수 금액은 계속 30,000원
+- OPEN LOT이 모두 사라진 뒤 WAIT_REENTRY 또는 cleanup 이후 새로 진입하면 그때의 가격으로 새 sizing 계산
 
-positions?먮뒗 ?꾨옒 媛믪씠 ??λ맗?덈떎.
+positions에는 아래 값이 저장됩니다.
 
 - `entry_price_for_lot_sizing`
 - `lot_unit_amount`
@@ -45,27 +45,27 @@ positions?먮뒗 ?꾨옒 媛믪씠 ??λ맗?덈떎.
 - `lot_sizing_locked_at`
 - `lot_sizing_mode`
 
-## 湲곗〈 position fallback
+## 기존 position fallback
 
-湲곗〈 DB??OPEN LOT? ?덈뒗??lot sizing ?꾨뱶媛 鍮꾩뼱 ?덉쑝硫?泥?OPEN LOT??`buy_price` 湲곗??쇰줈 sizing??梨꾩썎?덈떎. ??migration? positions??sizing 湲곗?媛믩쭔 梨꾩슦硫?lots/positions ?섎웾? 諛붽씀吏 ?딆뒿?덈떎. decision log?먮뒗 `lot_sizing_migrated`媛 ?⑥쓣 ???덉뒿?덈떎.
+기존 DB에 OPEN LOT은 있는데 lot sizing 필드가 비어 있으면 첫 OPEN LOT의 `buy_price` 기준으로 sizing을 채웁니다. 이 migration은 positions의 sizing 기준값만 채우며 lots/positions 수량은 바꾸지 않습니다. decision log에는 `lot_sizing_migrated`가 남을 수 있습니다.
 
-## 異붽?留ㅼ닔 band
+## 추가매수 band
 
-LOT sizing 紐⑤뱶?먯꽌??湲곗〈 ?덈?湲덉븸 湲곗? `exposure_buy_bands` ???`add_buy_lot_bands`瑜??곗꽑 ?ъ슜?⑸땲??
+LOT sizing 모드에서는 기존 절대금액 기준 `exposure_buy_bands` 대신 `add_buy_lot_bands`를 우선 사용합니다.
 
-- 1~2 LOT: 湲곗?媛 ?鍮?4% ?섎씫 ??1 LOT 異붽?
-- 3~4 LOT: 湲곗?媛 ?鍮?6% ?섎씫 ??1 LOT 異붽?
-- 5~6 LOT: 湲곗?媛 ?鍮?8% ?섎씫 ??1 LOT 異붽?
-- 7~8 LOT: 湲곗?媛 ?鍮?10% ?섎씫 ??1 LOT 異붽?
-- 9~10 LOT: 湲곗?媛 ?鍮?12% ?섎씫 ??1 LOT 異붽?
+- 1~2 LOT: 기준가 대비 4% 하락 시 1 LOT 추가
+- 3~4 LOT: 기준가 대비 6% 하락 시 1 LOT 추가
+- 5~6 LOT: 기준가 대비 8% 하락 시 1 LOT 추가
+- 7~8 LOT: 기준가 대비 10% 하락 시 1 LOT 추가
+- 9~10 LOT: 기준가 대비 12% 하락 시 1 LOT 추가
 
-異붽?留ㅼ닔 湲덉븸? `lot_unit_amount * add_lot_count`?낅땲?? OPEN LOT ?섎뒗 `remaining_quantity > 0`?닿퀬 `status != CLOSED`??LOT留?怨꾩궛?⑸땲??
+추가매수 금액은 `lot_unit_amount * add_lot_count`입니다. OPEN LOT 수는 `remaining_quantity > 0`이고 `status != CLOSED`인 LOT만 계산합니다.
 
 ## Target profit LOT band
 
-LOT sizing 紐⑤뱶?먯꽌??留ㅻ룄 紐⑺몴?섏씡瑜좊룄 ?꾩옱 OPEN LOT ??湲곗??쇰줈 ?숈쟻?쇰줈 ?ы룊媛?⑸땲??
+LOT sizing 모드에서는 매도 목표수익률도 현재 OPEN LOT 수 기준으로 동적으로 재평가합니다.
 
-`strategy.target_profit_lot_bands` 湲곕낯媛?
+`strategy.target_profit_lot_bands` 기본값:
 
 - 1~2 LOT: 6%
 - 3~4 LOT: 5%
@@ -73,24 +73,24 @@ LOT sizing 紐⑤뱶?먯꽌??留ㅻ룄 紐⑺몴?섏씡瑜좊룄 ?꾩옱 OPEN LO
 - 7~8 LOT: 3%
 - 9~10 LOT: 2%
 
-LOT????????λ맂 `base_target_profit_rate`??怨쇨굅 ?곗씠???명솚怨?濡쒓렇 李멸퀬?⑹엯?덈떎. ?ㅼ젣 SELL ?먮떒? 留ㅻ룄 ?먮떒 ?쒖젏???꾩옱 OPEN LOT ??援ш컙?먯꽌 `current_base_target_profit_rate`瑜?怨꾩궛???ъ슜?⑸땲??
+LOT을 살 때 저장된 `base_target_profit_rate`는 과거 데이터 호환과 로그 참고용입니다. 실제 SELL 판단은 매도 판단 시점의 현재 OPEN LOT 수 구간에서 `current_base_target_profit_rate`를 계산해 사용합니다.
 
-怨듭떇:
+공식:
 
 ```text
 current_base_target_profit_rate = target_profit_rate_for_current_open_lot_count
 effective_target_profit_rate = current_base_target_profit_rate - lot_age_weeks * age_decay_rate
 ```
 
-?덈? ?ㅼ뼱 1~2 LOT 援ш컙?먯꽌 ??LOT?????紐⑺몴媛 6%??붾씪?? 異붽?留ㅼ닔 ???꾩옱 5~6 LOT 援ш컙???섎㈃ 紐⑤뱺 OPEN LOT? 4%瑜?湲곕낯 紐⑺몴濡??ㅼ떆 ?됯?諛쏆뒿?덈떎. 洹??ㅼ쓬 ?ㅻ옒??LOT ?꾪솕媛믪씤 `age_decay_rate`媛 ?곸슜?⑸땲??
+예를 들어 1~2 LOT 구간에서 산 LOT의 저장 목표가 6%였더라도, 추가매수 후 현재 5~6 LOT 구간이 되면 모든 OPEN LOT은 4%를 기본 목표로 다시 평가받습니다. 그 다음 오래된 LOT 완화값인 `age_decay_rate`가 적용됩니다.
 
-?? `PROFIT_TAKE`? `CLEANUP_SELL` 遺꾨쪟??紐⑺몴?섏씡瑜좎씠 ?꾨땲???ㅼ젣 ?덉긽 ?먯씡 湲곗??낅땲??
+단, `PROFIT_TAKE`와 `CLEANUP_SELL` 분류는 목표수익률이 아니라 실제 예상 손익 기준입니다.
 
-- ?덉긽 ?쒖넀?듭씠 0 ?댁긽?대㈃ `PROFIT_TAKE`
-- ?덉긽 ?쒖넀?듭씠 0 誘몃쭔?대㈃ `CLEANUP_SELL` ?꾨낫
-- `CLEANUP_SELL`? cleanup 議곌굔怨?loss budget??留뚯”???뚮쭔 ?ㅼ젣 留ㅻ룄 ?꾨낫媛 ?⑸땲??
+- 예상 순손익이 0 이상이면 `PROFIT_TAKE`
+- 예상 순손익이 0 미만이면 `CLEANUP_SELL` 후보
+- `CLEANUP_SELL`은 cleanup 조건과 loss budget을 만족할 때만 실제 매도 후보가 됩니다.
 
-Decision log?먮뒗 ?꾨옒 媛믪씠 ?⑥뒿?덈떎.
+Decision log에는 아래 값이 남습니다.
 
 - `original_lot_base_target_profit_rate`
 - `current_base_target_profit_rate`
@@ -100,28 +100,27 @@ Decision log?먮뒗 ?꾨옒 媛믪씠 ?⑥뒿?덈떎.
 - `lot_age_weeks`
 - `age_decay_rate`
 
-## BUY 李⑤떒 ?ъ쑀
+## BUY 차단 사유
 
-- `price_out_of_lot_sizing_range`: ?꾩옱媛媛 ?대뼡 price_lot_band?먮룄 ?ы븿?섏? ?딆쓬
-- `lot_sizing_band_disabled`: ?대떦 媛寃⑸?媛 ?먮룞留ㅼ닔 鍮꾪솢??
-- `lot_unit_amount_below_price`: 1 LOT 湲덉븸?쇰줈 ?꾩옱媛 1二쇰룄 ?????놁쓬
-- `max_lots_per_symbol_reached`: ?꾩옱 OPEN LOT ?섍? 理쒕? LOT ?섏뿉 ?꾨떖
-- `max_symbol_amount_reached`: ?ㅼ쓬 BUY瑜??섎㈃ 醫낅ぉ??理쒕?湲덉븸 珥덇낵
-- `lot_sizing_missing`: 蹂댁쑀 ?ъ씠??sizing ?뺣낫媛 ?놁쓬
-- `lot_sizing_migrated`: 湲곗〈 OPEN LOT 湲곗??쇰줈 sizing fallback ?곸슜
-- `lot_sizing_changed_after_preview`: manual BUY preview ?댄썑 ?ㅼ젣 泥섎━ 吏곸쟾 媛寃?援ш컙??諛붾뚯뼱 ?ы솗?몄씠 ?꾩슂
+- `price_out_of_lot_sizing_range`: 현재가가 어떤 price_lot_band에도 포함되지 않음
+- `lot_sizing_band_disabled`: 해당 가격대가 자동매수 비활성
+- `lot_unit_amount_below_price`: 1 LOT 금액으로 현재가 1주도 살 수 없음
+- `max_lots_per_symbol_reached`: 현재 OPEN LOT 수가 최대 LOT 수에 도달
+- `max_symbol_amount_reached`: 다음 BUY를 하면 종목당 최대금액 초과
+- `lot_sizing_missing`: 보유 사이클 sizing 정보가 없음
+- `lot_sizing_migrated`: 기존 OPEN LOT 기준으로 sizing fallback 적용
+- `lot_sizing_changed_after_preview`: manual BUY preview 이후 실제 처리 직전 가격 구간이 바뀌어 재확인이 필요
 
-## UI ?쒖떆
+## UI 표시
 
-Stocks, Position detail, manual order preview?먮뒗 ?꾨옒 ??ぉ???쒖떆?⑸땲??
+Stocks, Position detail, manual order preview에는 아래 항목이 표시됩니다.
 
-- LOT 湲곗? 吏꾩엯媛
-- ?꾩옱 ?ъ씠??1 LOT 湲덉븸
-- 醫낅ぉ??理쒕? 湲덉븸
-- ?꾩옱 OPEN LOT ??/ 理쒕? LOT ??
-- LOT 媛寃?援ш컙
-- LOT sizing 怨좎젙 ?щ?? 怨좎젙 ?쒓컖
-- ?⑥? 留ㅼ닔 媛??湲덉븸
+- LOT 기준 진입가
+- 현재 사이클 1 LOT 금액
+- 종목당 최대 금액
+- 현재 OPEN LOT 수 / 최대 LOT 수
+- LOT 가격 구간
+- LOT sizing 고정 여부와 고정 시각
+- 남은 매수 가능 금액
 
-UI??KIS 二쇰Ц API瑜?吏곸젒 ?몄텧?섏? ?딆뒿?덈떎. ?섎룞 留ㅼ닔 ?붿껌? `manual_order_requests`????λ릺怨? ?ㅽ뻾 以묒씤 Bot Core媛 湲곗〈 guard? order_manager 寃쎈줈瑜??듯빐 泥섎━?⑸땲??
-
+UI는 KIS 주문 API를 직접 호출하지 않습니다. 수동 매수 요청은 `manual_order_requests`에 저장되고, 실행 중인 Bot Core가 기존 guard와 order_manager 경로를 통해 처리합니다.

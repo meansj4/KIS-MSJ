@@ -29,7 +29,7 @@ from kis_msj.runtime_control import RuntimeControl, runtime_block_reason, save_r
 from kis_msj.storage import StateStore
 from kis_msj.strategy import StrategyAction
 from kis_msj.ui_server import INDEX_HTML, build_server
-from kis_msj.ui_service import UIService
+from kis_msj.ui_service import MANUAL_CANCEL_CONFIRM_TEXT, MANUAL_REQUEUE_CONFIRM_TEXT, UIService
 
 
 def _write_config(tmp_path, *, live_trading: bool = True, cleanup_enabled: bool = True, manual_enabled: bool = False):
@@ -627,7 +627,7 @@ def test_processing_manual_request_stale_requeue_and_cancel_are_safe(tmp_path):
     stuck = service.manual_order_requests()[0]
     assert stuck["processing_stale"] is True
     assert stuck["safe_requeue_allowed"] is True
-    assert service.requeue_manual_order_request("MANUAL-STUCK", "수동요청 재처리 확인", "operator checked no linked order")["requeued"] is True
+    assert service.requeue_manual_order_request("MANUAL-STUCK", MANUAL_REQUEUE_CONFIRM_TEXT, "operator checked no linked order")["requeued"] is True
     requeued = store.manual_order_requests()[0]
     assert requeued["status"] == "REQUESTED"
     assert store.claim_manual_order_request("MANUAL-STUCK") is not None
@@ -636,7 +636,7 @@ def test_processing_manual_request_stale_requeue_and_cancel_are_safe(tmp_path):
             "UPDATE manual_order_requests SET processing_started_at = ? WHERE request_id = 'MANUAL-STUCK'",
             (old_started_at,),
         )
-    assert service.cancel_manual_order_request("MANUAL-STUCK", confirm_text="수동요청 차단 확인", operator_note="operator blocks stale request")["canceled"] is True
+    assert service.cancel_manual_order_request("MANUAL-STUCK", confirm_text=MANUAL_CANCEL_CONFIRM_TEXT, operator_note="operator blocks stale request")["canceled"] is True
     canceled = store.manual_order_requests()[0]
     assert canceled["status"] == "BLOCKED"
     assert canceled["block_reason"] == "operator_cancel_stale_processing"
@@ -679,8 +679,8 @@ def test_linked_processing_manual_request_cannot_be_requeued_or_canceled(tmp_pat
     request = service.manual_order_requests()[0]
     assert request["processing_stale"] is False
     assert request["safe_requeue_allowed"] is False
-    assert service.requeue_manual_order_request("MANUAL-LINKED-PROCESSING", "수동요청 재처리 확인")["requeued"] is False
-    assert service.cancel_manual_order_request("MANUAL-LINKED-PROCESSING", confirm_text="수동요청 차단 확인")["canceled"] is False
+    assert service.requeue_manual_order_request("MANUAL-LINKED-PROCESSING", MANUAL_REQUEUE_CONFIRM_TEXT)["requeued"] is False
+    assert service.cancel_manual_order_request("MANUAL-LINKED-PROCESSING", confirm_text=MANUAL_CANCEL_CONFIRM_TEXT)["canceled"] is False
     assert store.manual_order_requests()[0]["status"] == "PROCESSING"
 
 
@@ -716,8 +716,8 @@ def test_processing_manual_request_recovery_requires_stale_and_confirm(tmp_path)
     request = service.manual_order_requests()[0]
     assert request["processing_stale"] is False
     assert request["safe_requeue_allowed"] is False
-    assert service.requeue_manual_order_request("MANUAL-NOT-STALE", "수동요청 재처리 확인")["block_reason"] == "manual_request_processing_not_stale"
-    assert service.cancel_manual_order_request("MANUAL-NOT-STALE", confirm_text="수동요청 차단 확인")["block_reason"] == "manual_request_processing_not_stale"
+    assert service.requeue_manual_order_request("MANUAL-NOT-STALE", MANUAL_REQUEUE_CONFIRM_TEXT)["block_reason"] == "manual_request_processing_not_stale"
+    assert service.cancel_manual_order_request("MANUAL-NOT-STALE", confirm_text=MANUAL_CANCEL_CONFIRM_TEXT)["block_reason"] == "manual_request_processing_not_stale"
     assert service.requeue_manual_order_request("MANUAL-NOT-STALE", "wrong")["block_reason"] == "manual_request_requeue_confirm_text_required"
     assert store.manual_order_requests()[0]["status"] == "PROCESSING"
 
@@ -759,11 +759,11 @@ def test_stale_processing_manual_request_recovery_blocks_open_order_or_pending_r
         )
     )
     service = UIService(config_path, tmp_path / "runtime.json")
-    assert service.requeue_manual_order_request("MANUAL-OPEN-ORDER", "수동요청 재처리 확인")["block_reason"] == "manual_request_open_order_exists"
+    assert service.requeue_manual_order_request("MANUAL-OPEN-ORDER", MANUAL_REQUEUE_CONFIRM_TEXT)["block_reason"] == "manual_request_open_order_exists"
 
     with sqlite3.connect(db_path) as connection:
         connection.execute("DELETE FROM orders")
-    assert service.requeue_manual_order_request("MANUAL-OPEN-ORDER", "수동요청 재처리 확인")["block_reason"] == "manual_request_pending_request_exists"
+    assert service.requeue_manual_order_request("MANUAL-OPEN-ORDER", MANUAL_REQUEUE_CONFIRM_TEXT)["block_reason"] == "manual_request_pending_request_exists"
 
 
 def test_manual_buy_blocks_when_lot_sizing_bucket_changes_after_preview(tmp_path):
@@ -802,6 +802,53 @@ def test_manual_buy_blocks_when_lot_sizing_bucket_changes_after_preview(tmp_path
             "status": "REQUESTED",
         }
     )
+
+    trader.process_manual_order_requests(AccountSnapshot(10_000_000, 10_000_000, 0, 0), RiskDecision(True))
+
+    request = trader.store.manual_order_requests()[0]
+    assert request["status"] == "BLOCKED"
+    assert request["block_reason"] == "lot_sizing_changed_after_preview"
+    assert not trader.store.load_lots()
+
+
+def test_requeued_manual_buy_runs_bot_core_guards_again(tmp_path):
+    config_path, db_path, _ = _write_config(tmp_path, manual_enabled=True, live_trading=False)
+    config = load_config(config_path)
+    trader = AutoTrader(config, use_mock_client=True)
+    trader.price_sampler = _PriceSampler(9000)
+    old_started_at = (datetime.now() - timedelta(minutes=30)).isoformat(timespec="seconds")
+    trader.store.create_manual_order_request(
+        {
+            "request_id": "MANUAL-REQUEUED-GUARD",
+            "source": "local_ui_manual",
+            "requested_by": "test",
+            "requested_at": old_started_at,
+            "code": "005930",
+            "side": "BUY",
+            "current_price": 10100,
+            "amount": 30000,
+            "quantity": 0,
+            "preview_json": json.dumps(
+                {
+                    "price_lot_band": "10001-30000",
+                    "lot_unit_amount": 30000,
+                    "max_symbol_amount": 300000,
+                }
+            ),
+            "runtime_snapshot_json": "{}",
+            "live_trading": False,
+            "confirm_text_verified": True,
+            "status": "PROCESSING",
+        }
+    )
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE manual_order_requests SET processing_started_at = ? WHERE request_id = 'MANUAL-REQUEUED-GUARD'",
+            (old_started_at,),
+        )
+
+    service = UIService(config_path, tmp_path / "runtime.json")
+    assert service.requeue_manual_order_request("MANUAL-REQUEUED-GUARD", MANUAL_REQUEUE_CONFIRM_TEXT)["requeued"] is True
 
     trader.process_manual_order_requests(AccountSnapshot(10_000_000, 10_000_000, 0, 0), RiskDecision(True))
 

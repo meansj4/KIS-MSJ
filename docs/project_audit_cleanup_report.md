@@ -1,77 +1,77 @@
-﻿# KIS LOT Bot Project Audit and Cleanup Report
+# KIS LOT Bot Project Audit and Cleanup Report
 
 > Authoritative source: `docs/project_handoff_full.md` is the latest full baseline. This report records the whole-project audit/cleanup pass performed after the handoff docs. If this report conflicts with `project_handoff_full.md`, re-check code first and then update the full handoff.  
-> Last updated: 2026-05-27 / Latest tests after this audit: `155 passed` with one pytest cache warning / Baseline config profile: `expansion_100_safe`.
+> Last updated: 2026-05-27 / Latest tests after this audit: `156 passed` with one pytest cache warning / Baseline config profile: `expansion_100_safe`.
 
-## 0. 2026-05-27 異붽? 蹂닿컯 ?붿빟
+## 0. 2026-05-27 추가 보강 요약
 
-?대쾲 異붽? 蹂닿컯?먯꽌??deprecated inventory??洹몄튂吏 ?딄퀬, 由ъ뒪???놁씠 以꾩씪 ???덈뒗 legacy ?몄텧硫닿낵 ?댁쁺 由ъ뒪?щ? ?ㅼ젣濡??뺣━?덈떎.
+이번 추가 보강에서는 deprecated inventory에 그치지 않고, 리스크 없이 줄일 수 있는 legacy 노출면과 운영 리스크를 실제로 정리했다.
 
-| ??ぉ | 議곗튂 |
+| 항목 | 조치 |
 | --- | --- |
 | General UI Config legacy surface | `initial_buy_amount`, `auto_buy_limit`, `absolute_max_investment`, `exposure_buy_bands`, `exposure_sell_bands`, `reentry_drop_rate` were removed from the general Config schema/metadata/form-table surface. Underlying config/model fields remain only for DB/config compatibility and fallback paths. |
-| legacy ?ㅻ챸 | UI ?ㅻ챸??`cycle_locked_by_entry_price` 湲곗??쇰줈 ?뺣━?섍퀬 legacy ??ぉ? ?명솚?⑹쑝濡쒕쭔 ?쒖떆 |
-| manual request 以묐났 ?뚮퉬 | `StateStore.claim_manual_order_request()` 異붽?. `REQUESTED`?닿퀬 `linked_order_id`媛 鍮꾩뼱 ?덈뒗 row留??먯옄?곸쑝濡?`PROCESSING` claim????泥섎━ |
-| manual request runtime interrupt | claim ??submit 吏곸쟾 runtime interrupt媛 諛쒖깮?섎㈃ request瑜?`BLOCKED`濡??꾪솚??PROCESSING stuck怨?以묐났 二쇰Ц??諛⑹? |
-| KIS snapshot validator UI | `/api/new-season/validate-snapshot` 異붽?. UI?먯꽌 snapshot 寃쎈줈瑜?利됱떆 寃利앺븯怨?preview 媛??request 媛?μ쓣 遺꾨━ ?쒖떆 |
-| ???쒖쫵 ?대? flag | `request_creation_possible` ???대?媛믪? 湲곕낯 ?몄텧 ???怨좉툒 吏꾨떒媛믪쑝濡??묒쓬 |
+| legacy 설명 | UI 설명을 `cycle_locked_by_entry_price` 기준으로 정리하고 legacy 항목은 호환용으로만 표시 |
+| manual request 중복 소비 | `StateStore.claim_manual_order_request()` 추가. `REQUESTED`이고 `linked_order_id`가 비어 있는 row만 원자적으로 `PROCESSING` claim한 뒤 처리 |
+| manual request runtime interrupt | claim 후 submit 직전 runtime interrupt가 발생하면 request를 `BLOCKED`로 전환해 PROCESSING stuck과 중복 주문을 방지 |
+| KIS snapshot validator UI | `/api/new-season/validate-snapshot` 추가. UI에서 snapshot 경로를 즉시 검증하고 preview 가능/request 가능을 분리 표시 |
+| 새 시즌 내부 flag | `request_creation_possible` 등 내부값은 기본 노출 대신 고급 진단값으로 접음 |
 
-??젣?섏? ?딆? legacy ?꾨뱶???쒖씪諛?UI/臾몄꽌 ?꾨㈃?앹뿉?쒕뒗 ?④린怨? DB ?명솚/fallback 踰붿쐞?먮쭔 ?④릿??
+삭제하지 않은 legacy 필드는 “일반 UI/문서 전면”에서는 숨기고, DB 호환/fallback 범위에만 남긴다.
 
-## 1. 媛먯궗 踰붿쐞
+## 1. 감사 범위
 
-?대쾲 媛먯궗???뱀젙 LOT sizing legacy留?蹂?寃껋씠 ?꾨땲???꾨옒 踰붿쐞瑜??뺤쟻 寃?? 肄붾뱶 ?쎄린, CLI/API ?議? 臾몄꽌 留곹겕 ?먭? 湲곗??쇰줈 ?뺤씤?덈떎.
+이번 감사는 특정 LOT sizing legacy만 본 것이 아니라 아래 범위를 정적 검색, 코드 읽기, CLI/API 대조, 문서 링크 점검 기준으로 확인했다.
 
-| 踰붿쐞 | ?뺤씤 ?댁슜 |
+| 범위 | 확인 내용 |
 | --- | --- |
 | `src/kis_msj/**/*.py` | Bot Core, LOT/position/order/storage, UI service/server, runtime control |
-| `scripts/**/*.py` | ???쒖쫵 archive/reset/liquidation ?ㅽ겕由쏀듃? CLI ?듭뀡 |
-| `tests/**/*.py` | ?꾩옱 湲곕뒫 ?뚯뒪?? legacy ?뚯뒪?몄쓽 ?좎? ?꾩슂??|
-| `config/*.json`, `config/**/*.json` | live config, example config, backup config??理쒖떊??|
-| `docs/**/*.md`, `README.md` | handoff/local UI/new season/lot sizing/expansion 臾몄꽌 ?뺥빀??|
-| UI HTML/CSS/JS | ?? API ?몄텧, ???쒖쫵 wizard 臾멸뎄, manual request ?덈궡 |
-| ?댁쁺 蹂댁“ ?뚯씪 | archive/export/runtime 愿??臾몄꽌? 肄붾뱶 寃쎈줈 |
+| `scripts/**/*.py` | 새 시즌 archive/reset/liquidation 스크립트와 CLI 옵션 |
+| `tests/**/*.py` | 현재 기능 테스트, legacy 테스트의 유지 필요성 |
+| `config/*.json`, `config/**/*.json` | live config, example config, backup config의 최신성 |
+| `docs/**/*.md`, `README.md` | handoff/local UI/new season/lot sizing/expansion 문서 정합성 |
+| UI HTML/CSS/JS | 탭, API 호출, 새 시즌 wizard 문구, manual request 안내 |
+| 운영 보조 파일 | archive/export/runtime 관련 문서와 코드 경로 |
 
-?ㅽ뻾?섏? ?딆? 寃?
+실행하지 않은 것:
 
-- ?ㅺ굅??二쇰Ц
-- KIS 二쇰Ц API ?몄텧
+- 실거래 주문
+- KIS 주문 API 호출
 - DB reset
 - destructive cleanup
 
-## 2. 諛쒓껄??遺덉씪移??붿빟
+## 2. 발견된 불일치 요약
 
-| 遺꾨쪟 | ??ぉ | ?먮떒 | 議곗튂 |
+| 분류 | 항목 | 판단 | 조치 |
 | --- | --- | --- | --- |
-| ?ㅻ옒??config ?덉떆 | `config/lot_auto_trader.example.json`??legacy exposure band 以묒떖, 10媛??곷Ц 醫낅ぉ ?덉떆, `price_lot_bands` ?놁쓬 | 臾몄꽌/?ㅼ젙 ?쇰룞 ?좊컻 | `expansion_100_safe` ?명솚 ?덉떆濡?媛깆떊. live config??嫄대뱶由ъ? ?딆쓬 |
-| UI metadata | `exposure_buy_bands`, `exposure_sell_bands`, `auto_buy_limit`, `absolute_max_investment` ?ㅻ챸???꾩옱 cycle-locked LOT sizing蹂대떎 legacy 湲덉븸 湲곗?泥섎읆 蹂댁엫 | UI留??섏젙 ?꾩슂 | ?덇굅???명솚?⑹엫??紐낆떆?섍퀬 ?꾩옱??`add_buy_lot_bands`, `target_profit_lot_bands`, `max_symbol_amount` ?곗꽑?꾩쓣 ?ㅻ챸 |
-| UI ???쒖쫵 ?붾㈃ | `request_creation_possible` 媛숈? ?대? flag媛 湲곕낯 ?붾㈃??洹몃?濡??몄텧??| UI留??섏젙 ?꾩슂 | `怨좉툒 吏꾨떒媛?蹂닿린` details濡??묒쓬 |
-| ???쒖쫵 wizard step | ?쏹I?먯꽌???꾩쭅 ?ㅽ뻾 踰꾪듉 ?놁씠 ?덉감 ?덈궡留??쒓났??臾멸뎄媛 ?⑥븘 ?덉쓬 | UI 臾멸뎄 ?ㅻ옒??| 諛깆뾽 踰꾪듉??議댁옱?섎뒗 ?꾩옱 援ъ“??留욊쾶 ?섏젙 |
-| CLI ?듭뀡 臾몄꽌 | archive root ?듭뀡? ?ㅼ젣濡?`--archive-root` | 臾몄꽌/肄붾뱶 ?뺥빀???뺤씤 | `--help` 湲곗??쇰줈 ?쇱튂 ?뺤씤. 臾몄꽌?먯꽌 ?대? 理쒖떊?붾맖 |
-| KIS snapshot strict validation | ?덉쟾 ?쐅enerated_at 沅뚯옣, sellable fallback???쒗쁽 ?붿옱 媛?μ꽦 | 臾몄꽌 ?뺤씤 ?꾩슂 | 二쇱슂 臾몄꽌??preview/create_request 援щ텇?쇰줈 理쒖떊?붾릺???덉쓬 |
-| Execution Mapping UI | nav ??? ?쒓굅?먯?留?`loadExecution()`怨?`/api/execution-mapping/status`???⑥븘 ?덉쓬 | deprecated ?좎? ?꾩슂 | ?대? 吏꾨떒/API ?⑸룄濡??좎?. 臾몄꽌???쒗꺆 ?쒓굅, API ?붿〈??紐낆떆??|
-| Legacy mode | `legacy_exposure_bands`, `exposure_*_bands`, `initial_buy_amount`, `auto_buy_limit` ?쇰? 肄붾뱶 寃쎈줈 議댁옱 | deprecated ?좎? ?꾩슂 | 湲곗〈 DB/config/test ?명솚 ?뚮Ц????젣?섏? ?딆쓬. UI ?ㅻ챸留??뺣━ |
+| 오래된 config 예시 | `config/lot_auto_trader.example.json`이 legacy exposure band 중심, 10개 영문 종목 예시, `price_lot_bands` 없음 | 문서/설정 혼동 유발 | `expansion_100_safe` 호환 예시로 갱신. live config는 건드리지 않음 |
+| UI metadata | `exposure_buy_bands`, `exposure_sell_bands`, `auto_buy_limit`, `absolute_max_investment` 설명이 현재 cycle-locked LOT sizing보다 legacy 금액 기준처럼 보임 | UI만 수정 필요 | 레거시/호환용임을 명시하고 현재는 `add_buy_lot_bands`, `target_profit_lot_bands`, `max_symbol_amount` 우선임을 설명 |
+| UI 새 시즌 화면 | `request_creation_possible` 같은 내부 flag가 기본 화면에 그대로 노출됨 | UI만 수정 필요 | `고급 진단값 보기` details로 접음 |
+| 새 시즌 wizard step | “UI에서는 아직 실행 버튼 없이 절차 안내만 제공” 문구가 남아 있음 | UI 문구 오래됨 | 백업 버튼이 존재하는 현재 구조에 맞게 수정 |
+| CLI 옵션 문서 | archive root 옵션은 실제로 `--archive-root` | 문서/코드 정합성 확인 | `--help` 기준으로 일치 확인. 문서에서 이미 최신화됨 |
+| KIS snapshot strict validation | 예전 “generated_at 권장, sellable fallback” 표현 잔재 가능성 | 문서 확인 필요 | 주요 문서는 preview/create_request 구분으로 최신화되어 있음 |
+| Execution Mapping UI | nav 탭은 제거됐지만 `loadExecution()`과 `/api/execution-mapping/status`는 남아 있음 | deprecated 유지 필요 | 내부 진단/API 용도로 유지. 문서에 “탭 제거, API 잔존” 명시됨 |
+| Legacy mode | `legacy_exposure_bands`, `exposure_*_bands`, `initial_buy_amount`, `auto_buy_limit` 일부 코드 경로 존재 | deprecated 유지 필요 | 기존 DB/config/test 호환 때문에 삭제하지 않음. UI 설명만 정리 |
 
-## 3. ?쒓굅????ぉ
+## 3. 제거한 항목
 
-?대쾲 媛먯궗?먯꽌 ?뚯뒪 肄붾뱶瑜?臾쇰━?곸쑝濡???젣????ぉ? ?녿떎. ?댁쑀???ㅼ쓬怨?媛숇떎.
+이번 감사에서 소스 코드를 물리적으로 삭제한 항목은 없다. 이유는 다음과 같다.
 
-- legacy exposure band 愿???⑥닔? config??`lot_sizing_mode != cycle_locked_by_entry_price`????backward compatibility 寃쎈줈濡??ъ슜?쒕떎.
-- `exit_anchor_price`, `base_target_profit_rate`, `auto_buy_limit` ?깆? 湲곗〈 DB row? 濡쒓렇/留덉씠洹몃젅?댁뀡 ?명솚???꾩슂?섎떎.
-- `/api/execution-mapping/status`? `loadExecution()`? ?쇰컲 nav?먯꽌???쒓굅?먯?留?泥??ㅼ껜寃?raw mapping 吏꾨떒 API濡??④만 媛移섍? ?덈떎.
+- legacy exposure band 관련 함수와 config는 `lot_sizing_mode != cycle_locked_by_entry_price`일 때 backward compatibility 경로로 사용된다.
+- `exit_anchor_price`, `base_target_profit_rate`, `auto_buy_limit` 등은 기존 DB row와 로그/마이그레이션 호환에 필요하다.
+- `/api/execution-mapping/status`와 `loadExecution()`은 일반 nav에서는 제거됐지만 첫 실체결/raw mapping 진단 API로 남길 가치가 있다.
 
-## 4. deprecated濡??④릿 ??ぉ
+## 4. deprecated로 남긴 항목
 
-| ?뚯씪 | ??ぉ | ?좎? ?댁쑀 | 二쇱쓽 |
+| 파일 | 항목 | 유지 이유 | 주의 |
 | --- | --- | --- | --- |
-| `src/kis_msj/config.py` | `strategy.reentry_drop_rate` | ?덉쟾 ?⑥씪 anchor ?ㅼ젙 ?명솚. UI?먯꽌???④? | ?ㅼ젣 reentry ?먮떒? `normal_reentry_drop_rate`, `trailing_*` ?ъ슜 |
-| `src/kis_msj/config.py`, `lot_manager.py`, `strategy.py` | `exposure_buy_bands`, `exposure_sell_bands` | `legacy_exposure_bands` 紐⑤뱶? 湲곗〈 ?뚯뒪???명솚 | 湲곕낯 紐⑤뱶?먯꽌??`add_buy_lot_bands`, `target_profit_lot_bands` ?곗꽑 |
-| `positions`/`models` | `auto_buy_limit`, `absolute_max_investment` | 湲곗〈 position row? non-cycle mode ?명솚 | cycle-locked mode?먯꽌??`max_symbol_amount`, `max_lots_per_symbol` ?곗꽑 |
-| `lots`/`models` | `base_target_profit_rate`, `target_profit_pct` | 怨쇨굅 LOT 湲곕줉/濡쒓렇 ?명솚 | ?ㅼ젣 SELL ?먮떒? ?꾩옱 OPEN LOT ??湲곕컲 `current_base_target_profit_rate` ?곗꽑 |
-| `positions` | `exit_anchor_price` | 湲곗〈 DB row/fallback/log ?명솚 | ?ㅼ젣 reentry??`normal_exit_anchor_price`, `trailing_exit_anchor_price` ?ъ슜 |
-| `src/kis_msj/ui_server.py` | `loadExecution()` | raw execution mapping ?대? 吏꾨떒??| ?쇰컲 nav ??? ?쒓굅???곹깭 |
+| `src/kis_msj/config.py` | `strategy.reentry_drop_rate` | 예전 단일 anchor 설정 호환. UI에서는 숨김 | 실제 reentry 판단은 `normal_reentry_drop_rate`, `trailing_*` 사용 |
+| `src/kis_msj/config.py`, `lot_manager.py`, `strategy.py` | `exposure_buy_bands`, `exposure_sell_bands` | `legacy_exposure_bands` 모드와 기존 테스트 호환 | 기본 모드에서는 `add_buy_lot_bands`, `target_profit_lot_bands` 우선 |
+| `positions`/`models` | `auto_buy_limit`, `absolute_max_investment` | 기존 position row와 non-cycle mode 호환 | cycle-locked mode에서는 `max_symbol_amount`, `max_lots_per_symbol` 우선 |
+| `lots`/`models` | `base_target_profit_rate`, `target_profit_pct` | 과거 LOT 기록/로그 호환 | 실제 SELL 판단은 현재 OPEN LOT 수 기반 `current_base_target_profit_rate` 우선 |
+| `positions` | `exit_anchor_price` | 기존 DB row/fallback/log 호환 | 실제 reentry는 `normal_exit_anchor_price`, `trailing_exit_anchor_price` 사용 |
+| `src/kis_msj/ui_server.py` | `loadExecution()` | raw execution mapping 내부 진단용 | 일반 nav 탭은 제거된 상태 |
 
-?쇰컲 UI Config?먯꽌 ?④릿 ??ぉ:
+일반 UI Config에서 숨긴 항목:
 
 - `strategy.initial_buy_amount`
 - `strategy.auto_buy_limit`
@@ -80,55 +80,55 @@
 - `strategy.exposure_sell_bands`
 - `strategy.reentry_drop_rate`
 
-??媛믩뱾? JSON raw view??湲곗〈 config/DB ?명솚?먮뒗 ?⑥븘 ?덉쓣 ???덉?留? ?쇰컲 ?댁슜?먭? 議곗젙?댁빞 ?섎뒗 ?꾩옱 湲곕낯 ?꾨왂 ?뚮씪誘명꽣濡쒕뒗 ?몄텧?섏? ?딅뒗??
+이 값들은 JSON raw view나 기존 config/DB 호환에는 남아 있을 수 있지만, 일반 운용자가 조정해야 하는 현재 기본 전략 파라미터로는 노출하지 않는다.
 
-## 5. 臾몄꽌 ?섏젙 ??ぉ
+## 5. 문서 수정 항목
 
-| ?뚯씪 | ?섏젙/?뺤씤 ?댁슜 |
+| 파일 | 수정/확인 내용 |
 | --- | --- |
-| `docs/project_handoff_full.md` | ??媛먯궗 蹂닿퀬??留곹겕 異붽? |
-| `docs/project_handoff_full.md`, `summary`, `thread_prompt`, `new_season_reset.md`, `local_ui.md` | `155 passed`, strict KIS snapshot policy, manual request ?ㅻ챸 理쒖떊???뺤씤 |
-| `docs/new_season_reset.md` | pending order/manual request status, generated_at/sellable_quantity strict policy 理쒖떊???뺤씤 |
-| `docs/local_ui.md` | KIS 吏곸젒 二쇰Ц API ?놁쓬怨?manual request ?앹꽦 API???덉쓬??援щ텇 ?뺤씤 |
+| `docs/project_handoff_full.md` | 이 감사 보고서 링크 추가 |
+| `docs/project_handoff_full.md`, `summary`, `thread_prompt`, `new_season_reset.md`, `local_ui.md` | `156 passed`, strict KIS snapshot policy, manual request 설명 최신화 확인 |
+| `docs/new_season_reset.md` | pending order/manual request status, generated_at/sellable_quantity strict policy 최신화 확인 |
+| `docs/local_ui.md` | KIS 직접 주문 API 없음과 manual request 생성 API는 있음의 구분 확인 |
 
-異붽? ?뺤씤 寃곌낵:
+추가 확인 결과:
 
-- docs 留곹겕 ?먭?: 源⑥쭊 ?곷? 留곹겕 0媛?
-- `project_*`, `local_ui`, `strategy_lot_sizing`, `new_season_reset`, `expansion_100_config` 紐⑤몢 authoritative source 臾멸뎄? 理쒖떊 ?뚯뒪??湲곗? ?쒓린 議댁옱
+- docs 링크 점검: 깨진 상대 링크 0개
+- `project_*`, `local_ui`, `strategy_lot_sizing`, `new_season_reset`, `expansion_100_config` 모두 authoritative source 문구와 최신 테스트 기준 표기 존재
 
-## 6. UI ?섏젙 ??ぉ
+## 6. UI 수정 항목
 
-| ?뚯씪 | ?꾩튂 | 臾몄젣 | 議곗튂 |
+| 파일 | 위치 | 문제 | 조치 |
 | --- | --- | --- | --- |
-| `src/kis_msj/ui_service.py` | `CONFIG_METADATA`, `DETAILED_CONFIG_DESCRIPTIONS` | legacy exposure/auto limit ?ㅻ챸???꾩옱 LOT sizing怨??쇰룞 媛??| ?덇굅???명솚?⑹쑝濡?紐낇솗???섏젙 |
-| `src/kis_msj/ui_service.py` | `_new_season_wizard_steps()` | 諛깆뾽 ?④퀎媛 ?쏹I ?ㅽ뻾 踰꾪듉 ?놁쓬?앹씠?쇨퀬 ?쒖떆 | UI 踰꾪듉/CLI 紐⑤몢 ?덈궡?섎룄濡??섏젙 |
-| `src/kis_msj/ui_server.py` | New Season ?붾㈃ | ?대? flag媛 湲곕낯 ?붾㈃???몄텧 | `details` ?덉쓽 怨좉툒 吏꾨떒媛믪쑝濡??묒쓬 |
-| `src/kis_msj/ui_server.py`, `ui_service.py` | KIS snapshot 寃利?| plan ?앹꽦 ??snapshot ?ㅻ쪟瑜??댄빐?섍린 ?대젮? | snapshot 寃利?API/踰꾪듉 異붽?. preview 媛??request 媛?? generated_at age, sellable ?꾨씫, DB/KIS ?섎웾 mismatch瑜?遺꾨━ ?쒖떆 |
+| `src/kis_msj/ui_service.py` | `CONFIG_METADATA`, `DETAILED_CONFIG_DESCRIPTIONS` | legacy exposure/auto limit 설명이 현재 LOT sizing과 혼동 가능 | 레거시/호환용으로 명확히 수정 |
+| `src/kis_msj/ui_service.py` | `_new_season_wizard_steps()` | 백업 단계가 “UI 실행 버튼 없음”이라고 표시 | UI 버튼/CLI 모두 안내하도록 수정 |
+| `src/kis_msj/ui_server.py` | New Season 화면 | 내부 flag가 기본 화면에 노출 | `details` 안의 고급 진단값으로 접음 |
+| `src/kis_msj/ui_server.py`, `ui_service.py` | KIS snapshot 검증 | plan 생성 전 snapshot 오류를 이해하기 어려움 | snapshot 검증 API/버튼 추가. preview 가능/request 가능, generated_at age, sellable 누락, DB/KIS 수량 mismatch를 분리 표시 |
 
-## 6-1. manual_order_requests 以묐났 ?뚮퉬 諛⑹? 蹂닿컯
+## 6-1. manual_order_requests 중복 소비 방지 보강
 
-| ?먭? ??ぉ | 寃곌낵 |
+| 점검 항목 | 결과 |
 | --- | --- |
-| REQUESTED 以묐났 泥섎━ | `claim_manual_order_request()`媛 `WHERE request_id=? AND status='REQUESTED' AND linked_order_id=''` 議곌굔?쇰줈 ?먯옄??claim |
-| claim ???곹깭 | claim ?깃났 ??`PROCESSING` |
-| ?대? claim/linked??request | claim ?ㅽ뙣, 泥섎━ skip |
-| submit ?깃났 | `SUBMITTED` + `linked_order_id` ???|
-| fill 諛쒖깮 | fill insert ?깃났 ??湲곗〈 `position_manager.apply_fill()` 寃쎈줈濡?諛섏쁺, ?댄썑 request `FILLED` |
-| block/fail | `BLOCKED` ?먮뒗 `FAILED`濡?紐낇솗???꾪솚 |
-| bot ?ъ떆??蹂듭닔 ?꾨줈?몄뒪 | 媛숈? DB row瑜??숈떆??蹂대뜑?쇰룄 claim? ?섎굹留??깃났. ?? ?댁쁺 ?꾩젣???ъ쟾???⑥씪 Bot Core ?꾨줈?몄뒪 沅뚯옣 |
+| REQUESTED 중복 처리 | `claim_manual_order_request()`가 `WHERE request_id=? AND status='REQUESTED' AND linked_order_id=''` 조건으로 원자적 claim |
+| claim 후 상태 | claim 성공 시 `PROCESSING` |
+| 이미 claim/linked된 request | claim 실패, 처리 skip |
+| submit 성공 | `SUBMITTED` + `linked_order_id` 저장 |
+| fill 발생 | fill insert 성공 후 기존 `position_manager.apply_fill()` 경로로 반영, 이후 request `FILLED` |
+| block/fail | `BLOCKED` 또는 `FAILED`로 명확히 전환 |
+| bot 재시작/복수 프로세스 | 같은 DB row를 동시에 보더라도 claim은 하나만 성공. 단, 운영 전제는 여전히 단일 Bot Core 프로세스 권장 |
 
-?⑥? 痍⑥빟??
+남은 취약점:
 
-- `PROCESSING` ?곹깭?먯꽌 ?꾨줈?몄뒪媛 鍮꾩젙??醫낅즺?섎㈃ ?먮룞 retry?섏? ?딄퀬 reset guard??嫄몃┛?? 以묐났 二쇰Ц 諛⑹? 愿?먯뿉?쒕뒗 ?덉쟾?섏?留? ?댁쁺?먭? ?곹깭瑜?蹂닿퀬 ?섎룞 泥섎━?댁빞 ?쒕떎.
-- ?ъ떆???뺤콉? ?꾩쭅 ?녿떎. ?꾩슂?섎㈃ `retry_count`, `claimed_at`, `max_retry`瑜?異붽??쒕떎.
+- `PROCESSING` 상태에서 프로세스가 비정상 종료되면 자동 retry하지 않고 reset guard에 걸린다. 중복 주문 방지 관점에서는 안전하지만, 운영자가 상태를 보고 수동 처리해야 한다.
+- 재시도 정책은 아직 없다. 필요하면 `retry_count`, `claimed_at`, `max_retry`를 추가한다.
 
-## 6-2. KIS balance snapshot validator UI 蹂닿컯
+## 6-2. KIS balance snapshot validator UI 보강
 
-異붽? API:
+추가 API:
 
 - `POST /api/new-season/validate-snapshot`
 
-?묐떟 ?듭떖 ?꾨뱶:
+응답 핵심 필드:
 
 - `snapshot_valid_for_preview`
 - `snapshot_valid_for_request`
@@ -145,98 +145,98 @@
 - `request_creation_block_reason`
 - `guide`
 
-UI ?쒖떆:
+UI 표시:
 
-- ?쒖쟾?됰ℓ???덉젙??誘몃━蹂닿린 媛??遺덇???
-- ?쒖쟾?됰ℓ???붿껌 ?앹꽦 媛??遺덇???
-- generated_at怨?snapshot age
-- sellable_quantity ?꾨씫, stale, mismatch 媛숈? ?ㅻ쪟? ?ㅼ쓬 ?됰룞
+- “전량매도 예정표 미리보기 가능/불가”
+- “전량매도 요청 생성 가능/불가”
+- generated_at과 snapshot age
+- sellable_quantity 누락, stale, mismatch 같은 오류와 다음 행동
 
-以묒슂 ?뺤콉:
+중요 정책:
 
-- preview?먯꽌 warning?댁뼱??request ?앹꽦? 李⑤떒?????덈떎.
-- ?ㅼ젣 request ?앹꽦?먮뒗 理쒖떊 `generated_at`怨??ㅼ젣 `sellable_quantity`媛 ?꾩닔??
+- preview에서 warning이어도 request 생성은 차단될 수 있다.
+- 실제 request 생성에는 최신 `generated_at`과 실제 `sellable_quantity`가 필수다.
 
-## 7. ?뚯뒪???섏젙 ??ぉ
+## 7. 테스트 수정 항목
 
-?뚯뒪???뚯씪? ?대쾲 媛먯궗?먯꽌 吏곸젒 ?섏젙?섏? ?딆븯?? 寃??寃곌낵 ?ㅻ옒???대쫫泥섎읆 蹂댁씠???뚯뒪??以??쇰????꾩옱??紐낇솗??legacy/backward compatibility 紐⑹쟻???덈떎.
+테스트 파일은 이번 감사에서 직접 수정하지 않았다. 검색 결과 오래된 이름처럼 보이는 테스트 중 일부는 현재도 명확한 legacy/backward compatibility 목적이 있다.
 
-| ?뚯뒪??| ?먮떒 |
+| 테스트 | 판단 |
 | --- | --- |
-| `test_legacy_mode_keeps_exposure_based_target_profit_behavior` | legacy mode 蹂댁〈 寃利앹쑝濡??좎? ?꾩슂 |
+| `test_legacy_mode_keeps_exposure_based_target_profit_behavior` | legacy mode 보존 검증으로 유지 필요 |
 | `test_ui_service.py` legacy metadata check | Updated to assert legacy keys are absent from the general Config schema. |
-| snapshot strict validation ?뚯뒪??| 理쒖떊 ?뺤콉 寃利앹쑝濡??좎? ?꾩슂 |
+| snapshot strict validation 테스트 | 최신 정책 검증으로 유지 필요 |
 
-沅뚯옣 ?꾩냽:
+권장 후속:
 
-- legacy 愿???뚯뒪???대쫫?먮뒗 怨꾩냽 `legacy`/`compat`瑜?紐낆떆?쒕떎.
-- UI metadata ?ㅻ챸 臾몄옄??議댁옱 ?뚯뒪?몃뒗 ?덈Т 臾멸뎄 怨좎젙??媛뺥빐吏吏 ?딄쾶 ?듭떖 keyword 以묒떖?쇰줈 ?좎??쒕떎.
+- legacy 관련 테스트 이름에는 계속 `legacy`/`compat`를 명시한다.
+- UI metadata 설명 문자열 존재 테스트는 너무 문구 고정이 강해지지 않게 핵심 keyword 중심으로 유지한다.
 
-## 8. ?뺤씤 ?꾩슂 ??ぉ
+## 8. 확인 필요 항목
 
-| ??ぉ | ?꾩옱 ?먮떒 | 沅뚯옣 |
+| 항목 | 현재 판단 | 권장 |
 | --- | --- | --- |
-| KIS balance snapshot ?먮룞 ?앹꽦 | `prepare_new_season.py`?먮뒗 ?먮룞 ?앹꽦 湲곕뒫 ?놁쓬. JSON ?뚯씪 ?낅젰/寃利?援ъ“ | ?댁쁺?먭? snapshot JSON??以鍮꾪븯???덉감瑜?UI?먯꽌 ???쎄쾶 留뚮뱾吏 寃??|
-| `config/lot_auto_trader.example.json` 踰붿쐞 | ?꾩옱??expansion-safe 援ъ“ + 泥?10醫낅ぉ ?덉떆 | 蹂꾨룄 `config/lot_auto_trader.expansion_100.example.json`濡?100醫낅ぉ ?꾩껜 ?덉떆瑜??섏? 寃??|
-| `/api/execution-mapping/status` ?몄텧 | nav ??? ?쒓굅?먯?留?API/function ?좎? | ?꾩슂 ?녿떎怨??뺤젙?섎㈃ deprecated 二쇱꽍 ???ㅼ쓬 ?뺣━ ???쒓굅 媛??|
-| `cleanup_enabled=false` ?κ린 ?댁슜 | 珥덇린 ?덉젙?붿뿉???곸젅 | 濡쒓렇 ?덉젙????cleanup??耳ㅼ? 蹂꾨룄 寃??|
-| UI ???쒖쫵 wizard ?⑥닚??| ?대? flag ?몄텧? 以꾩?吏留?湲곕뒫??留롮쓬 | ?ъ슜?먭? 怨꾩냽 ?룰컝由щ㈃ single-action wizard瑜???媛뺥븯寃??먮룞??|
+| KIS balance snapshot 자동 생성 | `prepare_new_season.py`에는 자동 생성 기능 없음. JSON 파일 입력/검증 구조 | 운영자가 snapshot JSON을 준비하는 절차를 UI에서 더 쉽게 만들지 검토 |
+| `config/lot_auto_trader.example.json` 범위 | 현재는 expansion-safe 구조 + 첫 10종목 예시 | 별도 `config/lot_auto_trader.expansion_100.example.json`로 100종목 전체 예시를 둘지 검토 |
+| `/api/execution-mapping/status` 노출 | nav 탭은 제거됐지만 API/function 유지 | 필요 없다고 확정되면 deprecated 주석 후 다음 정리 때 제거 가능 |
+| `cleanup_enabled=false` 장기 운용 | 초기 안정화에는 적절 | 로그 안정화 뒤 cleanup을 켤지 별도 검토 |
+| UI 새 시즌 wizard 단순화 | 내부 flag 노출은 줄였지만 기능이 많음 | 사용자가 계속 헷갈리면 single-action wizard를 더 강하게 자동화 |
 
-## 9. ?꾩옱 ?⑥? 由ъ뒪??
+## 9. 현재 남은 리스크
 
-| 由ъ뒪??| ?깃툒 | ?꾩옱 諛⑹뼱?μ튂 | ?⑥? 痍⑥빟??| 沅뚯옣 議곗튂 |
+| 리스크 | 등급 | 현재 방어장치 | 남은 취약점 | 권장 조치 |
 | --- | --- | --- | --- | --- |
-| 二쇰Ц/泥닿껐 ?숆린??| 以묎컙 | open order 湲곗? reconciliation, startup recent reconciliation, unmatched ignore | ?ㅼ젣 KIS raw 泥닿껐 row 蹂???꾨씫 媛?μ꽦 | 泥??ㅼ껜寃???raw mapping ?ы솗??|
-| fill dedupe | ??쓬~以묎컙 | execution_id ?곗꽑, fallback key, duplicate count | KIS媛 execution_id ?놁씠 泥닿껐?쒓컖 ?덉쭏????쑝硫?fallback ?쒓퀎 | execution_id ?ㅼ젣 ?쒓났 ?щ? 吏???뺤씤 |
-| partial fill | 以묎컙 | PARTIAL order status, remaining_quantity 湲곗? LOT 諛섏쁺 | ?μ떆媛?PARTIAL/order timeout ?댁쁺 ?먮떒 ?꾩슂 | open order UI 紐⑤땲?곕쭅 媛뺥솕 |
-| manual order 以묐났 ?뚮퉬 | ??쓬~以묎컙 | ?먯옄??`REQUESTED -> PROCESSING` claim, linked_order_id ?ъ쿂由?李⑤떒, stale PROCESSING UI/API requeue/cancel, pending status reset guard | PROCESSING 以??꾨줈?몄뒪 鍮꾩젙??醫낅즺 ???먮룞 ?ъ떆?꾨뒗 ?섏? ?딄퀬 ?댁쁺???뺤씤 ?꾩슂 | ?⑥씪 Bot Core ?꾨줈?몄뒪 ?댁쁺, ?꾩슂 ?????꾧꺽??retry policy 異붽? |
-| DB reset/archive/liquidation | ?믪쓬 | confirm text, pending order/request/open lot/sync guard, KIS snapshot strict validation | snapshot ?뚯씪???댁쁺?먭? ?섎せ 留뚮뱾 ???덉쓬 | snapshot ?앹꽦 ?꾧뎄 ?먮뒗 import UI 異붽? 寃??|
-| KIS snapshot stale/mismatch | 以묎컙~?믪쓬 | generated_at/sellable strict mode, max age, DB hash, plan freshness guard, UI validator | ?먮룞 snapshot ?앹꽦???놁뼱 ?섎룞 ?ㅻ쪟 媛??| snapshot ?앹꽦 ?꾧뎄 ?먮뒗 ?뚯씪 import UX 異붽? 寃??|
-| UI 踰꾪듉 ?ㅼ“??| 以묎컙 | live warning, confirm, disabled guide, no direct KIS order API | 留롮? 踰꾪듉???덉뼱 珥덈낫???쇰룞 媛??| wizard UX 吏???⑥닚??|
-| config ???寃利?| 以묎컙 | backup, atomic save, validation, history | 紐⑤뱺 config ?섎?瑜?schema媛 ?꾨꼍??寃利앺븯吏???딆쓬 | schema validation ?뺣? |
-| runtime pause 諛섏쁺 | 以묎컙 | runtime_control.json, main loop guard | 湲??묒뾽 以?利됱떆 interrupt ?쒓퀎 媛??| loop ??泥댄겕?ъ씤???뺣? 寃??|
-| live_trading ?꾪솚 | ?믪쓬 | UI 寃쎄퀬, config confirm, risk guards | ?ъ슜?먭? ?洹쒕え ?꾨낫援곗쑝濡?耳??꾪뿕 | ?뚯븸/paper 寃利????④퀎 ?꾪솚 |
-| raw execution log | 以묎컙 | 湲곕낯 留덉뒪?? UI masking | raw log ?κ린 ?쒖꽦????濡쒓렇 怨쇰떎/誘쇨컧?뺣낫 由ъ뒪??| ?뺤씤 ??`enable_execution_raw_log=false` |
-| 100醫낅ぉ ?뺤옣 | 以묎컙 | `max_new_buy_per_day=10`, `max_new_buy_amount_per_day=2M`, total limits | 怨좉? LOT ?꾨낫媛 ?욎씠硫??섎（ ?몄텧 蹂????| daily amount limit 濡쒓렇 ?뺤씤 |
-| REVIEW/SYNC/RISK guard | ??쓬~以묎컙 | ?곹깭蹂?BUY/SELL 李⑤떒 ?뚯뒪??| ?섎룞留ㅻ룄 ??sync ???곹깭 ?쇰룞 | Review ??recheck/reconciliation ?덈궡 ?ъ슜 |
-| cleanup disabled | ??쓬 | `cleanup_enabled=false` | ?ㅻ옒???먯떎 LOT 異뺤쟻 媛??| ?덉젙????cleanup policy ?ш???|
+| 주문/체결 동기화 | 중간 | open order 기준 reconciliation, startup recent reconciliation, unmatched ignore | 실제 KIS raw 체결 row 변화/누락 가능성 | 첫 실체결 후 raw mapping 재확인 |
+| fill dedupe | 낮음~중간 | execution_id 우선, fallback key, duplicate count | KIS가 execution_id 없이 체결시각 품질이 낮으면 fallback 한계 | execution_id 실제 제공 여부 지속 확인 |
+| partial fill | 중간 | PARTIAL order status, remaining_quantity 기준 LOT 반영 | 장시간 PARTIAL/order timeout 운영 판단 필요 | open order UI 모니터링 강화 |
+| manual order 중복 소비 | 낮음~중간 | 원자적 `REQUESTED -> PROCESSING` claim, linked_order_id 재처리 차단, stale PROCESSING UI/API requeue/cancel, pending status reset guard | PROCESSING 중 프로세스 비정상 종료 시 자동 재시도는 하지 않고 운영자 확인 필요 | 단일 Bot Core 프로세스 운영, 필요 시 더 엄격한 retry policy 추가 |
+| DB reset/archive/liquidation | 높음 | confirm text, pending order/request/open lot/sync guard, KIS snapshot strict validation | snapshot 파일을 운영자가 잘못 만들 수 있음 | snapshot 생성 도구 또는 import UI 추가 검토 |
+| KIS snapshot stale/mismatch | 중간~높음 | generated_at/sellable strict mode, max age, DB hash, plan freshness guard, UI validator | 자동 snapshot 생성이 없어 수동 오류 가능 | snapshot 생성 도구 또는 파일 import UX 추가 검토 |
+| UI 버튼 오조작 | 중간 | live warning, confirm, disabled guide, no direct KIS order API | 많은 버튼이 있어 초보자 혼동 가능 | wizard UX 지속 단순화 |
+| config 저장/검증 | 중간 | backup, atomic save, validation, history | 모든 config 의미를 schema가 완벽히 검증하지는 않음 | schema validation 확대 |
+| runtime pause 반영 | 중간 | runtime_control.json, main loop guard | 긴 작업 중 즉시 interrupt 한계 가능 | loop 내 체크포인트 확대 검토 |
+| live_trading 전환 | 높음 | UI 경고, config confirm, risk guards | 사용자가 대규모 후보군으로 켤 위험 | 소액/paper 검증 후 단계 전환 |
+| raw execution log | 중간 | 기본 마스킹, UI masking | raw log 장기 활성화 시 로그 과다/민감정보 리스크 | 확인 후 `enable_execution_raw_log=false` |
+| 100종목 확장 | 중간 | `max_new_buy_per_day=10`, `max_new_buy_amount_per_day=2M`, total limits | 고가 LOT 후보가 섞이면 하루 노출 변동 큼 | daily amount limit 로그 확인 |
+| REVIEW/SYNC/RISK guard | 낮음~중간 | 상태별 BUY/SELL 차단 테스트 | 수동매도 후 sync 전 상태 혼동 | Review 탭/recheck/reconciliation 안내 사용 |
+| cleanup disabled | 낮음 | `cleanup_enabled=false` | 오래된 손실 LOT 축적 가능 | 안정화 후 cleanup policy 재검토 |
 
-## 10. ?ㅼ쓬 沅뚯옣 ?묒뾽
+## 10. 다음 권장 작업
 
-1. KIS balance snapshot JSON???щ엺?????ㅼ닔?섍쾶 留뚮뱶??import/validator UI瑜?媛뺥솕?쒕떎.
-2. ???쒖쫵 wizard?먯꽌 ?쒕떎???덉쟾 ?④퀎 ?섎굹留??ㅽ뻾??踰꾪듉????媛뺥븯寃??⑥닚?뷀븳??
-3. 泥??ㅼ껜寃??댄썑 raw execution mapping 寃곌낵瑜??ㅼ떆 蹂닿퀬 `enable_execution_raw_log=false`濡??섎룎由곕떎.
-4. `config/lot_auto_trader.example.json`怨?蹂꾨룄濡?full 100-stock example/profile ?뚯씪???섏? 寃곗젙?쒕떎.
-5. `legacy_exposure_bands`瑜??κ린?곸쑝濡?怨꾩냽 ?좎??좎?, 紐낇솗??deprecation timeline???뺥븳??
+1. KIS balance snapshot JSON을 사람이 덜 실수하게 만드는 import/validator UI를 강화한다.
+2. 새 시즌 wizard에서 “다음 안전 단계 하나만 실행” 버튼을 더 강하게 단순화한다.
+3. 첫 실체결 이후 raw execution mapping 결과를 다시 보고 `enable_execution_raw_log=false`로 되돌린다.
+4. `config/lot_auto_trader.example.json`과 별도로 full 100-stock example/profile 파일을 둘지 결정한다.
+5. `legacy_exposure_bands`를 장기적으로 계속 유지할지, 명확한 deprecation timeline을 정한다.
 
-## 11. ?ㅽ뻾???뺤쟻 ?먭? 寃곌낵
+## 11. 실행한 정적 점검 결과
 
-| ?먭? | 寃곌낵 |
+| 점검 | 결과 |
 | --- | --- |
 | Python AST parse: `src`, `scripts`, `tests` | parse error 0 |
-| UI route inventory | `/api/status`, `/api/stocks`, `/api/lots`, `/api/orders`, `/api/fills`, `/api/manual-order-requests`, `/api/manual-orders/preview`, `/api/manual-orders`, review API, new-season API ???ㅼ젣 route ?뺤씤 |
-| CLI help | `scripts/prepare_new_season.py --help` 湲곗? ?듭뀡 ?뺤씤: `--config`, `--archive-root`, `--profile`, `--apply-config`, `--archive`, `--liquidation-plan`, `--create-liquidation-requests`, `--kis-balance-json`, `--liquidation-plan-file`, `--plan-max-age-minutes`, `--reset-db`, `--confirm`, `--dry-run`, `--execute` |
+| UI route inventory | `/api/status`, `/api/stocks`, `/api/lots`, `/api/orders`, `/api/fills`, `/api/manual-order-requests`, `/api/manual-orders/preview`, `/api/manual-orders`, review API, new-season API 등 실제 route 확인 |
+| CLI help | `scripts/prepare_new_season.py --help` 기준 옵션 확인: `--config`, `--archive-root`, `--profile`, `--apply-config`, `--archive`, `--liquidation-plan`, `--create-liquidation-requests`, `--kis-balance-json`, `--liquidation-plan-file`, `--plan-max-age-minutes`, `--reset-db`, `--confirm`, `--dry-run`, `--execute` |
 | docs link check | missing relative links 0 |
 | KOSPI 100 config count | stocks 100, enabled 97, manual_only 3 |
 | reset pending statuses | orders: `REQUESTED`, `PARTIAL`, `SUBMITTED`, `ACCEPTED`, `PENDING`, `OPEN`, `NEW`; manual: `REQUESTED`, `PROCESSING`, `ACCEPTED`, `SUBMITTED`, `PENDING`, `OPEN`, `NEW`, `CREATED`, `RETRYING` |
 
-## 12. ?ㅽ뻾???뚯뒪??寃곌낵
+## 12. 실행한 테스트 결과
 
-?대쾲 蹂닿퀬???묒꽦 ?쒖젏???꾨옒 ?꾩껜 ?뚯뒪?몃? ?ㅽ뻾?덈떎.
+이번 보고서 작성 시점에 아래 전체 테스트를 실행했다.
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest_tmp_audit_cleanup_check
 .\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest_tmp_final_logic_check
 ```
 
-寃곌낵:
+결과:
 
-| 紐낅졊 | 寃곌낵 |
+| 명령 | 결과 |
 | --- | --- |
-| `.\\.venv\\Scripts\\python.exe -m pytest -q --basetemp .pytest_tmp_audit_cleanup_check` | `155 passed`, pytest cache warning 1媛?|
-| `.\\.venv\\Scripts\\python.exe -m pytest -q --basetemp .pytest_tmp_final_logic_check` | `155 passed`, pytest cache warning 1媛?|
+| `.\\.venv\\Scripts\\python.exe -m pytest -q --basetemp .pytest_tmp_audit_cleanup_check` | `156 passed`, pytest cache warning 1개 |
+| `.\\.venv\\Scripts\\python.exe -m pytest -q --basetemp .pytest_tmp_final_logic_check` | `156 passed`, pytest cache warning 1개 |
 
-warning? `.pytest_cache` cache write 愿??`PytestCacheWarning`?대ŉ 湲곕뒫 ?ㅽ뙣???꾨땲??
+warning은 `.pytest_cache` cache write 관련 `PytestCacheWarning`이며 기능 실패는 아니다.
 
 ## 13. 2026-05-27 Final Addendum
 
@@ -281,7 +281,7 @@ Claim flow:
 ### KIS balance snapshot validator UI/API
 
 - Added `POST /api/new-season/validate-snapshot`.
-- Added New Season UI button `snapshot 寃利?.
+- Added New Season UI button `snapshot 검증`.
 - Validator returns:
   - `snapshot_valid_for_preview`
   - `snapshot_valid_for_request`
@@ -349,7 +349,6 @@ The live operating config and example config no longer carry these direct `strat
 .\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest_tmp_final_logic_check
 ```
 
-Result: all three commands completed with `155 passed` and one pytest cache warning. The warning is a `.pytest_cache` write warning, not a functional failure.
+Result: all three commands completed with `156 passed` and one pytest cache warning. The warning is a `.pytest_cache` write warning, not a functional failure.
 
 No real trade, KIS order API call, or DB reset was executed during this audit/cleanup pass.
-

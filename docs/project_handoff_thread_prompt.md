@@ -1,109 +1,108 @@
-﻿# ??ChatGPT / Codex thread ?쒖옉???꾨＼?꾪듃
+# 새 ChatGPT / Codex thread 시작용 프롬프트
 
 > Authoritative source: `docs/project_handoff_full.md` is the latest full baseline. `docs/project_handoff_thread_prompt.md` is for starting a new chat, and `docs/project_handoff_summary.md` is the short summary. `local_ui.md`, `strategy_lot_sizing.md`, `new_season_reset.md`, and `expansion_100_config.md` are detailed references. If a reference doc conflicts with the full handoff, use `project_handoff_full.md` as the source of truth.  
-> Last updated: 2026-05-26 / Baseline tests: `155 passed` / Baseline config profile: `expansion_100_safe`. Re-check config, DB, logs, and KIS account state at runtime.
+> Last updated: 2026-05-26 / Baseline tests: `156 passed` / Baseline config profile: `expansion_100_safe`. Re-check config, DB, logs, and KIS account state at runtime.
 
 
 Last updated: 2026-05-26  
-湲곗? ?뚯뒪??寃곌낵: `155 passed`  
-湲곗? config profile: `expansion_100_safe`  
-愿??臾몄꽌: [?꾩껜 ?몄닔?멸퀎](project_handoff_full.md), [?붿빟蹂?(project_handoff_summary.md), [濡쒖뺄 UI](local_ui.md), [LOT sizing](strategy_lot_sizing.md), [???쒖쫵 reset](new_season_reset.md), [100醫낅ぉ config](expansion_100_config.md)
+기준 테스트 결과: `156 passed`  
+기준 config profile: `expansion_100_safe`  
+관련 문서: [전체 인수인계](project_handoff_full.md), [요약본](project_handoff_summary.md), [로컬 UI](local_ui.md), [LOT sizing](strategy_lot_sizing.md), [새 시즌 reset](new_season_reset.md), [100종목 config](expansion_100_config.md)
 
-?꾨옒 ?댁슜??湲곗??쇰줈 `C:\MSJ\KIS-MSJ`??KIS LOT ?먮룞嫄곕옒 遊?媛쒕컻/?댁쁺 ?쇱쓽瑜??댁뼱??遊먯쨾.
+아래 내용을 기준으로 `C:\MSJ\KIS-MSJ`의 KIS LOT 자동거래 봇 개발/운영 논의를 이어서 봐줘.
 
-## ?꾨줈?앺듃 ?붿빟
+## 프로젝트 요약
 
-???꾨줈?앺듃??KIS API 湲곕컲 KOSPI LOT ?⑥쐞 ?먮룞留ㅻℓ 遊뉗씠?? 醫낅ぉ ?됯퇏?④?媛 ?꾨땲??媛쒕퀎 LOT 湲곗??쇰줈 留ㅼ닔, 異붽?留ㅼ닔, 留ㅻ룄, ?ъ쭊?? ?먯떎?뺣━, ?섎룞寃?좊? 愿由ы븳??
+이 프로젝트는 KIS API 기반 KOSPI LOT 단위 자동매매 봇이다. 종목 평균단가가 아니라 개별 LOT 기준으로 매수, 추가매수, 매도, 재진입, 손실정리, 수동검토를 관리한다.
 
-?듭떖 ?먯튃? **二쇰Ц ?붿껌???꾨땲???ㅼ젣 fill insert ?깃났 ?꾩뿉留?lots/positions瑜?媛깆떊?쒕떎**??寃껋씠??
+핵심 원칙은 **주문 요청이 아니라 실제 fill insert 성공 후에만 lots/positions를 갱신한다**는 것이다.
 
-## ?덈? 源⑤㈃ ???섎뒗 ?먯튃
+## 절대 깨면 안 되는 원칙
 
-- 二쇰Ц ?붿껌留뚯쑝濡?lots/positions瑜?諛붽씀吏 ?딅뒗??
-- `store.record_fill(fill)`??true???좉퇋 泥닿껐留?`position_manager.apply_fill()`濡?媛꾨떎.
-- duplicate fill ?먮뒗 `record_fill_failed`??positions/lots??諛섏쁺?섏? ?딅뒗??
-- UI ?쒕쾭??KIS 二쇰Ц API瑜?吏곸젒 ?몄텧?섏? ?딅뒗??
-- ?섎룞 二쇰Ц??UI媛 吏곸젒 二쇰Ц?섏? ?딄퀬 `manual_order_requests` ?먮쭔 ?앹꽦?쒕떎.
-- Bot Core留?runtime/risk/open-order/live guard ??湲곗〈 `order_manager` 寃쎈줈濡?二쇰Ц ?붿껌??泥섎━?쒕떎.
-- DB reset? OPEN LOT 0, 吏꾪뻾 以?order 0, pending manual request 0, sync mismatch ?놁쓬???뚮쭔 媛?ν븯??
-- REVIEW_REQUIRED??媛뺤젣 ?댁젣?섏? ?딄퀬 recheck/acknowledge/manual sell/reconciliation ?먮쫫?쇰줈 泥섎━?쒕떎.
+- 주문 요청만으로 lots/positions를 바꾸지 않는다.
+- `store.record_fill(fill)`이 true인 신규 체결만 `position_manager.apply_fill()`로 간다.
+- duplicate fill 또는 `record_fill_failed`는 positions/lots에 반영하지 않는다.
+- UI 서버는 KIS 주문 API를 직접 호출하지 않는다.
+- 수동 주문도 UI가 직접 주문하지 않고 `manual_order_requests` 큐만 생성한다.
+- Bot Core만 runtime/risk/open-order/live guard 후 기존 `order_manager` 경로로 주문 요청을 처리한다.
+- DB reset은 OPEN LOT 0, 진행 중 order 0, pending manual request 0, sync mismatch 없음일 때만 가능하다.
+- REVIEW_REQUIRED는 강제 해제하지 않고 recheck/acknowledge/manual sell/reconciliation 흐름으로 처리한다.
 
-## ?꾩옱 ?곹깭
+## 현재 상태
 
 - config profile: `expansion_100_safe`
-- KOSPI ?꾨낫 100醫낅ぉ, enabled 97, disabled/manual_only 3
+- KOSPI 후보 100종목, enabled 97, disabled/manual_only 3
 - `live_trading=false`
 - `cleanup_enabled=false`
 - `ui_manual_trading_enabled=false`
 - `enable_execution_raw_log=true`
-- 理쒖떊 ?뚯뒪?? `155 passed`
-- ?꾩옱 DB?먮뒗 OPEN LOT???⑥븘 ?덈뒗 ?곹깭濡??댄빐?댁빞 ?섎ŉ, ??寃쎌슦 DB reset 李⑤떒? ?뺤긽?대떎.
+- 최신 테스트: `156 passed`
+- 현재 DB에는 OPEN LOT이 남아 있는 상태로 이해해야 하며, 이 경우 DB reset 차단은 정상이다.
 
-## ?듭떖 ?꾨왂
+## 핵심 전략
 
 - `lot_sizing_mode=cycle_locked_by_entry_price`
-- 媛寃⑸?蹂?1 LOT 湲덉븸???ъ슜?섏?留? ??蹂댁쑀 ?ъ씠?댁뿉?쒕뒗 理쒖큹 吏꾩엯 ??寃곗젙??`lot_unit_amount`, `max_symbol_amount`, `lot_sizing_bucket`??怨좎젙?쒕떎.
-- 異붽?留ㅼ닔??LOT 諛곗닔 band 湲곗??대떎: 1~2 LOT -4%, 3~4 LOT -6%, 5~6 LOT -8%, 7~8 LOT -10%, 9~10 LOT -12%.
-- SELL target? 留ㅼ닔 ?뱀떆 怨좎젙媛믪씠 ?꾨땲???꾩옱 OPEN LOT ??湲곗??쇰줈 ?숈쟻 ?곸슜?쒕떎: 1~2 LOT 6%, 3~4 LOT 5%, 5~6 LOT 4%, 7~8 LOT 3%, 9~10 LOT 2%.
-- PROFIT_TAKE???ㅼ젣 ?먯씡 0 ?댁긽, CLEANUP_SELL? ?ㅼ젣 ?먯씡 ?뚯닔?닿퀬 cleanup 議곌굔??留뚯”?댁빞 ?쒕떎.
-- `cleanup_enabled=false`媛 ?꾩옱 湲곕낯?대떎.
+- 가격대별 1 LOT 금액을 사용하지만, 한 보유 사이클에서는 최초 진입 시 결정된 `lot_unit_amount`, `max_symbol_amount`, `lot_sizing_bucket`을 고정한다.
+- 추가매수는 LOT 배수 band 기준이다: 1~2 LOT -4%, 3~4 LOT -6%, 5~6 LOT -8%, 7~8 LOT -10%, 9~10 LOT -12%.
+- SELL target은 매수 당시 고정값이 아니라 현재 OPEN LOT 수 기준으로 동적 적용한다: 1~2 LOT 6%, 3~4 LOT 5%, 5~6 LOT 4%, 7~8 LOT 3%, 9~10 LOT 2%.
+- PROFIT_TAKE는 실제 손익 0 이상, CLEANUP_SELL은 실제 손익 음수이고 cleanup 조건을 만족해야 한다.
+- `cleanup_enabled=false`가 현재 기본이다.
 
 ## UI / API
 
 - UI: `src/kis_msj/ui_server.py`
 - Service: `src/kis_msj/ui_service.py`
 - Runtime control: `config/runtime_control.json`
-- UI??localhost 愿???ㅼ젙/?섎룞 ?붿껌/???쒖쫵 以鍮꾩슜?대ŉ KIS 二쇰Ц API瑜?吏곸젒 ?몄텧?섏? ?딅뒗??
-- ?섎룞 二쇰Ц? `/api/manual-orders/preview`? `/api/manual-orders`濡?preview/request留?留뚮뱾怨? ?ㅼ젣 二쇰Ц? Bot Core媛 `manual_order_requests`瑜??뚮퉬?쒕떎.
+- UI는 localhost 관제/설정/수동 요청/새 시즌 준비용이며 KIS 주문 API를 직접 호출하지 않는다.
+- 수동 주문은 `/api/manual-orders/preview`와 `/api/manual-orders`로 preview/request만 만들고, 실제 주문은 Bot Core가 `manual_order_requests`를 소비한다.
 
-## ???쒖쫵 ?ㅼ쓬 ?④퀎
+## 새 시즌 다음 단계
 
-1. UI New Season ??뿉???꾩옱 OPEN LOT, pending order, pending manual request, SYNC_REQUIRED ?щ? ?뺤씤.
-2. KIS balance snapshot 以鍮?
-3. liquidation plan, 利??꾨웾留ㅻ룄 ?덉젙???앹꽦.
-4. confirm text `?꾨웾留ㅻ룄 ?붿껌 ?뺤씤`?쇰줈 manual SELL request ?앹꽦 ?щ? 寃곗젙.
-5. Bot Core媛 request瑜?泥섎━?섍퀬 reconciliation ?꾨즺.
-6. OPEN LOT 0, pending order 0, pending manual request 0, SYNC_REQUIRED 0 ?뺤씤.
-7. confirm text `RESET ?뺤씤` ??DB reset.
-8. ???쒖쫵 以鍮??꾨즺 ?뺤씤 ???쒗븳 ?댁슜 ?쒖옉.
+1. UI New Season 탭에서 현재 OPEN LOT, pending order, pending manual request, SYNC_REQUIRED 여부 확인.
+2. KIS balance snapshot 준비.
+3. liquidation plan, 즉 전량매도 예정표 생성.
+4. confirm text `전량매도 요청 확인`으로 manual SELL request 생성 여부 결정.
+5. Bot Core가 request를 처리하고 reconciliation 완료.
+6. OPEN LOT 0, pending order 0, pending manual request 0, SYNC_REQUIRED 0 확인.
+7. confirm text `RESET 확인` 후 DB reset.
+8. 새 시즌 준비 완료 확인 후 제한 운용 시작.
 
-## ?꾩옱 ?⑥? ?듭떖 由ъ뒪??
+## 현재 남은 핵심 리스크
 
-1. ?ㅼ젣 KIS raw execution field mapping? 泥??ㅼ껜寃?row 湲곗? 理쒖쥌 ?뺤씤???꾩슂?섎떎.
-2. KIS balance snapshot? ?꾩옱 JSON ?뚯씪 ?낅젰 寃利?援ъ“?? `scripts/prepare_new_season.py`?먮뒗 snapshot ?먮룞 ?앹꽦 湲곕뒫???놁쑝誘濡??댁쁺?먭? 蹂꾨룄 JSON??以鍮꾪빐???쒕떎. ?ㅼ젣 ?꾨웾留ㅻ룄 request ?앹꽦 ?④퀎?먯꽌??理쒖떊 `generated_at`怨??ㅼ젣 `sellable_quantity`媛 ?ы븿??snapshot???ъ슜?댁빞 ?쒕떎.
-3. OPEN LOT???⑥븘 ?덉쑝硫?DB reset 李⑤떒???뺤긽?대떎.
-4. `live_trading=false` ?좎? ?곹깭?먯꽌 ?뚯븸/?쒗븳 寃利앹쓣 癒쇱? ?댁빞 ?쒕떎.
-5. `cleanup_enabled=false` ?좎? ??濡쒓렇 ?덉젙????cleanup ?먮룞?붾? 寃?좏븳??
+1. 실제 KIS raw execution field mapping은 첫 실체결 row 기준 최종 확인이 필요하다.
+2. KIS balance snapshot은 현재 JSON 파일 입력 검증 구조다. `scripts/prepare_new_season.py`에는 snapshot 자동 생성 기능이 없으므로 운영자가 별도 JSON을 준비해야 한다. 실제 전량매도 request 생성 단계에서는 최신 `generated_at`과 실제 `sellable_quantity`가 포함된 snapshot을 사용해야 한다.
+3. OPEN LOT이 남아 있으면 DB reset 차단이 정상이다.
+4. `live_trading=false` 유지 상태에서 소액/제한 검증을 먼저 해야 한다.
+5. `cleanup_enabled=false` 유지 후 로그 안정화 뒤 cleanup 자동화를 검토한다.
 
-## ?덈? ?섏? 留?寃?
+## 절대 하지 말 것
 
-- ?ㅺ굅??二쇰Ц ?꾩쓽 ?ㅽ뻾 湲덉?.
-- KIS 二쇰Ц API 吏곸젒 ?몄텧 湲덉?.
-- DB reset ?꾩쓽 ?ㅽ뻾 湲덉?.
-- OPEN LOT ?⑥? ?곹깭?먯꽌 DB reset 湲덉?.
-- UI?먯꽌 lots/positions/fills 吏곸젒 ?섏젙 湲덉?.
-- KIS balance snapshot ?놁씠 ?꾨웾留ㅻ룄 request ?앹꽦 湲덉?.
-- pending manual request/order媛 ?덉쑝硫?reset 湲덉?.
+- 실거래 주문 임의 실행 금지.
+- KIS 주문 API 직접 호출 금지.
+- DB reset 임의 실행 금지.
+- OPEN LOT 남은 상태에서 DB reset 금지.
+- UI에서 lots/positions/fills 직접 수정 금지.
+- KIS balance snapshot 없이 전량매도 request 생성 금지.
+- pending manual request/order가 있으면 reset 금지.
 
-## 癒쇱? ?뺤씤??吏덈Ц
+## 먼저 확인할 질문
 
-1. ?꾩옱 OPEN LOT ?섎뒗 紐?媛쒖씤媛?
-2. KIS balance snapshot??以鍮꾨릺???덈뒗媛?
-3. liquidation plan? ACTIVE?닿퀬 理쒖떊?멸??
-4. pending order/manual request媛 ?덈뒗媛?
-5. SYNC_REQUIRED/REVIEW_REQUIRED/RISK_BLOCKED 醫낅ぉ???덈뒗媛?
-6. `live_trading=false`?멸??
-7. `enable_execution_raw_log=true`?닿퀬 泥??ㅼ껜寃?raw mapping ?뺤씤???꾩슂?쒓??
-8. 理쒖떊 ?꾩껜 ?뚯뒪?멸? ?듦낵?덈뒗媛?
-9. 吏湲??먰븯???묒뾽? UI 媛쒖꽑, ?꾨웾留ㅻ룄 以鍮? ???쒖쫵 reset, config ?쒕떇, 濡쒓렇 寃利?以?臾댁뾿?멸??
+1. 현재 OPEN LOT 수는 몇 개인가?
+2. KIS balance snapshot이 준비되어 있는가?
+3. liquidation plan은 ACTIVE이고 최신인가?
+4. pending order/manual request가 있는가?
+5. SYNC_REQUIRED/REVIEW_REQUIRED/RISK_BLOCKED 종목이 있는가?
+6. `live_trading=false`인가?
+7. `enable_execution_raw_log=true`이고 첫 실체결 raw mapping 확인이 필요한가?
+8. 최신 전체 테스트가 통과했는가?
+9. 지금 원하는 작업은 UI 개선, 전량매도 준비, 새 시즌 reset, config 튜닝, 로그 검증 중 무엇인가?
 
-## 臾몄꽌 ?뺥빀??self-check
+## 문서 정합성 self-check
 
-- full/summary/thread prompt???꾩옱 ?곹깭 媛믪씠 ?쒕줈 ?쇱튂?댁빞 ?쒕떎.
-- 100醫낅ぉ ?꾨낫 ?? enabled 97, manual_only 3, `risk.profile=expansion_100_safe`媛 ?쇱튂?댁빞 ?쒕떎.
-- `live_trading=false`, `cleanup_enabled=false`, `ui_manual_trading_enabled=false`, `enable_execution_raw_log=true`媛 ?쇱튂?댁빞 ?쒕떎.
-- manual order ?ㅻ챸? ?쏫IS 吏곸젒 二쇰Ц API ?놁쓬 / manual request ?앹꽦 API???덉쓬?앹쑝濡??쎌뼱???쒕떎.
-- reset 李⑤떒 議곌굔怨?KIS snapshot ?ㅻ챸? `project_handoff_full.md`瑜??곗꽑 湲곗??쇰줈 ?쇰뒗??
+- full/summary/thread prompt의 현재 상태 값이 서로 일치해야 한다.
+- 100종목 후보 수, enabled 97, manual_only 3, `risk.profile=expansion_100_safe`가 일치해야 한다.
+- `live_trading=false`, `cleanup_enabled=false`, `ui_manual_trading_enabled=false`, `enable_execution_raw_log=true`가 일치해야 한다.
+- manual order 설명은 “KIS 직접 주문 API 없음 / manual request 생성 API는 있음”으로 읽어야 한다.
+- reset 차단 조건과 KIS snapshot 설명은 `project_handoff_full.md`를 우선 기준으로 삼는다.
 
-?곸꽭 留λ씫? `docs/project_handoff_full.md`瑜?湲곗??쇰줈 ?쇱븘以?
-
+상세 맥락은 `docs/project_handoff_full.md`를 기준으로 삼아줘.
