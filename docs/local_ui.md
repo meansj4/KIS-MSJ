@@ -466,7 +466,7 @@ UI 로그 표시는 아래 키 또는 계좌번호처럼 보이는 긴 숫자를
 
 ## 수동 주문 요청 구현 상태
 
-수동 주문은 UI가 직접 주문 API를 호출하지 않고 `manual_order_requests` 큐에 요청만 생성하는 구조로 구현합니다.
+수동 주문은 UI가 직접 주문 API를 호출하지 않고 `manual_order_requests` 큐에 요청만 생성하는 구조입니다. 수동 주문 요청 탭의 “수동 주문 요청 목록”도 Stocks/Lots/Orders/Fills와 동일하게 핵심 컬럼만 기본 표시하고, `컬럼 선택`에서 숨긴 필드를 펼쳐 볼 수 있습니다.
 
 저장 위치:
 
@@ -586,6 +586,18 @@ Runtime Control 화면에는 봇 루프 제어 버튼이 있습니다.
 4. live trading이면 `수동주문 확인` 문구를 입력해야 요청 생성이 가능합니다.
 5. 요청이 생성되면 DB의 `manual_order_requests`에 기록되고, 실행 중인 봇 루프가 다음 루프에서 소비합니다.
 6. 실거래 주문 없이 흐름만 테스트하려면 `order.live_trading=false` 또는 mock/paper 경로에서 먼저 확인합니다.
+
+## Config 배열형 설정 편집
+
+Config 탭에서 `price_lot_bands`, `add_buy_lot_bands`, `target_profit_lot_bands`, `exposure_buy_bands`, `exposure_sell_bands`처럼 배열/구간 형태인 값은 기본적으로 JSON textarea가 아니라 표 형태 편집기로 표시합니다.
+
+- 각 행은 하나의 가격 구간, LOT 구간, 노출 구간을 뜻합니다.
+- `행 추가`와 `행 삭제`로 구간을 조정할 수 있습니다.
+- 숫자, bool, 문자열 값은 각 셀에서 바로 수정합니다.
+- 원본 구조 확인이 필요하면 해당 항목의 `이 항목 원본 JSON 보기`를 열면 됩니다.
+- 저장 흐름은 다른 설정과 동일하게 diff, validation, backup, atomic save를 거칩니다.
+
+예를 들어 `target_profit_lot_bands`는 “현재 OPEN LOT 수가 몇 개인지”에 따라 적용할 목표수익률 구간입니다. 1~2 LOT, 3~4 LOT 같은 행을 표로 직접 수정하므로 JSON 문법을 몰라도 값을 바꿀 수 있습니다.
  
 ## 새 시즌 / 100종목 확장 운용
 
@@ -601,6 +613,22 @@ UI에서 확인해야 할 핵심 항목:
 - Reset/New Season 작업 전: open order, SYNC_REQUIRED, lot mismatch, 미처리 manual order request 여부
 
 초기 확장 운용 권장값은 `expansion_100_safe`입니다. 이 프로파일은 총 투입 한도 2천만 원, 하루 신규 initial buy 10종목, 하루 신규 initial buy 주문금액 200만 원, 전체 OPEN LOT 300개를 기본으로 합니다.
+
+## 새 시즌 준비 마법사 사용 방식
+
+새 시즌 준비 탭에는 `새 시즌 준비 계속 진행` 버튼이 있습니다. 이 버튼은 현재 상태를 다시 조회한 뒤 다음으로 진행 가능한 안전 단계 하나만 실행하거나, 막힌 경우 어떤 입력이 필요한지 알려줍니다.
+
+진행 흐름:
+
+1. 먼저 config/DB/log archive 백업을 생성합니다.
+2. OPEN LOT이 남아 있으면 KIS 잔고 snapshot JSON 경로를 입력해야 합니다.
+3. 입력한 snapshot과 현재 DB를 기준으로 전량매도 예정표를 생성합니다.
+4. 예정표가 유효하고 차단 사유가 없으면 `전량매도 요청 확인` 문구를 입력한 뒤 manual SELL request를 생성합니다.
+5. 이후 실제 주문/체결/reconciliation은 실행 중인 Bot Core가 기존 안전장치를 통해 처리합니다.
+6. OPEN LOT, 미체결 주문, 미처리 manual request, sync mismatch가 모두 없어져야 DB 초기화 단계가 활성화됩니다.
+7. DB 초기화는 `RESET 확인` 문구가 있어야 실행됩니다.
+
+중간에 막히면 버튼은 KIS 주문 API를 호출하지 않고, “KIS 잔고 snapshot 경로 필요”, “전량매도 체결/reconciliation 필요”, “RESET 확인 문구 필요”처럼 다음 행동을 안내합니다.
 ## 새 시즌 준비 화면과 plan 최신성
 
 UI의 “새 시즌 준비” 탭은 현재 DB 상태를 다시 읽어 다음 값을 보여줍니다.

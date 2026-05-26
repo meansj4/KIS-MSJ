@@ -92,16 +92,16 @@ INDEX_HTML = r"""<!doctype html>
 </div>
 <main>
   <div class="tabs">
-    <button onclick="loadDashboard()">Dashboard</button>
-    <button onclick="loadStocks()">Stocks</button>
-    <button onclick="loadLots()">Lots</button>
-    <button onclick="loadOrders()">Orders/Fills</button>
-    <button onclick="loadLogs()">Logs</button>
-    <button onclick="loadConfig()">Config</button>
-    <button onclick="loadRuntime()">Runtime Control</button>
-    <button onclick="loadManualOrders()">수동 주문 요청</button>
-    <button onclick="loadNewSeason()">새 시즌 준비</button>
-    <button onclick="loadReviewRequired()">수동검토 필요</button>
+    <button onclick="loadDashboard()">대시보드 Dashboard</button>
+    <button onclick="loadStocks()">종목 Stocks</button>
+    <button onclick="loadLots()">LOT Lots</button>
+    <button onclick="loadOrders()">주문/체결 Orders/Fills</button>
+    <button onclick="loadLogs()">로그 Logs</button>
+    <button onclick="loadConfig()">설정 Config</button>
+    <button onclick="loadRuntime()">실행 제어 Runtime</button>
+    <button onclick="loadManualOrders()">수동 주문 Manual</button>
+    <button onclick="loadNewSeason()">새 시즌 New Season</button>
+    <button onclick="loadReviewRequired()">수동검토 Review</button>
   </div>
   <section id="content">Loading...</section>
 </main>
@@ -253,7 +253,9 @@ const DEFAULT_COLUMNS = {
   lots: ['lot_id','code','name','status','buy_price','remaining_quantity','current_price','unrealized_pnl','unrealized_pnl_rate','age_weeks','effective_target_profit_rate','sell_trigger_price','cleanup_candidate','stale_lot','last_sell_reason'],
   stockLots: ['lot_id','code','name','status','buy_price','remaining_quantity','current_price','unrealized_pnl','unrealized_pnl_rate','age_weeks','effective_target_profit_rate','sell_trigger_price','cleanup_candidate','stale_lot','last_sell_reason'],
   orders: ['order_id','code','name','side','status','quantity','limit_price','reason','requested_at','updated_at','lot_id','sell_reason','reentry_type'],
-  fills: ['fill_id','execution_id','dedupe_key_type','order_id','code','name','side','price','quantity','filled_at','lot_id','sell_reason','reentry_type']
+  fills: ['fill_id','execution_id','dedupe_key_type','order_id','code','name','side','price','quantity','filled_at','lot_id','sell_reason','reentry_type'],
+  manualRequests: ['request_id','code','side','quantity','amount','lot_id','status','block_reason','linked_order_id','requested_at','updated_at'],
+  reviewRequired: ['code','name','position_state','review_reason','current_pnl_rate','open_lot_count','stale_lot_count','sync_status','lot_quantity_mismatch','profitable_lot_count']
 };
 const columnPrefs = {};
 let configOriginal = null;
@@ -312,6 +314,8 @@ function rowsForTable(tableId) {
   if (tableId === 'stockLots') return window.stockLotRows || [];
   if (tableId === 'orders') return window.orderRows || [];
   if (tableId === 'fills') return window.fillRows || [];
+  if (tableId === 'manualRequests') return window.manualRequestRows || [];
+  if (tableId === 'reviewRequired') return window.reviewRequiredRows || [];
   return [];
 }function rowActions(tableId, row) {
   if (tableId === 'stocks') {
@@ -470,6 +474,7 @@ async function loadManualOrders() {
   currentView = 'manual';
   const cfg = await api('/api/config');
   const requests = await api('/api/manual-order-requests');
+  window.manualRequestRows = requests || [];
   document.getElementById('content').innerHTML = `<h2>수동 주문 요청</h2>
   <div class="manualBox"><strong>현재 기능 상태</strong><p>ui_manual_trading_enabled=${esc(cfg.ui_manual_trading_enabled)}. UI는 KIS 주문 API를 직접 호출하지 않고 manual_order_requests 큐에 요청만 생성합니다.</p></div>
   <div class="manualBox"><strong>수동 주문 테스트 방법</strong><p class="muted">1) Config에서 ui_manual_trading_enabled=true로 저장합니다. 2) Runtime Control에서 Reset / Config 다시 읽기를 누릅니다. 3) 여기서 미리보기 후 요청 생성을 누르면 DB의 manual_order_requests에 REQUESTED로 저장되고, 실행 중인 봇이 다음 루프에서 기존 order_manager 경로로 처리합니다.</p></div>
@@ -498,25 +503,152 @@ async function loadManualOrders() {
     </div>
   </div>
   <h3>미리보기 / 생성 결과</h3><pre id="manualResult"></pre>
-  <h3>수동 주문 요청 목록</h3>${table(requests, 'manualRequests')}`;
+  <h3>수동 주문 요청 목록</h3>${table(window.manualRequestRows, 'manualRequests')}`;
 }
 async function loadNewSeason() {
   currentView = 'newSeason';
   const s = await api('/api/new-season/status');
-  document.getElementById('content').innerHTML = `<h2>새 시즌 준비</h2>
-  <div class="manualBox"><strong>전량매도 예정표 최신성</strong><p>${esc(s.guidance || '')}</p>
-  <p class="muted">전량매도 예정표는 현재 DB OPEN LOT 상태와 KIS 잔고 snapshot 기준으로 생성된 문서입니다. DB/잔고/미체결 요청이 바뀌면 새로 생성해야 합니다.</p></div>
-  ${metrics(s)}
-  <h3>차단 사유 안내</h3>
-  <p class="muted">request_creation_possible=false이면 전량매도 request를 생성하지 않아야 합니다. UI는 KIS 주문 API를 직접 호출하지 않습니다.</p>`;
+  const msg = s.guidance || {};
+  const steps = (s.wizard_steps || []).map(step => `
+    <div class="controlCard ${step.status === '차단됨' || step.status === '아직 불가' ? 'dangerZone' : ''}">
+      <h3>${esc(step.step)}단계. ${esc(step.title)}</h3>
+      <p><span class="badge ${step.status === '가능' || step.status === '최신' || step.status === '적용됨' || step.status === '준비 완료' || step.status === '검증 완료' ? 'good' : (step.status === '차단됨' || step.status === '아직 불가' ? 'bad' : 'warn')}">${esc(step.status)}</span></p>
+      <p>${esc(step.description)}</p>
+      <p><strong>다음 행동</strong><br>${esc(step.next_action || '')}</p>
+      ${step.disabled_reason ? `<p class="warn"><strong>비활성 이유</strong><br>${esc(step.disabled_reason)}</p>` : ''}
+      <button ${step.button_enabled ? '' : 'disabled'}>${esc(step.button_label || '확인')}</button>
+    </div>`).join('');
+  document.getElementById('content').innerHTML = `<h2>새 시즌 준비 마법사</h2>
+  <div class="manualBox"><strong>${esc(msg.status || '')}</strong>
+    <p>${esc(msg.description || '')}</p>
+    ${msg.reason ? `<p class="bad"><strong>이유</strong>: ${esc(msg.reason)}</p>` : ''}
+    <p><strong>다음 단계</strong>: ${esc(msg.next_action || '')}</p>
+    <p class="muted">내부 상태: request_creation_possible=${esc(s.request_creation_possible)} / block_reason=${esc(s.block_reason || '-')} / plan_status=${esc(s.plan_status || '-')}</p>
+  </div>
+  ${s.new_season_ready ? '<div class="danger" style="background:#166534">새 시즌 시작 준비 완료</div>' : '<div class="manualBox"><strong>아직 준비가 끝나지 않았습니다.</strong><p>아래 단계 중 차단된 항목을 먼저 처리하세요.</p></div>'}
+  <div class="manualBox">
+    <h3>UI에서 진행하기</h3>
+    <p class="muted">아래 버튼은 KIS 주문 API를 직접 호출하지 않습니다. 전량매도 요청 생성은 manual_order_requests 큐에 요청만 만들고, 실제 주문은 실행 중인 Bot Core가 기존 안전장치를 거쳐 처리합니다.</p>
+    <p><button class="primary" onclick="prepareNewSeasonNext()">새 시즌 준비 계속 진행</button></p>
+    <p class="muted">이 버튼은 현재 상태를 읽고 다음으로 가능한 안전 단계만 진행합니다. 막힌 경우에는 무엇을 입력하거나 확인해야 하는지 알려줍니다.</p>
+    <div class="grid">
+      <div class="controlCard">
+        <h4>1. 이전 시즌 백업</h4>
+        <button onclick="newSeasonArchive(false)">백업 dry-run</button>
+        <button onclick="newSeasonArchive(true)">백업 생성</button>
+      </div>
+      <div class="controlCard">
+        <h4>2~3. 잔고 snapshot으로 전량매도 예정표 생성</h4>
+        <input id="kisBalancePath" placeholder="KIS 잔고 snapshot JSON 경로" value="${esc(window.kisBalancePath || '')}">
+        <input id="planMaxAge" type="number" value="${esc(window.planMaxAge || 60)}" min="1" style="width:90px"> 분 유효
+        <p><button onclick="newSeasonPlan(false)">예정표 dry-run</button>
+        <button onclick="newSeasonPlan(true)">예정표 생성</button></p>
+      </div>
+      <div class="controlCard">
+        <h4>4. 전량매도 요청 생성</h4>
+        <input id="liquidationPlanPath" placeholder="exports/liquidation_plan_...json" value="${esc(window.liquidationPlanPath || s.plan_path || '')}">
+        <input id="liquidationConfirm" placeholder="전량매도 요청 확인" value="${esc(window.liquidationConfirm || '')}">
+        <p><button onclick="newSeasonRequests(false)">요청 dry-run</button>
+        <button onclick="newSeasonRequests(true)">manual SELL request 생성</button></p>
+      </div>
+      <div class="controlCard dangerZone">
+        <h4>6. DB 초기화</h4>
+        <input id="resetConfirm" placeholder="RESET 확인" value="${esc(window.resetConfirm || '')}">
+        <p><button onclick="newSeasonReset(false)">reset dry-run</button>
+        <button class="dangerBtn" onclick="newSeasonReset(true)">DB 초기화 실행</button></p>
+        <p class="bad">OPEN LOT, 미체결, 미처리 요청, SYNC_REQUIRED가 있으면 차단됩니다.</p>
+      </div>
+    </div>
+    <h3>실행 결과</h3><pre id="newSeasonResult">${esc(window.newSeasonLastResult || '')}</pre>
+  </div>
+  <div class="grid">${steps}</div>
+  <h3>상세 진단값</h3>${metrics(s)}`;
+}
+async function newSeasonArchive(execute) {
+  if (execute && !confirm('현재 config/DB/log를 archive에 백업합니다. 계속할까요?')) return;
+  const r = await api('/api/new-season/archive', {method:'POST', body:JSON.stringify({execute})});
+  window.newSeasonArchiveDone = execute || window.newSeasonArchiveDone;
+  window.newSeasonLastResult = JSON.stringify(r, null, 2);
+  await loadNewSeason();
+}
+function rememberNewSeasonInputs() {
+  window.kisBalancePath = document.getElementById('kisBalancePath')?.value || window.kisBalancePath || '';
+  window.planMaxAge = document.getElementById('planMaxAge')?.value || window.planMaxAge || 60;
+  window.liquidationPlanPath = document.getElementById('liquidationPlanPath')?.value || window.liquidationPlanPath || '';
+  window.liquidationConfirm = document.getElementById('liquidationConfirm')?.value || window.liquidationConfirm || '';
+  window.resetConfirm = document.getElementById('resetConfirm')?.value || window.resetConfirm || '';
+}
+async function newSeasonPlan(execute) {
+  rememberNewSeasonInputs();
+  const kis_balance_json_path = document.getElementById('kisBalancePath').value;
+  const max_age_minutes = Number(document.getElementById('planMaxAge').value || 60);
+  if (execute && !kis_balance_json_path) { alert('KIS 잔고 snapshot JSON 경로가 필요합니다.'); return; }
+  const r = await api('/api/new-season/liquidation-plan', {method:'POST', body:JSON.stringify({execute, kis_balance_json_path, max_age_minutes})});
+  window.newSeasonLastResult = JSON.stringify(r, null, 2);
+  if (r.result && r.result.plan_path) window.liquidationPlanPath = r.result.plan_path;
+  await loadNewSeason();
+  if (r.result && r.result.plan_path) document.getElementById('liquidationPlanPath').value = r.result.plan_path;
+}
+async function newSeasonRequests(execute) {
+  rememberNewSeasonInputs();
+  const kis_balance_json_path = document.getElementById('kisBalancePath').value;
+  const plan_path = document.getElementById('liquidationPlanPath').value;
+  const confirmText = document.getElementById('liquidationConfirm').value;
+  if (execute && confirmText !== '전량매도 요청 확인') { alert('confirm text로 "전량매도 요청 확인"을 입력해야 합니다.'); return; }
+  const r = await api('/api/new-season/liquidation-requests', {method:'POST', body:JSON.stringify({execute, kis_balance_json_path, plan_path, confirm: confirmText})});
+  window.newSeasonLastResult = JSON.stringify(r, null, 2);
+  await loadNewSeason();
+}
+async function newSeasonReset(execute) {
+  rememberNewSeasonInputs();
+  const confirmText = document.getElementById('resetConfirm').value;
+  if (execute && confirmText !== 'RESET 확인') { alert('confirm text로 "RESET 확인"을 입력해야 합니다.'); return; }
+  if (execute && !confirm('DB 초기화는 되돌리기 어렵습니다. archive와 전량매도/reconciliation 완료를 확인했나요?')) return;
+  const r = await api('/api/new-season/reset-db', {method:'POST', body:JSON.stringify({execute, confirm: confirmText})});
+  window.newSeasonLastResult = JSON.stringify(r, null, 2);
+  await loadNewSeason();
+}
+async function prepareNewSeasonNext() {
+  rememberNewSeasonInputs();
+  const s = await api('/api/new-season/status');
+  if (!window.newSeasonArchiveDone) {
+    if (!confirm('1단계로 현재 config/DB/log 백업을 생성합니다. 계속할까요?')) return;
+    await newSeasonArchive(true);
+    return;
+  }
+  const needsPlan = !s.current_plan_exists || ['liquidation_plan_missing','liquidation_plan_not_active','liquidation_plan_db_changed','liquidation_plan_snapshot_expired','liquidation_plan_stale'].includes(s.block_reason);
+  if (needsPlan && (s.open_lot_count || 0) > 0) {
+    if (!window.kisBalancePath) { alert('2단계에서 KIS 잔고 snapshot JSON 경로를 입력한 뒤 다시 진행하세요.'); return; }
+    if (!confirm('현재 DB와 KIS 잔고 snapshot 기준으로 전량매도 예정표를 새로 생성합니다. 계속할까요?')) return;
+    await newSeasonPlan(true);
+    return;
+  }
+  if (s.request_creation_possible && (s.open_lot_count || 0) > 0) {
+    if (!window.liquidationPlanPath && s.plan_path) window.liquidationPlanPath = s.plan_path;
+    if (!window.kisBalancePath) { alert('전량매도 요청 생성에는 KIS 잔고 snapshot 경로가 필요합니다.'); return; }
+    if (!window.liquidationConfirm) { alert('확인 문구 "전량매도 요청 확인"을 입력한 뒤 다시 진행하세요.'); return; }
+    await newSeasonRequests(true);
+    return;
+  }
+  if ((s.open_lot_count || 0) > 0 || (s.pending_order_count || 0) > 0 || (s.pending_manual_request_count || 0) > 0) {
+    alert('전량매도 요청 처리, 체결, reconciliation 완료가 먼저 필요합니다. 현재 차단 사유: ' + (s.block_reason_ko || s.block_reason || '-'));
+    return;
+  }
+  if (s.reset_possible) {
+    if (!window.resetConfirm) { alert('DB 초기화를 실행하려면 확인 문구 "RESET 확인"을 입력하세요.'); return; }
+    await newSeasonReset(true);
+    return;
+  }
+  alert(s.guidance?.next_action || '현재 단계에서 자동으로 진행할 수 있는 작업이 없습니다. 화면의 차단 이유를 확인하세요.');
 }
 async function loadReviewRequired() {
   currentView = 'reviewRequired';
   const r = await api('/api/review-required');
   const rows = r.items || [];
+  window.reviewRequiredRows = rows;
   document.getElementById('content').innerHTML = `<h2>수동검토 필요</h2>
   <div class="manualBox"><strong>처리 원칙</strong><p>${(r.guide || []).map(esc).join('<br>')}</p></div>
-  ${table(rows, 'reviewRequired', {actions:true})}
+  ${table(window.reviewRequiredRows, 'reviewRequired', {actions:true})}
   <div id="reviewResult"></div>`;
 }
 async function reviewRecheck(code) {
@@ -586,9 +718,66 @@ function renderConfigField(meta) {
   const danger = meta.danger_confirm_required ? '<span class="critical"> 이중 확인 필요</span>' : '';
   let input = '';
   if (meta.type === 'boolean') input = `<select onchange="configInputChanged('${esc(meta.key)}', this.value, '${esc(meta.config_format)}')"><option value="true" ${current===true?'selected':''}>true</option><option value="false" ${current===false?'selected':''}>false</option></select>`;
+  else if (meta.type === 'json' && Array.isArray(current)) input = renderStructuredJsonEditor(meta, current);
   else if (meta.type === 'json') input = `<textarea onchange="configInputChanged('${esc(meta.key)}', this.value, 'json')">${esc(JSON.stringify(current, null, 2))}</textarea>`;
   else input = `<input type="${meta.type === 'time' ? 'time' : 'text'}" value="${esc(toDisplay(current, meta))}" onchange="configInputChanged('${esc(meta.key)}', this.value, '${esc(meta.config_format)}')">`;
   return `<div class="field ${changed ? 'changed' : ''}"><div><label>${esc(meta.label_ko)}</label><small>${esc(meta.key)}</small></div><div>${input}<small>${esc(meta.description_ko || '')}${danger}<br>단위: ${esc(meta.unit || '')} / 저장 형식: ${esc(meta.config_format || '')} / 재시작 필요: ${meta.requires_restart ? '예' : '아니오'}</small></div><div><small>현재값</small>${esc(toDisplay(original, meta))}</div></div>`;
+}
+const STRUCTURED_JSON_TEMPLATES = {
+  'strategy.price_lot_bands': {keys:['min_price','max_price','lot_unit_amount','max_symbol_amount','max_lots','enabled','note'], row:{min_price:0,max_price:0,lot_unit_amount:0,max_symbol_amount:0,enabled:true,note:''}},
+  'strategy.add_buy_lot_bands': {keys:['min_lots','max_lots','drop_rate','add_lot_count'], row:{min_lots:1,max_lots:1,drop_rate:0.04,add_lot_count:1}},
+  'strategy.target_profit_lot_bands': {keys:['min_lots','max_lots','target_profit_rate'], row:{min_lots:1,max_lots:1,target_profit_rate:0.06}},
+  'strategy.exposure_buy_bands': {keys:['min_exposure','max_exposure','drop_pct','amount'], row:{min_exposure:0,max_exposure:0,drop_pct:0,amount:0}},
+  'strategy.exposure_sell_bands': {keys:['min_exposure','max_exposure','target_profit_pct'], row:{min_exposure:0,max_exposure:0,target_profit_pct:0}}
+};
+function structuredJsonKeys(path, rows) {
+  const template = STRUCTURED_JSON_TEMPLATES[path];
+  if (template) return template.keys;
+  const keys = new Set();
+  (rows || []).forEach(row => Object.keys(row || {}).forEach(k => keys.add(k)));
+  return Array.from(keys);
+}
+function renderStructuredJsonEditor(meta, rows) {
+  const path = meta.key;
+  const keys = structuredJsonKeys(path, rows);
+  const body = (rows || []).map((row, idx) => `<tr>${keys.map(k => `<td>${structuredJsonInput(path, idx, k, row ? row[k] : undefined)}</td>`).join('')}<td><button onclick="removeStructuredJsonRow('${esc(path)}', ${idx})">행 삭제</button></td></tr>`).join('');
+  return `<div class="structuredEditor">
+    <p class="muted">배열형 설정은 표에서 바로 수정합니다. 원본 JSON은 아래 고급 보기에서 확인할 수 있습니다.</p>
+    <div class="tableWrap"><table><thead><tr>${keys.map(k => `<th>${headerLabel(k)}</th>`).join('')}<th>작업<span class="key">actions</span></th></tr></thead><tbody>${body || `<tr><td colspan="${keys.length + 1}"><span class="empty">행 없음</span></td></tr>`}</tbody></table></div>
+    <button onclick="addStructuredJsonRow('${esc(path)}')">행 추가</button>
+    <details><summary>이 항목 원본 JSON 보기</summary><textarea onchange="configInputChanged('${esc(path)}', this.value, 'json')">${esc(JSON.stringify(rows || [], null, 2))}</textarea></details>
+  </div>`;
+}
+function structuredJsonInput(path, rowIndex, key, value) {
+  if (typeof value === 'boolean') {
+    return `<select onchange="structuredJsonInputChanged('${esc(path)}', ${rowIndex}, '${esc(key)}', this.value, 'boolean')"><option value="true" ${value===true?'selected':''}>true</option><option value="false" ${value===false?'selected':''}>false</option></select>`;
+  }
+  const type = typeof value === 'number' ? 'number' : 'text';
+  return `<input type="${type}" value="${esc(value ?? '')}" onchange="structuredJsonInputChanged('${esc(path)}', ${rowIndex}, '${esc(key)}', this.value, '${type}')">`;
+}
+function structuredJsonInputChanged(path, rowIndex, key, value, type) {
+  const rows = getPath(configDraft, path) || [];
+  const row = rows[rowIndex] || {};
+  let parsed = value;
+  if (type === 'boolean') parsed = value === 'true';
+  else if (type === 'number') parsed = value === '' ? null : Number(value);
+  row[key] = parsed;
+  rows[rowIndex] = row;
+  setPath(configDraft, path, rows);
+  renderConfig(window.configSection);
+}
+function addStructuredJsonRow(path) {
+  const rows = getPath(configDraft, path) || [];
+  const template = STRUCTURED_JSON_TEMPLATES[path];
+  rows.push(template ? JSON.parse(JSON.stringify(template.row)) : {});
+  setPath(configDraft, path, rows);
+  renderConfig(window.configSection);
+}
+function removeStructuredJsonRow(path, rowIndex) {
+  const rows = getPath(configDraft, path) || [];
+  rows.splice(rowIndex, 1);
+  setPath(configDraft, path, rows);
+  renderConfig(window.configSection);
 }
 function getPath(obj, path) { return path.split('.').reduce((acc,k) => acc == null ? undefined : acc[k], obj); }
 function setPath(obj, path, value) { const parts = path.split('.'); let target = obj; parts.slice(0,-1).forEach(k => { if (!target[k]) target[k] = {}; target = target[k]; }); target[parts.at(-1)] = value; }
@@ -776,6 +965,18 @@ class UIHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/manual-orders":
                 self._send_json(self.service.create_manual_order_request(data))
+                return
+            if parsed.path == "/api/new-season/archive":
+                self._send_json(self.service.new_season_archive(bool(data.get("execute", False))))
+                return
+            if parsed.path == "/api/new-season/liquidation-plan":
+                self._send_json(self.service.new_season_create_plan(data.get("kis_balance_json_path", ""), bool(data.get("execute", False)), int(data.get("max_age_minutes") or 60)))
+                return
+            if parsed.path == "/api/new-season/liquidation-requests":
+                self._send_json(self.service.new_season_create_liquidation_requests(data.get("plan_path", ""), data.get("kis_balance_json_path", ""), data.get("confirm", ""), bool(data.get("execute", False))))
+                return
+            if parsed.path == "/api/new-season/reset-db":
+                self._send_json(self.service.new_season_reset_db(data.get("confirm", ""), bool(data.get("execute", False))))
                 return
             if parsed.path.startswith("/api/positions/") and parsed.path.endswith("/review/recheck"):
                 code = parsed.path.split("/")[3].zfill(6)

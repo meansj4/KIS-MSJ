@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import importlib.util
 import os
 import re
 import shutil
@@ -23,6 +24,36 @@ from .strategy import LotGridStrategy, StrategyAction
 
 SENSITIVE_PARTS = ("account", "acct", "cano", "acnt", "appkey", "appsecret", "token", "authorization", "auth")
 RISK_FLAGS = ("trading_halted", "administrative_issue", "investment_alert", "audit_opinion_issue", "delisting_risk", "accounting_issue", "liquidity_warning")
+
+NEW_SEASON_REASON_GUIDE: dict[str, dict[str, str]] = {
+    "": {"title": "진행 가능", "description": "현재 단계의 조건을 만족했습니다.", "next_action": "다음 단계로 진행하세요."},
+    "liquidation_plan_missing": {"title": "전량매도 예정표가 없습니다.", "description": "현재 DB와 실제 계좌 잔고를 기준으로 만든 전량매도 예정표가 아직 없습니다.", "next_action": "3단계에서 전량매도 예정표를 생성하세요."},
+    "liquidation_plan_not_active": {"title": "현재 예정표가 유효하지 않습니다.", "description": "예정표가 ACTIVE 상태가 아니어서 전량매도 요청 생성에 사용할 수 없습니다.", "next_action": "전량매도 예정표를 새로 생성하세요."},
+    "liquidation_plan_stale": {"title": "예정표가 오래되었습니다.", "description": "예정표 생성 후 시간이 지나 최신 상태라고 보기 어렵습니다.", "next_action": "최신 DB/잔고 기준으로 예정표를 다시 생성하세요."},
+    "liquidation_plan_db_changed": {"title": "예정표 생성 후 보유 LOT이 변경되었습니다.", "description": "DB의 OPEN LOT 상태가 예정표 생성 시점과 달라졌습니다.", "next_action": "전량매도 예정표를 다시 생성하세요."},
+    "liquidation_plan_snapshot_expired": {"title": "KIS 잔고 확인 자료가 만료되었습니다.", "description": "실제 계좌 잔고 확인 자료가 오래되어 현재 상태를 보장할 수 없습니다.", "next_action": "최신 KIS 잔고 snapshot을 준비한 뒤 예정표를 다시 생성하세요."},
+    "liquidation_kis_balance_fetch_required": {"title": "실제 계좌 잔고 확인 자료가 필요합니다.", "description": "DB 수량만으로는 전량매도 요청을 만들 수 없습니다.", "next_action": "KIS 잔고 snapshot을 준비하거나 선택하세요."},
+    "liquidation_kis_balance_mismatch": {"title": "DB 보유수량과 실제 계좌 잔고가 다릅니다.", "description": "전량매도 요청 수량이 실제 계좌와 맞지 않을 수 있습니다.", "next_action": "reconciliation/sync 상태를 먼저 확인하세요."},
+    "liquidation_sellable_quantity_insufficient": {"title": "매도가능수량이 부족합니다.", "description": "실제 계좌의 매도가능수량이 전량매도 요청 수량보다 적습니다.", "next_action": "미체결 주문 또는 계좌 상태를 확인하세요."},
+    "liquidation_open_order_exists": {"title": "미체결 주문이 있습니다.", "description": "이미 진행 중인 주문이 있어 전량매도 요청을 만들 수 없습니다.", "next_action": "주문이 체결/취소될 때까지 기다리거나 주문 상태를 확인하세요."},
+    "liquidation_pending_manual_sell_exists": {"title": "처리 중인 수동 매도 요청이 있습니다.", "description": "같은 종목 또는 LOT에 대한 수동 매도 요청이 아직 끝나지 않았습니다.", "next_action": "수동 요청 처리가 끝난 뒤 다시 확인하세요."},
+    "liquidation_plan_pending_work_created": {"title": "예정표 생성 후 진행 중 작업이 생겼습니다.", "description": "예정표 생성 이후 미체결 주문 또는 미처리 수동 요청이 생겼습니다.", "next_action": "진행 중 작업을 정리하고 예정표를 다시 생성하세요."},
+    "liquidation_plan_sync_required": {"title": "동기화가 필요합니다.", "description": "SYNC_REQUIRED 상태가 있어 전량매도 요청 생성이 차단됩니다.", "next_action": "reconciliation을 먼저 완료하세요."},
+    "liquidation_plan_lot_mismatch": {"title": "LOT 수량 불일치가 있습니다.", "description": "DB LOT 수량과 포지션/실제 계좌 수량이 맞지 않을 가능성이 있습니다.", "next_action": "수량 불일치를 해결한 뒤 다시 시도하세요."},
+    "reset_open_lot_exists": {"title": "아직 보유 LOT이 남아 있습니다.", "description": "OPEN LOT이 남아 있어 DB 초기화를 할 수 없습니다.", "next_action": "전량매도와 체결 동기화를 완료하세요."},
+    "reset_pending_order_exists": {"title": "미체결 주문이 있습니다.", "description": "진행 중 주문이 있어 DB 초기화를 할 수 없습니다.", "next_action": "주문 상태를 확인하고 종결될 때까지 기다리세요."},
+    "reset_pending_manual_request_exists": {"title": "미처리 수동 요청이 있습니다.", "description": "manual_order_requests에 아직 진행 중인 요청이 있습니다.", "next_action": "수동 요청 처리를 완료하세요."},
+    "reset_sync_required": {"title": "DB와 실제 계좌 동기화가 필요합니다.", "description": "SYNC_REQUIRED 상태에서는 DB 초기화가 위험합니다.", "next_action": "reconciliation을 먼저 완료하세요."},
+}
+
+PLAN_STATUS_GUIDE: dict[str, str] = {
+    "ACTIVE": "현재 전량매도 예정표가 유효합니다.",
+    "EXPIRED": "예정표가 오래되어 새로 만들어야 합니다.",
+    "SUPERSEDED": "더 최신 예정표가 있어 이 예정표는 사용할 수 없습니다.",
+    "USED": "이미 전량매도 요청 생성에 사용된 예정표입니다.",
+    "BLOCKED": "차단 사유가 있어 사용할 수 없습니다.",
+    "": "전량매도 예정표가 아직 없습니다.",
+}
 
 
 CONFIG_METADATA: tuple[dict[str, Any], ...] = (
@@ -372,6 +403,20 @@ class UIService:
             block_reason = "liquidation_plan_sync_required"
         elif lot_mismatch:
             block_reason = "liquidation_plan_lot_mismatch"
+        reset_reasons = []
+        if open_lots:
+            reset_reasons.append("reset_open_lot_exists")
+        if pending_orders:
+            reset_reasons.append("reset_pending_order_exists")
+        if pending_manual:
+            reset_reasons.append("reset_pending_manual_request_exists")
+        if sync_required:
+            reset_reasons.append("reset_sync_required")
+        if lot_mismatch:
+            reset_reasons.append("liquidation_plan_lot_mismatch")
+        ready = not reset_reasons and self.config.risk.profile == "expansion_100_safe" and len(self.config.stocks) >= 100
+        user_message = self._new_season_user_message(block_reason, reset_reasons)
+        plan_status = str(plan.get("status") or "")
         return {
             "open_lot_count": len(open_lots),
             "pending_order_count": len(pending_orders),
@@ -393,8 +438,60 @@ class UIService:
             "plan_kis_snapshot_hash": plan.get("kis_snapshot_hash", ""),
             "request_creation_possible": block_reason == "",
             "block_reason": block_reason,
-            "guidance": self._new_season_guidance(block_reason),
+            "block_reason_ko": _reason_guide(block_reason)["title"] if block_reason else "",
+            "block_reason_description_ko": _reason_guide(block_reason)["description"] if block_reason else "",
+            "next_action_ko": _reason_guide(block_reason)["next_action"] if block_reason else "전량매도 요청을 생성할 수 있습니다.",
+            "plan_status_description_ko": PLAN_STATUS_GUIDE.get(plan_status, plan_status),
+            "reset_possible": not reset_reasons,
+            "reset_block_reasons": reset_reasons,
+            "reset_block_guides": [_reason_guide(reason) for reason in reset_reasons],
+            "new_season_ready": ready,
+            "new_season_ready_message": "새 시즌 시작 준비 완료" if ready else "새 시즌 시작 준비가 아직 완료되지 않았습니다.",
+            "wizard_steps": self._new_season_wizard_steps(block_reason, reset_reasons, plan_status, bool(plan), plan_expired, db_matches, ready),
+            "guidance": user_message,
         }
+
+    def new_season_archive(self, execute: bool = False) -> dict[str, Any]:
+        module = _prepare_new_season_module()
+        result = module.archive_current_state(self.config_path, Path("archive"), dry_run=not execute)
+        self._append_audit_log("new_season_archive_requested", {"execute": execute, "result": result})
+        return {"executed": execute, "order_api_called": False, "db_reset_executed": False, "result": result}
+
+    def new_season_create_plan(self, kis_balance_json_path: str = "", execute: bool = False, max_age_minutes: int = 60) -> dict[str, Any]:
+        module = _prepare_new_season_module()
+        balance_path = Path(kis_balance_json_path) if kis_balance_json_path else None
+        try:
+            balances = module.load_kis_balance_json(balance_path) if balance_path else None
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            return {"created": False, "reason": "liquidation_kis_balance_fetch_failed", "message": str(error), "order_api_called": False}
+        result = module.liquidation_plan(
+            self.config_path,
+            Path("exports"),
+            dry_run=not execute,
+            kis_balances=balances,
+            kis_balance_path=balance_path,
+            max_age_minutes=max_age_minutes,
+        )
+        self._append_audit_log("new_season_liquidation_plan_requested", {"execute": execute, "kis_balance_json_path": str(balance_path or ""), "result": {key: result.get(key) for key in ("plan_path", "status", "item_count", "source")}})
+        return {"created": execute, "order_api_called": False, "db_reset_executed": False, "result": result}
+
+    def new_season_create_liquidation_requests(self, plan_path: str = "", kis_balance_json_path: str = "", confirm: str = "", execute: bool = False) -> dict[str, Any]:
+        module = _prepare_new_season_module()
+        result = module.create_liquidation_manual_requests(
+            self.config_path,
+            confirm,
+            dry_run=not execute,
+            kis_balance_path=Path(kis_balance_json_path) if kis_balance_json_path else None,
+            plan_path=Path(plan_path) if plan_path else None,
+        )
+        self._append_audit_log("new_season_liquidation_requests_requested", {"execute": execute, "plan_path": plan_path, "kis_balance_json_path": kis_balance_json_path, "result": result})
+        return {"executed": execute, "order_api_called": False, "db_reset_executed": False, "result": result}
+
+    def new_season_reset_db(self, confirm: str = "", execute: bool = False) -> dict[str, Any]:
+        module = _prepare_new_season_module()
+        result = module.reset_db(self.config_path, confirm, dry_run=not execute)
+        self._append_audit_log("new_season_reset_requested", {"execute": execute, "result": result})
+        return {"executed": execute and bool(result.get("reset")), "order_api_called": False, "result": result}
 
     def risk_banner(self, config: BotConfig) -> dict[str, Any]:
         warnings = []
@@ -717,6 +814,128 @@ class UIService:
             "liquidation_plan_lot_mismatch": "LOT 수량 불일치가 있어 전량매도 요청 생성이 차단됩니다.",
         }
         return messages.get(block_reason, block_reason)
+
+    def _new_season_user_message(self, block_reason: str, reset_reasons: list[str]) -> dict[str, Any]:
+        if block_reason:
+            guide = _reason_guide(block_reason)
+            return {
+                "status": "전량매도 요청 생성 불가",
+                "reason": guide["title"],
+                "description": guide["description"],
+                "next_action": guide["next_action"],
+            }
+        if reset_reasons:
+            first = _reason_guide(reset_reasons[0])
+            return {
+                "status": "DB 초기화 준비 미완료",
+                "reason": first["title"],
+                "description": first["description"],
+                "next_action": first["next_action"],
+            }
+        return {
+            "status": "새 시즌 시작 준비 완료",
+            "reason": "",
+            "description": "DB 초기화를 막는 보유/미체결/동기화 문제가 없습니다.",
+            "next_action": "새 시즌 config와 봇 실행 설정을 최종 확인하세요.",
+        }
+
+    def _new_season_wizard_steps(
+        self,
+        block_reason: str,
+        reset_reasons: list[str],
+        plan_status: str,
+        plan_exists: bool,
+        plan_expired: bool,
+        db_matches: bool,
+        ready: bool,
+    ) -> list[dict[str, Any]]:
+        snapshot_ok = bool(plan_exists and plan_status == "ACTIVE" and not plan_expired and not block_reason.startswith("liquidation_kis"))
+        plan_ok = bool(plan_exists and plan_status == "ACTIVE" and not plan_expired and db_matches)
+        request_ok = block_reason == ""
+        reset_ok = not reset_reasons
+        config_ok = self.config.risk.profile == "expansion_100_safe" and len(self.config.stocks) >= 100
+        return [
+            {
+                "step": 1,
+                "title": "이전 시즌 백업",
+                "status": "확인 필요",
+                "description": "현재 DB/config/log를 archive에 백업합니다.",
+                "button_label": "백업 생성",
+                "button_enabled": False,
+                "disabled_reason": "UI에서는 아직 실행 버튼 없이 절차 안내만 제공합니다. 스크립트 dry-run 후 실행하세요.",
+                "next_action": "scripts/prepare_new_season.py --archive 명령으로 백업을 생성하세요.",
+            },
+            {
+                "step": 2,
+                "title": "실제 계좌 잔고 확인",
+                "status": "검증 완료" if snapshot_ok else "snapshot 필요",
+                "description": "DB 보유수량과 실제 KIS 잔고가 일치하는지 확인하기 위한 자료가 필요합니다.",
+                "button_label": "잔고 snapshot 선택",
+                "button_enabled": False,
+                "disabled_reason": "" if snapshot_ok else "최신 KIS 잔고 snapshot을 준비해야 합니다.",
+                "next_action": "주문이 아닌 잔고 조회 자료를 준비한 뒤 예정표를 생성하세요.",
+            },
+            {
+                "step": 3,
+                "title": "전량매도 예정표 생성",
+                "status": "최신" if plan_ok else ("만료됨" if plan_expired else "새로 생성 필요"),
+                "description": "현재 DB와 KIS 잔고를 기준으로 어떤 LOT을 전량매도해야 하는지 계산합니다.",
+                "button_label": "전량매도 예정표 생성",
+                "button_enabled": False,
+                "disabled_reason": "UI에서는 안전상 직접 생성하지 않고 스크립트/CLI 절차를 사용합니다.",
+                "next_action": "KIS 잔고 snapshot을 포함해 liquidation plan을 새로 생성하세요." if not plan_ok else "다음 단계로 진행할 수 있습니다.",
+            },
+            {
+                "step": 4,
+                "title": "전량매도 요청 생성",
+                "status": "생성 가능" if request_ok else "차단됨",
+                "description": "예정표 기준으로 봇에게 전량매도를 요청합니다. UI는 직접 주문하지 않고 manual_order_requests 큐만 사용합니다.",
+                "button_label": "전량매도 요청 생성",
+                "button_enabled": False,
+                "disabled_reason": "" if request_ok else _reason_guide(block_reason)["title"],
+                "next_action": "confirm text '전량매도 요청 확인'으로 request 생성 절차를 실행하세요." if request_ok else _reason_guide(block_reason)["next_action"],
+            },
+            {
+                "step": 5,
+                "title": "체결 및 동기화 확인",
+                "status": "완료" if reset_ok else "확인 필요",
+                "description": "전량매도 요청이 체결되고 DB와 KIS 잔고가 맞는지 확인합니다.",
+                "button_label": "동기화 상태 새로고침",
+                "button_enabled": True,
+                "disabled_reason": "",
+                "next_action": "미체결 주문/수동 요청/SYNC_REQUIRED가 사라졌는지 확인하세요.",
+            },
+            {
+                "step": 6,
+                "title": "DB 초기화",
+                "status": "가능" if reset_ok else "차단됨",
+                "description": "OPEN LOT 0개, 미체결 주문 0개, 미처리 요청 0개, sync mismatch 없음일 때만 가능합니다.",
+                "button_label": "DB 초기화",
+                "button_enabled": False,
+                "disabled_reason": ", ".join(_reason_guide(reason)["title"] for reason in reset_reasons),
+                "next_action": "RESET 확인 문구는 모든 차단 조건이 해소된 뒤에만 사용하세요." if reset_ok else _reason_guide(reset_reasons[0])["next_action"],
+            },
+            {
+                "step": 7,
+                "title": "새 100종목 config 적용 확인",
+                "status": "적용됨" if config_ok else "확인 필요",
+                "description": "expansion_100_safe profile과 KOSPI 100 후보군이 적용되었는지 확인합니다.",
+                "button_label": "config 확인",
+                "button_enabled": True,
+                "disabled_reason": "",
+                "next_action": "Config 탭에서 profile, stocks, risk limit을 확인하세요.",
+            },
+            {
+                "step": 8,
+                "title": "새 시즌 시작 준비 완료",
+                "status": "준비 완료" if ready else "아직 불가",
+                "description": "모든 차단 조건이 사라지면 봇을 새 시즌 설정으로 운용할 수 있습니다.",
+                "button_label": "봇 실행 가이드 보기",
+                "button_enabled": ready,
+                "disabled_reason": "" if ready else "앞 단계의 차단 조건을 먼저 해결해야 합니다.",
+                "next_action": "runtime/config를 최종 확인하고 봇을 시작하세요." if ready else "wizard에서 차단된 단계를 먼저 처리하세요.",
+            },
+        ]
 
     def positions(self) -> list[dict[str, Any]]:
         return self._table("positions")
@@ -1269,6 +1488,20 @@ def _mask_sensitive(value: str) -> str:
 def _stable_hash(value: Any) -> str:
     payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def _prepare_new_season_module():
+    path = Path(__file__).resolve().parents[2] / "scripts" / "prepare_new_season.py"
+    spec = importlib.util.spec_from_file_location("prepare_new_season_ui", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("prepare_new_season.py not found")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _reason_guide(reason: str) -> dict[str, str]:
+    return NEW_SEASON_REASON_GUIDE.get(reason, {"title": reason or "진행 가능", "description": reason, "next_action": "상태를 다시 확인하세요."})
 
 
 def _parse_key_values(body: str) -> dict[str, str]:

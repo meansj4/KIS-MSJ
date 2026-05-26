@@ -201,6 +201,9 @@ def test_config_form_and_table_sorting_scripts_are_present():
     assert "table(o, 'orders')" in INDEX_HTML
     assert "table(f, 'fills')" in INDEX_HTML
     assert "function renderConfigField" in INDEX_HTML
+    assert "function renderStructuredJsonEditor" in INDEX_HTML
+    assert "function addStructuredJsonRow" in INDEX_HTML
+    assert "function removeStructuredJsonRow" in INDEX_HTML
     assert "decimal_rate" in INDEX_HTML
     assert "danger_confirm_required" in INDEX_HTML
     assert "고급 / 원본 JSON 보기" in INDEX_HTML
@@ -226,6 +229,8 @@ def test_config_form_and_table_sorting_scripts_are_present():
     assert "openManualSell" in INDEX_HTML
     assert "tableWrap" in INDEX_HTML
     assert "DEFAULT_COLUMNS" in INDEX_HTML
+    assert "manualRequests:" in INDEX_HTML
+    assert "reviewRequired:" in INDEX_HTML
     assert "columnControls" in INDEX_HTML
     assert "showAllColumns" in INDEX_HTML
     assert "전체보기" in INDEX_HTML
@@ -237,6 +242,10 @@ def test_config_form_and_table_sorting_scripts_are_present():
     assert "Start / 루프 재개" in INDEX_HTML
     assert "Reset / Config 다시 읽기" in INDEX_HTML
     assert "/api/runtime/reload-config" in INDEX_HTML
+    assert "새 시즌 준비 계속 진행" in INDEX_HTML
+    assert "function prepareNewSeasonNext" in INDEX_HTML
+    assert "대시보드 Dashboard" in INDEX_HTML
+    assert "수동 주문 Manual" in INDEX_HTML
     assert "manualBuyPrice" in INDEX_HTML
     assert "manualSellPrice" in INDEX_HTML
     assert "Execution Check" not in INDEX_HTML
@@ -740,6 +749,108 @@ def test_new_season_status_reports_stale_plan_after_lot_change(tmp_path, monkeyp
     assert before["request_creation_possible"] is True
     assert after["plan_db_matches_current"] is False
     assert after["block_reason"] == "liquidation_plan_db_changed"
+
+
+def test_new_season_status_explains_missing_plan_and_open_lot_reset_block(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config_path, db_path, _ = _write_config(tmp_path)
+    store = StateStore(db_path)
+    store.save_position(PositionState("005930", "Samsung", quantity=1, current_price=10000, position_state=PositionLifecycle.HOLDING.value))
+    store.save_lot(
+        LotState(
+            "LOT-OPEN",
+            "005930",
+            "2026-05-01T09:05:00",
+            buy_price=10000,
+            buy_quantity=1,
+            buy_amount=10000,
+            remaining_quantity=1,
+            target_profit_pct=6.0,
+            target_sell_price=10600,
+        )
+    )
+    service = UIService(config_path, tmp_path / "runtime.json")
+
+    status = service.new_season_status()
+
+    assert status["request_creation_possible"] is False
+    assert status["block_reason"] == "liquidation_plan_missing"
+    assert status["block_reason_ko"] == "전량매도 예정표가 없습니다."
+    assert "전량매도 예정표" in status["next_action_ko"]
+    assert status["reset_possible"] is False
+    assert "reset_open_lot_exists" in status["reset_block_reasons"]
+    assert any(step["title"] == "DB 초기화" and step["status"] == "차단됨" for step in status["wizard_steps"])
+
+
+def test_new_season_status_explains_snapshot_missing_and_ready_state(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config_path, db_path, _ = _write_config(tmp_path)
+    exports = tmp_path / "exports"
+    exports.mkdir()
+    service = UIService(config_path, tmp_path / "runtime.json")
+    current = service.new_season_status()
+    plan = {
+        "plan_id": "PLAN-BLOCKED",
+        "created_at": "2026-05-26T09:00:00",
+        "db_snapshot_at": "2026-05-26T09:00:00",
+        "kis_balance_snapshot_at": "",
+        "db_open_lot_hash": current["db_open_lot_hash"],
+        "kis_snapshot_hash": "",
+        "status": "BLOCKED",
+        "expires_at": "2099-01-01T00:00:00",
+        "status_reason": "liquidation_kis_balance_fetch_required",
+    }
+    (exports / "liquidation_plan_blocked.json").write_text(json.dumps(plan), encoding="utf-8")
+
+    blocked = service.new_season_status()
+
+    assert blocked["block_reason"] == "liquidation_plan_not_active"
+    assert blocked["request_creation_possible"] is False
+    assert "유효" in blocked["block_reason_ko"]
+
+    plan["status"] = "ACTIVE"
+    plan["kis_snapshot_hash"] = "snapshot"
+    (exports / "liquidation_plan_blocked.json").write_text(json.dumps(plan), encoding="utf-8")
+    ready = service.new_season_status()
+
+    assert ready["new_season_ready"] is False  # default test config is not expansion_100_safe with 100 stocks
+    assert ready["reset_possible"] is True
+    assert ready["request_creation_possible"] is True
+    assert ready["guidance"]["status"] == "새 시즌 시작 준비 완료"
+
+
+def test_new_season_ui_actions_are_guarded_and_do_not_call_order_api(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config_path, db_path, _ = _write_config(tmp_path)
+    store = StateStore(db_path)
+    store.save_position(PositionState("005930", "Samsung", quantity=1, current_price=10000, position_state=PositionLifecycle.HOLDING.value))
+    store.save_lot(
+        LotState(
+            "LOT-UI-PLAN",
+            "005930",
+            "2026-05-01T09:05:00",
+            buy_price=10000,
+            buy_quantity=1,
+            buy_amount=10000,
+            remaining_quantity=1,
+            target_profit_pct=6.0,
+            target_sell_price=10600,
+        )
+    )
+    balance_path = tmp_path / "kis_balance.json"
+    balance_path.write_text(json.dumps([{"code": "005930", "quantity": 1, "sellable_quantity": 1}], ensure_ascii=False), encoding="utf-8")
+    service = UIService(config_path, tmp_path / "runtime.json")
+
+    archive = service.new_season_archive(execute=False)
+    plan = service.new_season_create_plan(str(balance_path), execute=False)
+    reset = service.new_season_reset_db(confirm="RESET 확인", execute=False)
+
+    assert archive["order_api_called"] is False
+    assert plan["order_api_called"] is False
+    assert plan["result"]["dry_run"] is True
+    assert reset["result"]["reason"] == "reset_blocked_by_open_order_or_sync_mismatch"
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute("SELECT remaining_quantity FROM lots WHERE lot_id = 'LOT-UI-PLAN'").fetchone()[0] == 1
 
 
 def test_bot_loop_interrupts_promptly_for_runtime_pause(tmp_path):
