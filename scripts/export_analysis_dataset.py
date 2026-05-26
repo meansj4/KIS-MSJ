@@ -54,6 +54,9 @@ def export_analysis_dataset(
             rows = _filtered_rows(connection, table, date_from=date_from, date_to=date_to, code=code, config_hash=config_hash)
             _write_csv(target / f"{table}.csv", [_sanitize_row(dict(row)) for row in rows])
             exported[table] = len(rows)
+        skipped_actions = _skipped_actions(connection, date_from=date_from, date_to=date_to, code=code, config_hash=config_hash)
+        _write_csv(target / "skipped_actions.csv", skipped_actions)
+        exported["skipped_actions"] = len(skipped_actions)
         snapshots = _config_snapshots(connection, config_hash=config_hash)
         _write_jsonl(target / "config_snapshots.jsonl", [_sanitize_snapshot(row) for row in snapshots])
         exported["config_snapshots"] = len(snapshots)
@@ -70,6 +73,9 @@ def export_analysis_dataset(
         }
     )
     (target / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    metadata = _metadata(summary)
+    (target / "metadata.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    (target / "README.md").write_text(_readme(metadata), encoding="utf-8")
     return {"output_dir": str(target), "summary": summary}
 
 
@@ -173,6 +179,18 @@ def _summary(connection: sqlite3.Connection, exported: dict[str, int], *, date_f
     capital_used = sum(int(row["cumulative_invested_amount"] or 0) for row in positions)
     wins = sum(1 for row in closed_lots if int(row["realized_profit_loss"] or 0) >= 0)
     config_hashes = sorted({str(row["config_hash"]) for row in fills if "config_hash" in row.keys() and row["config_hash"]})
+    snapshot_rows = _config_snapshots(connection, config_hash=config_hash)
+    run_ids = sorted(
+        {
+            str(row["run_id"])
+            for row in (
+                (_filtered_rows(connection, "orders", date_from=date_from, date_to=date_to, code=code, config_hash=config_hash) if _table_exists(connection, "orders") else [])
+                + list(fills)
+                + list(snapshot_rows)
+            )
+            if "run_id" in row.keys() and row["run_id"]
+        }
+    )
     return {
         "exported_row_counts": exported,
         "total_buy_fills": len(buy_fills),
@@ -187,7 +205,108 @@ def _summary(connection: sqlite3.Connection, exported: dict[str, int], *, date_f
         "win_rate": wins / len(closed_lots) if closed_lots else 0.0,
         "max_capital_used_estimate": capital_used,
         "config_hashes": config_hashes,
+        "run_ids": run_ids,
     }
+
+
+def _skipped_actions(connection: sqlite3.Connection, *, date_from: str, date_to: str, code: str, config_hash: str) -> list[dict[str, Any]]:
+    if not _table_exists(connection, "decisions"):
+        return []
+    rows = _filtered_rows(connection, "decisions", date_from=date_from, date_to=date_to, code=code, config_hash=config_hash)
+    skipped = []
+    for row in rows:
+        data = dict(row)
+        try:
+            payload = json.loads(str(data.get("payload_json") or "{}"))
+        except json.JSONDecodeError:
+            payload = {}
+        if not (payload.get("action_created") or payload.get("final_block_reason") or payload.get("skip_reason")):
+            continue
+        skipped.append(
+            _sanitize_row(
+                {
+                    "decision_time": data.get("created_at", ""),
+                    "config_hash": data.get("config_hash", ""),
+                    "run_id": data.get("run_id", ""),
+                    "experiment_name": data.get("experiment_name", ""),
+                    "code": data.get("code", ""),
+                    "candidate_action_type": payload.get("candidate_action_type") or data.get("action", ""),
+                    "block_reason": payload.get("final_block_reason") or payload.get("block_reason", ""),
+                    "skip_reason": payload.get("skip_reason", ""),
+                    "current_price": payload.get("current_price", data.get("current_price", "")),
+                    "position_state": payload.get("position_state", ""),
+                    "current_open_lot_count": payload.get("current_open_lot_count", ""),
+                    "max_new_buy_per_day": payload.get("max_new_buy_per_day", ""),
+                    "max_new_buy_amount_per_day": payload.get("max_new_buy_amount_per_day", ""),
+                    "max_total_open_lots": payload.get("max_total_open_lots", ""),
+                    "max_total_invested_amount": payload.get("max_total_invested_amount", ""),
+                }
+            )
+        )
+    return skipped
+
+
+def _metadata(summary: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "created_at": summary.get("created_at"),
+        "source_db_path": summary.get("source_db_path"),
+        "filters": summary.get("filters", {}),
+        "included_tables": summary.get("exported_row_counts", {}),
+        "row_counts": summary.get("exported_row_counts", {}),
+        "config_hashes": summary.get("config_hashes", []),
+        "run_ids": summary.get("run_ids", []),
+        "sensitive_data_policy": "API keys, tokens, account-like config fields are masked in config snapshots.",
+        "can_analyze": [
+            "realized LOT/order/fill performance",
+            "config_hash/run_id segmented outcomes",
+            "blocked/skipped action context",
+            "manual vs automatic request outcomes",
+        ],
+        "cannot_fully_analyze_without_price_history": [
+            "accurate what-if backtests for configs not used live",
+            "post-block opportunity cost over N days",
+            "MDD/MFE between fills",
+            "limit-order fill probability",
+        ],
+        "kis_order_api_called": False,
+        "db_mutated": False,
+    }
+
+
+def _readme(metadata: dict[str, Any]) -> str:
+    return f"""# Analysis Dataset Export
+
+Created at: {metadata.get('created_at')}
+
+This dataset was exported from the local SQLite trading DB for strategy/config analysis.
+
+## Safety
+
+- KIS order API called: false
+- DB mutated: false
+- Sensitive config fields are masked in `config_snapshots.jsonl`.
+
+## Included Row Counts
+
+```json
+{json.dumps(metadata.get('row_counts', {}), ensure_ascii=False, indent=2, sort_keys=True)}
+```
+
+## Config / Run IDs
+
+- config_hashes: {', '.join(metadata.get('config_hashes', [])) or '-'}
+- run_ids: {', '.join(metadata.get('run_ids', [])) or '-'}
+
+## Good Uses
+
+- Compare realized performance by `config_hash` or `run_id`.
+- Review LOT-level holding period and realized PnL.
+- Inspect skipped/blocked action context.
+
+## Limits
+
+This export alone cannot accurately simulate alternative config outcomes. For what-if backtests, add historical daily/minute prices and liquidity/spread data.
+"""
 
 
 def main() -> int:

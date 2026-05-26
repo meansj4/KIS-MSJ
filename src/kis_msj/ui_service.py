@@ -1377,6 +1377,8 @@ class UIService:
             "status": "REQUESTED",
             "config_hash": config_hash(self.config),
             "config_version": config_hash(self.config),
+            "run_id": self.config.run_id or f"{self.config.risk.profile}_{config_hash(self.config)}",
+            "experiment_name": self.config.experiment_name or self.config.risk.profile,
         }
         from .storage import StateStore
 

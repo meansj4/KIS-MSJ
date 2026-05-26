@@ -24,6 +24,9 @@ class StateStore:
         self.path = Path(path)
         self.active_config_hash = ""
         self.active_config_version = ""
+        self.active_run_id = ""
+        self.active_experiment_name = ""
+        self.active_profile_name = ""
         self._db_existed_before_init = self.path.exists() and self.path.stat().st_size > 0
         self._migration_backup_done = False
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -169,6 +172,8 @@ class StateStore:
             _ensure_column(connection, "fills", "reentry_type", "TEXT NOT NULL DEFAULT 'NONE'")
             _ensure_column(connection, "fills", "config_hash", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(connection, "fills", "config_version", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "fills", "run_id", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "fills", "experiment_name", "TEXT NOT NULL DEFAULT ''")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS orders (
@@ -197,6 +202,8 @@ class StateStore:
             _ensure_column(connection, "orders", "cleanup_flag", "INTEGER NOT NULL DEFAULT 0")
             _ensure_column(connection, "orders", "config_hash", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(connection, "orders", "config_version", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "orders", "run_id", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "orders", "experiment_name", "TEXT NOT NULL DEFAULT ''")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS manual_order_requests (
@@ -238,6 +245,8 @@ class StateStore:
             _ensure_column(connection, "manual_order_requests", "stale_processing_reason", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(connection, "manual_order_requests", "config_hash", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(connection, "manual_order_requests", "config_version", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "manual_order_requests", "run_id", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "manual_order_requests", "experiment_name", "TEXT NOT NULL DEFAULT ''")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS config_snapshots (
@@ -251,6 +260,11 @@ class StateStore:
                 )
                 """
             )
+            _ensure_column(connection, "config_snapshots", "run_id", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "config_snapshots", "experiment_name", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "config_snapshots", "profile_name", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "config_snapshots", "started_at", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "config_snapshots", "ended_at", "TEXT NOT NULL DEFAULT ''")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS decisions (
@@ -268,6 +282,9 @@ class StateStore:
                 )
                 """
             )
+            _ensure_column(connection, "decisions", "run_id", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "decisions", "experiment_name", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "decisions", "profile_name", "TEXT NOT NULL DEFAULT ''")
 
     def _backup_before_migration_if_needed(self, connection: sqlite3.Connection) -> None:
         if self._migration_backup_done or not self._db_existed_before_init:
@@ -317,9 +334,9 @@ class StateStore:
                 "lot_sizing_mode",
             },
             "lots": {"cleanup_candidate", "age_weeks", "base_target_profit_rate", "effective_target_profit_rate", "last_sell_reason"},
-            "fills": {"execution_id", "sell_reason", "reentry_type", "config_hash", "config_version"},
-            "orders": {"requested_at", "sell_reason", "reentry_type", "cleanup_flag", "config_hash", "config_version"},
-            "manual_order_requests": {"request_id", "source", "requested_by", "requested_at", "code", "side", "current_price", "amount", "quantity", "lot_id", "order_type", "preview_json", "runtime_snapshot_json", "live_trading", "confirm_text_verified", "status", "block_reason", "linked_order_id", "processing_started_at", "processing_claimed_by", "claim_attempt_count", "last_processing_error", "stale_processing_reason", "config_hash", "config_version", "created_at", "updated_at"},
+            "fills": {"execution_id", "sell_reason", "reentry_type", "config_hash", "config_version", "run_id", "experiment_name"},
+            "orders": {"requested_at", "sell_reason", "reentry_type", "cleanup_flag", "config_hash", "config_version", "run_id", "experiment_name"},
+            "manual_order_requests": {"request_id", "source", "requested_by", "requested_at", "code", "side", "current_price", "amount", "quantity", "lot_id", "order_type", "preview_json", "runtime_snapshot_json", "live_trading", "confirm_text_verified", "status", "block_reason", "linked_order_id", "processing_started_at", "processing_claimed_by", "claim_attempt_count", "last_processing_error", "stale_processing_reason", "config_hash", "config_version", "run_id", "experiment_name", "created_at", "updated_at"},
         }
         missing = False
         for table, columns in expected_columns.items():
@@ -406,9 +423,12 @@ class StateStore:
         for lot in lots:
             self.save_lot(lot)
 
-    def set_active_config(self, config_hash: str, config_version: str = "") -> None:
+    def set_active_config(self, config_hash: str, config_version: str = "", *, run_id: str = "", experiment_name: str = "", profile_name: str = "") -> None:
         self.active_config_hash = config_hash
         self.active_config_version = config_version or config_hash
+        self.active_run_id = run_id
+        self.active_experiment_name = experiment_name
+        self.active_profile_name = profile_name
 
     def record_config_snapshot(
         self,
@@ -419,19 +439,30 @@ class StateStore:
         source: str = "bot_start",
         changed_keys: str = "",
         operator_note: str = "",
+        run_id: str = "",
+        experiment_name: str = "",
+        profile_name: str = "",
+        started_at: str = "",
+        ended_at: str = "",
     ) -> None:
         created_at = datetime.now().isoformat(timespec="seconds")
         with self._connect() as connection:
             connection.execute(
                 """
                 INSERT OR IGNORE INTO config_snapshots (
-                    config_hash, config_version, created_at, source, changed_keys, operator_note, full_config_json
+                    config_hash, config_version, run_id, experiment_name, profile_name, started_at, ended_at,
+                    created_at, source, changed_keys, operator_note, full_config_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     config_hash,
                     config_version or config_hash,
+                    run_id or self.active_run_id,
+                    experiment_name or self.active_experiment_name,
+                    profile_name or self.active_profile_name,
+                    started_at or created_at,
+                    ended_at,
                     created_at,
                     source,
                     changed_keys,
@@ -445,14 +476,17 @@ class StateStore:
             connection.execute(
                 """
                 INSERT INTO decisions (
-                    config_hash, config_version, code, action, action_created,
+                    config_hash, config_version, run_id, experiment_name, profile_name, code, action, action_created,
                     final_block_reason, skip_reason, current_price, payload_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     self.active_config_hash,
                     self.active_config_version,
+                    self.active_run_id,
+                    self.active_experiment_name,
+                    self.active_profile_name,
                     str(payload.get("code") or ""),
                     str(payload.get("action") or ""),
                     int(bool(payload.get("action_created"))),
@@ -469,8 +503,8 @@ class StateStore:
         with self._connect() as connection:
             connection.execute(
                 """
-                INSERT INTO orders (order_id, code, side, quantity, limit_price, status, reason, lot_id, message, sell_reason, reentry_type, cleanup_flag, config_hash, config_version, requested_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO orders (order_id, code, side, quantity, limit_price, status, reason, lot_id, message, sell_reason, reentry_type, cleanup_flag, config_hash, config_version, run_id, experiment_name, requested_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(order_id) DO UPDATE SET status=excluded.status, message=excluded.message, updated_at=CURRENT_TIMESTAMP
                 """,
                 (
@@ -488,6 +522,8 @@ class StateStore:
                     int(request.cleanup_flag),
                     self.active_config_hash,
                     self.active_config_version,
+                    self.active_run_id,
+                    self.active_experiment_name,
                     requested_at,
                 ),
             )
@@ -533,8 +569,8 @@ class StateStore:
                     return False
             cursor = connection.execute(
                 """
-                INSERT OR IGNORE INTO fills (code, name, side, quantity, price, order_id, filled_at, lot_id, execution_id, sell_reason, reentry_type, config_hash, config_version)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT OR IGNORE INTO fills (code, name, side, quantity, price, order_id, filled_at, lot_id, execution_id, sell_reason, reentry_type, config_hash, config_version, run_id, experiment_name)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     fill.code,
@@ -550,6 +586,8 @@ class StateStore:
                     fill.reentry_type,
                     self.active_config_hash,
                     self.active_config_version,
+                    self.active_run_id,
+                    self.active_experiment_name,
                 ),
             )
         return cursor.rowcount > 0
@@ -754,9 +792,9 @@ class StateStore:
                 INSERT INTO manual_order_requests (
                     request_id, source, requested_by, requested_at, code, side, current_price, amount, quantity, lot_id,
                     order_type, preview_json, runtime_snapshot_json, live_trading, confirm_text_verified,
-                    status, block_reason, linked_order_id, config_hash, config_version
+                    status, block_reason, linked_order_id, config_hash, config_version, run_id, experiment_name
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     request["request_id"],
@@ -779,6 +817,8 @@ class StateStore:
                     request.get("linked_order_id", ""),
                     request.get("config_hash", self.active_config_hash),
                     request.get("config_version", self.active_config_version),
+                    request.get("run_id", self.active_run_id),
+                    request.get("experiment_name", self.active_experiment_name),
                 ),
             )
 

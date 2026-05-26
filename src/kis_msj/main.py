@@ -37,8 +37,18 @@ class AutoTrader:
         self.logger = configure_trade_logger(config.log_path)
         self.store = StateStore(config.storage_path)
         self.config_hash = config_hash(config)
-        self.store.set_active_config(self.config_hash)
-        self.store.record_config_snapshot(self.config_hash, config_to_dict(config), source="bot_init")
+        self.run_id = config.run_id or f"{config.risk.profile}_{self.config_hash}"
+        self.experiment_name = config.experiment_name or config.risk.profile
+        self.store.set_active_config(self.config_hash, run_id=self.run_id, experiment_name=self.experiment_name, profile_name=config.risk.profile)
+        self.store.record_config_snapshot(
+            self.config_hash,
+            config_to_dict(config),
+            source="bot_init",
+            operator_note=config.operator_note,
+            run_id=self.run_id,
+            experiment_name=self.experiment_name,
+            profile_name=config.risk.profile,
+        )
         self.lot_manager = LotManager(config.strategy, self.store.load_lots())
         self.position_manager = PositionManager(config.strategy, self.lot_manager, self.store.load_positions())
         self.risk_manager = RiskManager(config)
@@ -408,11 +418,24 @@ class AutoTrader:
         avg_profit_pct = (current_price - position.average_price) / position.average_price * 100.0 if position.average_price else 0.0
         decision_data = dict(
             config_hash=self.config_hash,
+            run_id=self.run_id,
+            experiment_name=self.experiment_name,
             risk_profile=self.config.risk.profile,
             lot_sizing_mode=self.config.strategy.lot_sizing_mode,
             code=position.code,
             name=position.name,
             current_price=current_price,
+            sampled_price_source=type(self.client).__name__,
+            sampled_at=datetime.now().isoformat(timespec="seconds"),
+            previous_close="",
+            day_open="",
+            day_high="",
+            day_low="",
+            volume="",
+            trading_value="",
+            bid_price="",
+            ask_price="",
+            spread="",
             position_state=context.position_state,
             position_pnl_rate=f"{context.position_pnl_rate:.4f}",
             pnl_mode=context.pnl_mode,
@@ -521,6 +544,8 @@ class AutoTrader:
             risk_block_reasons=self.risk_block_reasons(position),
             sync_status=position.sync_status,
             action=action,
+            candidate_action_type=action,
+            block_reason=final_block_reason or portfolio_risk_block_reason or context.skip_reason,
         )
         log_decision(self.logger, **decision_data)
         self.store.record_decision(decision_data)
