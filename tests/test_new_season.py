@@ -70,16 +70,13 @@ def _write_balance(
     return path
 
 
-def test_expansion_100_candidates_are_unique_and_mark_event_risk() -> None:
+def test_expansion_candidates_are_unique_and_enabled_for_bootstrap() -> None:
     result = prepare_new_season.validate_candidates()
 
-    assert result["count"] == 100
+    assert result["count"] == 120
     assert result["duplicates"] == []
     assert result["invalid_format"] == []
-    disabled_codes = {item["code"] for item in result["risk_disabled"]}
-    assert {"005935", "001230", "020560"}.issubset(disabled_codes)
-    assert [item for item in result["risk_disabled"] if item["code"] == "020560"][0]["administrative_issue"] is True
-    assert [item for item in result["risk_disabled"] if item["code"] == "001230"][0]["trading_halted"] is True
+    assert result["risk_disabled"] == []
 
 
 def test_apply_expansion_config_safe_profile(tmp_path) -> None:
@@ -92,19 +89,19 @@ def test_apply_expansion_config_safe_profile(tmp_path) -> None:
     result = prepare_new_season.apply_expansion_config(config_path, "expansion_100_safe", dry_run=False)
     config = json.loads(config_path.read_text(encoding="utf-8"))
 
-    assert result["stock_count"] == 100
-    assert result["enabled_count"] == 97
+    assert result["stock_count"] == 120
+    assert result["enabled_count"] == 120
     assert config["risk"]["profile"] == "expansion_100_safe"
-    assert config["risk"]["max_active_symbols"] == 100
-    assert config["risk"]["max_new_buy_per_day"] == 10
-    assert config["risk"]["max_new_buy_amount_per_day"] == 2_000_000
-    assert config["risk"]["max_total_initial_buy_amount_per_day"] == 2_000_000
-    assert config["risk"]["max_total_open_lots"] == 300
-    assert config["risk"]["max_total_invested_amount"] == 20_000_000
+    assert config["risk"]["max_active_symbols"] == 120
+    assert config["risk"]["max_new_buy_per_day"] == 120
+    assert config["risk"]["max_new_buy_amount_per_day"] == 30_000_000
+    assert config["risk"]["max_total_initial_buy_amount_per_day"] == 30_000_000
+    assert config["risk"]["max_total_open_lots"] == 500
+    assert config["risk"]["max_total_invested_amount"] == 30_000_000
     assert config["strategy"]["cleanup_enabled"] is False
     assert config["order"]["live_trading"] is False
-    assert config["order"]["enable_execution_raw_log"] is True
-    assert config["ui_manual_trading_enabled"] is False
+    assert config["order"]["enable_execution_raw_log"] is False
+    assert config["ui_manual_trading_enabled"] is True
 
 
 def test_archive_dry_run_does_not_create_archive(tmp_path) -> None:
