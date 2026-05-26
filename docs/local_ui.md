@@ -1,7 +1,7 @@
 # KIS LOT Bot Local UI and Control API
 
 > Authoritative source: `docs/project_handoff_full.md` is the latest full baseline. `docs/project_handoff_thread_prompt.md` is for starting a new chat, and `docs/project_handoff_summary.md` is the short summary. `local_ui.md`, `strategy_lot_sizing.md`, `new_season_reset.md`, and `expansion_100_config.md` are detailed references. If a reference doc conflicts with the full handoff, use `project_handoff_full.md` as the source of truth.  
-> Last updated: 2026-05-26 / Baseline tests: `150 passed` / Baseline config profile: `expansion_100_safe`. Re-check config, DB, logs, and KIS account state at runtime.
+> Last updated: 2026-05-26 / Baseline tests: `153 passed` / Baseline config profile: `expansion_100_safe`. Re-check config, DB, logs, and KIS account state at runtime.
 
 
 ## REVIEW_REQUIRED 처리 가이드
@@ -472,6 +472,8 @@ UI 로그 표시는 아래 키 또는 계좌번호처럼 보이는 긴 숫자를
 
 수동 주문은 UI가 직접 주문 API를 호출하지 않고 `manual_order_requests` 큐에 요청만 생성하는 구조입니다. 수동 주문 요청 탭의 “수동 주문 요청 목록”도 Stocks/Lots/Orders/Fills와 동일하게 핵심 컬럼만 기본 표시하고, `컬럼 선택`에서 숨긴 필드를 펼쳐 볼 수 있습니다.
 
+`PROCESSING` 상태가 오래 지속되고 `linked_order_id`가 비어 있으면 주문 생성 전 단계에서 멈췄을 가능성이 있습니다. UI는 이를 “처리 멈춤 가능성”으로 표시합니다. 이 경우 운영자는 해당 요청을 `재시도 대기`로 되돌리거나 `차단 처리`할 수 있습니다. 단, `linked_order_id`가 있는 요청은 이미 주문 생성 단계까지 간 것으로 보므로 재시도/차단 버튼이 비활성화됩니다. 실제 주문 상태를 먼저 확인해야 합니다.
+
 저장 위치:
 
 - SQLite table: `manual_order_requests`
@@ -495,6 +497,11 @@ UI 로그 표시는 아래 키 또는 계좌번호처럼 보이는 긴 숫자를
 - `status`
 - `block_reason`
 - `linked_order_id`
+- `processing_started_at`
+- `processing_claimed_by`
+- `claim_attempt_count`
+- `last_processing_error`
+- `stale_processing_reason`
 - `created_at`
 - `updated_at`
 

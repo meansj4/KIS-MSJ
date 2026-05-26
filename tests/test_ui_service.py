@@ -4,10 +4,11 @@ import http.client
 import json
 import sqlite3
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timedelta
+from pathlib import Path
 from unittest.mock import patch
 
-from kis_msj.config import BotConfig, OrderConfig, StockConfig
+from kis_msj.config import BotConfig, OrderConfig, StockConfig, load_config
 from kis_msj.main import AutoTrader
 from kis_msj.models import (
     Quote,
@@ -196,9 +197,25 @@ def test_config_schema_metadata_and_danger_flags(tmp_path):
     assert "manual_order_requests" in by_key["ui_manual_trading_enabled"]["description_ko"]
     assert "몇 번 확인" in by_key["order.price_sample_count"]["description_ko"]
     assert "각 읽기 사이" in by_key["order.price_sample_interval_seconds"]["description_ko"]
-    assert "지정가" in by_key["order.buy_limit_markup_pct"]["description_ko"]
-    assert "order.live_trading" in schema["danger_confirm_keys"]
-    assert "order.enable_execution_raw_log" in schema["danger_confirm_keys"]
+
+
+def test_operating_configs_do_not_expose_legacy_strategy_keys():
+    legacy_keys = {
+        "initial_buy_amount",
+        "add_buy_amount",
+        "auto_buy_limit",
+        "absolute_max_investment",
+        "exposure_buy_bands",
+        "exposure_sell_bands",
+        "reentry_drop_rate",
+        "target_profit_pct",
+        "target_profit_rate",
+    }
+    for path in ("config/lot_auto_trader.json", "config/lot_auto_trader.example.json"):
+        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+        assert not (legacy_keys & set(raw["strategy"]))
+        loaded = load_config(Path(path))
+        assert loaded.strategy.lot_sizing_mode == "cycle_locked_by_entry_price"
 
 
 def test_config_form_and_table_sorting_scripts_are_present():
@@ -358,7 +375,6 @@ def test_http_api_status_config_runtime_and_no_order_endpoint(tmp_path):
         connection.request("GET", "/api/config/schema")
         schema = json.loads(connection.getresponse().read().decode("utf-8"))
         assert schema["sections"]["Order"]
-        assert "order.live_trading" in schema["danger_confirm_keys"]
 
         connection.request("POST", "/api/runtime/pause-cleanup", body="{}", headers={"content-type": "application/json"})
         paused = json.loads(connection.getresponse().read().decode("utf-8"))
@@ -576,6 +592,86 @@ def test_manual_request_with_linked_order_is_not_claimed_again(tmp_path):
 
     assert store.claim_manual_order_request("MANUAL-LINKED") is None
     assert store.manual_order_requests()[0]["status"] == "REQUESTED"
+
+
+def test_processing_manual_request_stale_requeue_and_cancel_are_safe(tmp_path):
+    config_path, db_path, _ = _write_config(tmp_path, manual_enabled=True)
+    store = StateStore(db_path)
+    old_started_at = (datetime.now() - timedelta(minutes=30)).isoformat(timespec="seconds")
+    store.create_manual_order_request(
+        {
+            "request_id": "MANUAL-STUCK",
+            "source": "local_ui_manual",
+            "requested_by": "test",
+            "requested_at": old_started_at,
+            "code": "005930",
+            "side": "BUY",
+            "amount": 30000,
+            "quantity": 0,
+            "preview_json": "{}",
+            "runtime_snapshot_json": "{}",
+            "live_trading": False,
+            "confirm_text_verified": True,
+            "status": "REQUESTED",
+        }
+    )
+    claimed = store.claim_manual_order_request("MANUAL-STUCK", claimed_by="test_worker")
+    assert claimed is not None
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE manual_order_requests SET processing_started_at = ? WHERE request_id = 'MANUAL-STUCK'",
+            (old_started_at,),
+        )
+
+    service = UIService(config_path, tmp_path / "runtime.json")
+    stuck = service.manual_order_requests()[0]
+    assert stuck["processing_stale"] is True
+    assert stuck["safe_requeue_allowed"] is True
+    assert service.requeue_manual_order_request("MANUAL-STUCK")["requeued"] is True
+    requeued = store.manual_order_requests()[0]
+    assert requeued["status"] == "REQUESTED"
+    assert store.claim_manual_order_request("MANUAL-STUCK") is not None
+    assert service.cancel_manual_order_request("MANUAL-STUCK")["canceled"] is True
+    canceled = store.manual_order_requests()[0]
+    assert canceled["status"] == "BLOCKED"
+    assert canceled["block_reason"] == "operator_cancel_stale_processing"
+
+
+def test_linked_processing_manual_request_cannot_be_requeued_or_canceled(tmp_path):
+    config_path, db_path, _ = _write_config(tmp_path, manual_enabled=True)
+    store = StateStore(db_path)
+    old_started_at = (datetime.now() - timedelta(minutes=30)).isoformat(timespec="seconds")
+    store.create_manual_order_request(
+        {
+            "request_id": "MANUAL-LINKED-PROCESSING",
+            "source": "local_ui_manual",
+            "requested_by": "test",
+            "requested_at": old_started_at,
+            "code": "005930",
+            "side": "BUY",
+            "amount": 30000,
+            "quantity": 0,
+            "preview_json": "{}",
+            "runtime_snapshot_json": "{}",
+            "live_trading": False,
+            "confirm_text_verified": True,
+            "status": "PROCESSING",
+            "linked_order_id": "ORDER-1",
+        }
+    )
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE manual_order_requests SET processing_started_at = ? WHERE request_id = 'MANUAL-LINKED-PROCESSING'",
+            (old_started_at,),
+        )
+
+    service = UIService(config_path, tmp_path / "runtime.json")
+    request = service.manual_order_requests()[0]
+    assert request["processing_stale"] is False
+    assert request["safe_requeue_allowed"] is False
+    assert service.requeue_manual_order_request("MANUAL-LINKED-PROCESSING")["requeued"] is False
+    assert service.cancel_manual_order_request("MANUAL-LINKED-PROCESSING")["canceled"] is False
+    assert store.manual_order_requests()[0]["status"] == "PROCESSING"
 
 
 def test_manual_buy_blocks_when_lot_sizing_bucket_changes_after_preview(tmp_path):

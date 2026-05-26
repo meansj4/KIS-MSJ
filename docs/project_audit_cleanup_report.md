@@ -1,7 +1,7 @@
 # KIS LOT Bot Project Audit and Cleanup Report
 
 > Authoritative source: `docs/project_handoff_full.md` is the latest full baseline. This report records the whole-project audit/cleanup pass performed after the handoff docs. If this report conflicts with `project_handoff_full.md`, re-check code first and then update the full handoff.  
-> Last updated: 2026-05-27 / Latest tests after this audit: `150 passed` with one pytest cache warning / Baseline config profile: `expansion_100_safe`.
+> Last updated: 2026-05-27 / Latest tests after this audit: `153 passed` with one pytest cache warning / Baseline config profile: `expansion_100_safe`.
 
 ## 0. 2026-05-27 추가 보강 요약
 
@@ -87,7 +87,7 @@
 | 파일 | 수정/확인 내용 |
 | --- | --- |
 | `docs/project_handoff_full.md` | 이 감사 보고서 링크 추가 |
-| `docs/project_handoff_full.md`, `summary`, `thread_prompt`, `new_season_reset.md`, `local_ui.md` | `150 passed`, strict KIS snapshot policy, manual request 설명 최신화 확인 |
+| `docs/project_handoff_full.md`, `summary`, `thread_prompt`, `new_season_reset.md`, `local_ui.md` | `153 passed`, strict KIS snapshot policy, manual request 설명 최신화 확인 |
 | `docs/new_season_reset.md` | pending order/manual request status, generated_at/sellable_quantity strict policy 최신화 확인 |
 | `docs/local_ui.md` | KIS 직접 주문 API 없음과 manual request 생성 API는 있음의 구분 확인 |
 
@@ -189,7 +189,7 @@ UI 표시:
 | 주문/체결 동기화 | 중간 | open order 기준 reconciliation, startup recent reconciliation, unmatched ignore | 실제 KIS raw 체결 row 변화/누락 가능성 | 첫 실체결 후 raw mapping 재확인 |
 | fill dedupe | 낮음~중간 | execution_id 우선, fallback key, duplicate count | KIS가 execution_id 없이 체결시각 품질이 낮으면 fallback 한계 | execution_id 실제 제공 여부 지속 확인 |
 | partial fill | 중간 | PARTIAL order status, remaining_quantity 기준 LOT 반영 | 장시간 PARTIAL/order timeout 운영 판단 필요 | open order UI 모니터링 강화 |
-| manual order 중복 소비 | 낮음~중간 | 원자적 `REQUESTED -> PROCESSING` claim, linked_order_id 재처리 차단, pending status reset guard | PROCESSING 중 프로세스 비정상 종료 시 자동 retry 없음 | 단일 Bot Core 프로세스 운영, 필요 시 retry_count/claimed_at 추가 |
+| manual order 중복 소비 | 낮음~중간 | 원자적 `REQUESTED -> PROCESSING` claim, linked_order_id 재처리 차단, stale PROCESSING UI/API requeue/cancel, pending status reset guard | PROCESSING 중 프로세스 비정상 종료 시 자동 재시도는 하지 않고 운영자 확인 필요 | 단일 Bot Core 프로세스 운영, 필요 시 더 엄격한 retry policy 추가 |
 | DB reset/archive/liquidation | 높음 | confirm text, pending order/request/open lot/sync guard, KIS snapshot strict validation | snapshot 파일을 운영자가 잘못 만들 수 있음 | snapshot 생성 도구 또는 import UI 추가 검토 |
 | KIS snapshot stale/mismatch | 중간~높음 | generated_at/sellable strict mode, max age, DB hash, plan freshness guard, UI validator | 자동 snapshot 생성이 없어 수동 오류 가능 | snapshot 생성 도구 또는 파일 import UX 추가 검토 |
 | UI 버튼 오조작 | 중간 | live warning, confirm, disabled guide, no direct KIS order API | 많은 버튼이 있어 초보자 혼동 가능 | wizard UX 지속 단순화 |
@@ -233,8 +233,8 @@ UI 표시:
 
 | 명령 | 결과 |
 | --- | --- |
-| `.\\.venv\\Scripts\\python.exe -m pytest -q --basetemp .pytest_tmp_audit_cleanup_check` | `150 passed`, pytest cache warning 1개 |
-| `.\\.venv\\Scripts\\python.exe -m pytest -q --basetemp .pytest_tmp_final_logic_check` | `150 passed`, pytest cache warning 1개 |
+| `.\\.venv\\Scripts\\python.exe -m pytest -q --basetemp .pytest_tmp_audit_cleanup_check` | `153 passed`, pytest cache warning 1개 |
+| `.\\.venv\\Scripts\\python.exe -m pytest -q --basetemp .pytest_tmp_final_logic_check` | `153 passed`, pytest cache warning 1개 |
 
 warning은 `.pytest_cache` cache write 관련 `PytestCacheWarning`이며 기능 실패는 아니다.
 
@@ -262,7 +262,19 @@ This addendum records the final cleanup/hardening pass after the initial audit.
 - `AutoTrader.process_manual_order_requests()` now processes only successfully claimed rows.
 - Already claimed, linked, or non-REQUESTED rows are skipped.
 - If runtime interrupt occurs after claim but before submit, the request is moved to `BLOCKED` to avoid a stuck PROCESSING row.
-- Remaining operational assumption: run a single Bot Core process. The claim reduces duplicate risk if two consumers race, but there is still no automated retry policy for a request left in PROCESSING after an unexpected process crash.
+- Stale PROCESSING visibility was added: `processing_started_at`, `processing_claimed_by`, `claim_attempt_count`, `last_processing_error`, and `stale_processing_reason`.
+- If `PROCESSING` is old and `linked_order_id` is empty, UI/API can safely requeue it to `REQUESTED` or cancel it to `BLOCKED`.
+- If `linked_order_id` exists, requeue/cancel is blocked because a real order may already exist.
+- Remaining operational assumption: run a single Bot Core process. The claim reduces duplicate risk if two consumers race. Unexpected crash recovery is operator-controlled, not automatic.
+
+Claim flow:
+
+1. `UPDATE manual_order_requests SET status='PROCESSING' ... WHERE request_id=? AND status='REQUESTED' AND COALESCE(linked_order_id,'')=''`
+2. `rowcount == 1` means claim success.
+3. The claimed row is read back and passed to the existing order manager path.
+4. Submit success records `linked_order_id` and `SUBMITTED`.
+5. Guard block records `BLOCKED`.
+6. Exception records `FAILED` with `last_processing_error`.
 
 ### KIS balance snapshot validator UI/API
 
@@ -307,9 +319,25 @@ This addendum records the final cleanup/hardening pass after the initial audit.
 
 | Risk | Updated grade | Notes |
 | --- | --- | --- |
-| manual order duplicate consumption | Low to Medium | Atomic claim added. Residual risk is PROCESSING crash recovery/retry policy. |
+| manual order duplicate consumption | Low to Medium | Atomic claim and operator-controlled stale PROCESSING requeue/cancel added. Residual risk is policy around automatic retry, intentionally not enabled. |
 | KIS snapshot stale/mismatch | Medium | Validator UI/API added. Residual risk is operator-created snapshot quality because automatic KIS balance snapshot generation is not implemented. |
 | legacy UI confusion | Low | General Config UI no longer exposes major legacy strategy keys. |
+
+### Legacy operating config cleanup
+
+The live operating config and example config no longer carry these direct `strategy` keys:
+
+- `initial_buy_amount`
+- `add_buy_amount`
+- `auto_buy_limit`
+- `absolute_max_investment`
+- `exposure_buy_bands`
+- `exposure_sell_bands`
+- `reentry_drop_rate`
+- `target_profit_pct`
+- `target_profit_rate`
+
+`config.py` still provides backward-compatible defaults for old configs and DB rows. The current operating config uses `price_lot_bands`, `add_buy_lot_bands`, `target_profit_lot_bands`, and `max_lots_per_symbol_default`.
 
 ### Final tests
 
@@ -319,6 +347,6 @@ This addendum records the final cleanup/hardening pass after the initial audit.
 .\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest_tmp_final_logic_check
 ```
 
-Result: all three commands completed with `150 passed` and one pytest cache warning. The warning is a `.pytest_cache` write warning, not a functional failure.
+Result: all three commands completed with `153 passed` and one pytest cache warning. The warning is a `.pytest_cache` write warning, not a functional failure.
 
 No real trade, KIS order API call, or DB reset was executed during this audit/cleanup pass.

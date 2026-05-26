@@ -24,6 +24,7 @@ from .strategy import LotGridStrategy, StrategyAction
 
 SENSITIVE_PARTS = ("account", "acct", "cano", "acnt", "appkey", "appsecret", "token", "authorization", "auth")
 RISK_FLAGS = ("trading_halted", "administrative_issue", "investment_alert", "audit_opinion_issue", "delisting_risk", "accounting_issue", "liquidity_warning")
+MANUAL_PROCESSING_STALE_MINUTES = 10
 
 NEW_SEASON_REASON_GUIDE: dict[str, dict[str, str]] = {
     "": {"title": "진행 가능", "description": "현재 단계의 조건을 만족했습니다.", "next_action": "다음 단계로 진행하세요."},
@@ -1042,7 +1043,39 @@ class UIService:
         return rows
 
     def manual_order_requests(self) -> list[dict[str, Any]]:
-        return self._table("manual_order_requests")
+        rows = self._table("manual_order_requests")
+        now = datetime.now()
+        for row in rows:
+            started_at = _parse_datetime(str(row.get("processing_started_at") or ""))
+            age_minutes = None
+            if started_at:
+                age_minutes = max(0.0, (now - started_at.replace(tzinfo=None)).total_seconds() / 60.0)
+            row["processing_age_minutes"] = round(age_minutes, 3) if age_minutes is not None else None
+            row["processing_stale"] = bool(
+                row.get("status") == "PROCESSING"
+                and not row.get("linked_order_id")
+                and age_minutes is not None
+                and age_minutes >= MANUAL_PROCESSING_STALE_MINUTES
+            )
+            if row["processing_stale"] and not row.get("stale_processing_reason"):
+                row["stale_processing_reason"] = "manual_request_processing_stale_no_linked_order"
+            row["safe_requeue_allowed"] = bool(row["processing_stale"] and not row.get("linked_order_id"))
+            row["safe_cancel_allowed"] = bool(row.get("status") == "PROCESSING" and not row.get("linked_order_id"))
+        return rows
+
+    def requeue_manual_order_request(self, request_id: str) -> dict[str, Any]:
+        from .storage import StateStore
+
+        ok = StateStore(self.config.storage_path).requeue_stale_manual_order_request(request_id)
+        self._append_audit_log("manual_order_request_requeue_requested", {"request_id": request_id, "success": ok})
+        return {"requeued": ok, "request_id": request_id, "order_api_called": False, "lots_positions_fills_changed": False}
+
+    def cancel_manual_order_request(self, request_id: str, reason: str = "operator_cancel_stale_processing") -> dict[str, Any]:
+        from .storage import StateStore
+
+        ok = StateStore(self.config.storage_path).cancel_stale_manual_order_request(request_id, reason)
+        self._append_audit_log("manual_order_request_cancel_requested", {"request_id": request_id, "reason": reason, "success": ok})
+        return {"canceled": ok, "request_id": request_id, "order_api_called": False, "lots_positions_fills_changed": False}
 
     def manual_order_preview(self, payload: dict[str, Any]) -> dict[str, Any]:
         config = self.config
@@ -1573,6 +1606,18 @@ def _prepare_new_season_module():
 
 def _reason_guide(reason: str) -> dict[str, str]:
     return NEW_SEASON_REASON_GUIDE.get(reason, {"title": reason or "진행 가능", "description": reason, "next_action": "상태를 다시 확인하세요."})
+
+
+def _parse_datetime(value: str) -> datetime | None:
+    if not value:
+        return None
+    normalized = value.strip().replace("Z", "+00:00")
+    for candidate in (normalized, normalized.replace(" ", "T")):
+        try:
+            return datetime.fromisoformat(candidate)
+        except ValueError:
+            continue
+    return None
 
 
 def _snapshot_validation_response(reason: str) -> dict[str, Any]:

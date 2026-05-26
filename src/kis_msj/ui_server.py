@@ -166,6 +166,11 @@ const LABELS = {
   requested_at:'요청시각', amount:'금액', order_type:'주문 유형', preview_json:'미리보기 JSON',
   runtime_snapshot_json:'런타임 상태 JSON', live_trading:'실거래 여부', confirm_text_verified:'확인 문구 검증',
   block_reason:'차단 사유', linked_order_id:'연결 주문 ID', created_at:'생성시각',
+  processing_started_at:'처리 시작시각', processing_claimed_by:'처리 claim 주체',
+  claim_attempt_count:'claim 시도 횟수', processing_age_minutes:'처리 경과(분)',
+  processing_stale:'처리 멈춤 가능성', stale_processing_reason:'처리 멈춤 사유',
+  safe_requeue_allowed:'재시도 가능', safe_cancel_allowed:'차단 처리 가능',
+  last_processing_error:'마지막 처리 오류',
   market_value:'평가금액', total_quantity:'총 수량', realized_pnl:'실현손익',
   target_sell_price:'목표 매도가', target_profit_pct:'목표수익률', sell_completed:'매도 완료',
   partial_sold:'부분 매도', estimated_fee_tax:'예상 수수료/세금', last_order_id:'최근 주문 ID',
@@ -280,7 +285,7 @@ const DEFAULT_COLUMNS = {
   stockLots: ['lot_id','code','name','status','buy_price','remaining_quantity','current_price','unrealized_pnl','unrealized_pnl_rate','age_weeks','effective_target_profit_rate','sell_trigger_price','cleanup_candidate','stale_lot','last_sell_reason'],
   orders: ['order_id','code','name','side','status','quantity','limit_price','reason','requested_at','updated_at','lot_id','sell_reason','reentry_type'],
   fills: ['fill_id','execution_id','dedupe_key_type','order_id','code','name','side','price','quantity','filled_at','lot_id','sell_reason','reentry_type'],
-  manualRequests: ['request_id','code','side','quantity','amount','lot_id','status','block_reason','linked_order_id','requested_at','updated_at'],
+  manualRequests: ['request_id','code','side','quantity','amount','lot_id','status','processing_stale','processing_age_minutes','block_reason','linked_order_id','requested_at','updated_at'],
   reviewRequired: ['code','name','position_state','review_reason','current_pnl_rate','open_lot_count','stale_lot_count','sync_status','lot_quantity_mismatch','profitable_lot_count']
 };
 const columnPrefs = {};
@@ -450,6 +455,11 @@ function rowsForTable(tableId) {
   }
   if (tableId === 'reviewRequired') {
     return `<div class="rowActions"><button onclick="reviewRecheck('${esc(row.code)}')">상태 재평가</button><button onclick="reviewAck('${esc(row.code)}')">확인/메모</button><button onclick="openStockLots('${esc(row.code)}')">수익권 LOT 보기</button></div>`;
+  }
+  if (tableId === 'manualRequests') {
+    const requeueDisabled = row.safe_requeue_allowed ? '' : 'disabled';
+    const cancelDisabled = row.safe_cancel_allowed ? '' : 'disabled';
+    return `<div class="rowActions"><button ${requeueDisabled} onclick="manualRequestRequeue('${esc(row.request_id)}')">Requeue</button><button ${cancelDisabled} onclick="manualRequestCancel('${esc(row.request_id)}')">Block</button></div>`;
   }
   return '';
 }
@@ -652,6 +662,16 @@ async function loadManualOrders() {
   </div>
   <h3>미리보기 / 생성 결과</h3><div id="manualResult"></div>
   <h3>수동 주문 요청 목록</h3>${table(window.manualRequestRows, 'manualRequests')}`;
+}
+async function manualRequestRequeue(requestId) {
+  const r = await api('/api/manual-order-requests/requeue', {method:'POST', body:JSON.stringify({request_id: requestId})});
+  alert(r.requeued ? '재시도 대기 상태로 되돌렸습니다.' : '재시도 대기로 변경하지 못했습니다. linked_order_id 또는 상태를 확인하세요.');
+  await loadManualOrders();
+}
+async function manualRequestCancel(requestId) {
+  const r = await api('/api/manual-order-requests/cancel', {method:'POST', body:JSON.stringify({request_id: requestId, reason:'operator_cancel_stale_processing'})});
+  alert(r.canceled ? '차단 처리했습니다.' : '차단 처리하지 못했습니다. linked_order_id 또는 상태를 확인하세요.');
+  await loadManualOrders();
 }
 async function loadNewSeason() {
   currentView = 'newSeason';
@@ -1197,6 +1217,12 @@ class UIHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/manual-orders":
                 self._send_json(self.service.create_manual_order_request(data))
+                return
+            if parsed.path == "/api/manual-order-requests/requeue":
+                self._send_json(self.service.requeue_manual_order_request(str(data.get("request_id", ""))))
+                return
+            if parsed.path == "/api/manual-order-requests/cancel":
+                self._send_json(self.service.cancel_manual_order_request(str(data.get("request_id", "")), str(data.get("reason", "operator_cancel_stale_processing"))))
                 return
             if parsed.path == "/api/new-season/archive":
                 self._send_json(self.service.new_season_archive(bool(data.get("execute", False))))

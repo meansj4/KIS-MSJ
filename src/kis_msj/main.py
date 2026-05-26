@@ -191,7 +191,7 @@ class AutoTrader:
                 self.store.save_lots(self.lot_manager.lots.values())
                 self.store.update_manual_order_request(request_id, status="FILLED", linked_order_id=result.order_id)
             except Exception as error:  # noqa: BLE001
-                self.store.update_manual_order_request(request_id, status="FAILED", block_reason=type(error).__name__)
+                self.store.update_manual_order_request(request_id, status="FAILED", block_reason=type(error).__name__, last_processing_error=str(error))
                 self.logger.exception("manual_order_request_failed request_id=%s code=%s side=%s error=%s", request_id, code, side.value, error)
 
     def manual_request_block_reason(self, manual: dict[str, object], position: PositionState, account_risk) -> str:

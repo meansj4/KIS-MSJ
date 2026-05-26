@@ -209,12 +209,22 @@ class StateStore:
                     status TEXT NOT NULL DEFAULT 'REQUESTED',
                     block_reason TEXT NOT NULL DEFAULT '',
                     linked_order_id TEXT NOT NULL DEFAULT '',
+                    processing_started_at TEXT NOT NULL DEFAULT '',
+                    processing_claimed_by TEXT NOT NULL DEFAULT '',
+                    claim_attempt_count INTEGER NOT NULL DEFAULT 0,
+                    last_processing_error TEXT NOT NULL DEFAULT '',
+                    stale_processing_reason TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
             _ensure_column(connection, "manual_order_requests", "current_price", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "manual_order_requests", "processing_started_at", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "manual_order_requests", "processing_claimed_by", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "manual_order_requests", "claim_attempt_count", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "manual_order_requests", "last_processing_error", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "manual_order_requests", "stale_processing_reason", "TEXT NOT NULL DEFAULT ''")
 
     def _backup_before_migration_if_needed(self, connection: sqlite3.Connection) -> None:
         if self._migration_backup_done or not self._db_existed_before_init:
@@ -266,7 +276,7 @@ class StateStore:
             "lots": {"cleanup_candidate", "age_weeks", "base_target_profit_rate", "effective_target_profit_rate", "last_sell_reason"},
             "fills": {"execution_id", "sell_reason", "reentry_type"},
             "orders": {"requested_at", "sell_reason", "reentry_type", "cleanup_flag"},
-            "manual_order_requests": {"request_id", "source", "requested_by", "requested_at", "code", "side", "current_price", "amount", "quantity", "lot_id", "order_type", "preview_json", "runtime_snapshot_json", "live_trading", "confirm_text_verified", "status", "block_reason", "linked_order_id", "created_at", "updated_at"},
+            "manual_order_requests": {"request_id", "source", "requested_by", "requested_at", "code", "side", "current_price", "amount", "quantity", "lot_id", "order_type", "preview_json", "runtime_snapshot_json", "live_trading", "confirm_text_verified", "status", "block_reason", "linked_order_id", "processing_started_at", "processing_claimed_by", "claim_attempt_count", "last_processing_error", "stale_processing_reason", "created_at", "updated_at"},
         }
         missing = False
         for table, columns in expected_columns.items():
@@ -680,7 +690,7 @@ class StateStore:
                 return []
         return [_normalize_row(dict(row)) for row in rows]
 
-    def claim_manual_order_request(self, request_id: str) -> dict[str, object] | None:
+    def claim_manual_order_request(self, request_id: str, claimed_by: str = "bot_core") -> dict[str, object] | None:
         """Atomically claim one REQUESTED manual request for processing.
 
         This prevents duplicate order submission when loops wake up quickly or
@@ -690,28 +700,74 @@ class StateStore:
             cursor = connection.execute(
                 """
                 UPDATE manual_order_requests
-                SET status = 'PROCESSING', updated_at = CURRENT_TIMESTAMP
+                SET status = 'PROCESSING',
+                    processing_started_at = CURRENT_TIMESTAMP,
+                    processing_claimed_by = ?,
+                    claim_attempt_count = claim_attempt_count + 1,
+                    last_processing_error = '',
+                    stale_processing_reason = '',
+                    updated_at = CURRENT_TIMESTAMP
                 WHERE request_id = ?
                   AND status = 'REQUESTED'
                   AND COALESCE(linked_order_id, '') = ''
                 """,
-                (request_id,),
+                (claimed_by, request_id),
             )
             if cursor.rowcount != 1:
                 return None
             row = connection.execute("SELECT * FROM manual_order_requests WHERE request_id = ?", (request_id,)).fetchone()
         return _normalize_row(dict(row)) if row is not None else None
 
-    def update_manual_order_request(self, request_id: str, *, status: str, block_reason: str = "", linked_order_id: str = "") -> None:
+    def update_manual_order_request(self, request_id: str, *, status: str, block_reason: str = "", linked_order_id: str = "", last_processing_error: str = "") -> None:
         with self._connect() as connection:
             connection.execute(
                 """
                 UPDATE manual_order_requests
-                SET status = ?, block_reason = ?, linked_order_id = COALESCE(NULLIF(?, ''), linked_order_id), updated_at = CURRENT_TIMESTAMP
+                SET status = ?,
+                    block_reason = ?,
+                    linked_order_id = COALESCE(NULLIF(?, ''), linked_order_id),
+                    last_processing_error = COALESCE(NULLIF(?, ''), last_processing_error),
+                    updated_at = CURRENT_TIMESTAMP
                 WHERE request_id = ?
                 """,
-                (status, block_reason, linked_order_id, request_id),
+                (status, block_reason, linked_order_id, last_processing_error, request_id),
             )
+
+    def requeue_stale_manual_order_request(self, request_id: str, reason: str = "operator_requeue_stale_processing") -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE manual_order_requests
+                SET status = 'REQUESTED',
+                    block_reason = '',
+                    processing_started_at = '',
+                    processing_claimed_by = '',
+                    stale_processing_reason = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE request_id = ?
+                  AND status = 'PROCESSING'
+                  AND COALESCE(linked_order_id, '') = ''
+                """,
+                (reason, request_id),
+            )
+            return cursor.rowcount == 1
+
+    def cancel_stale_manual_order_request(self, request_id: str, reason: str = "operator_cancel_stale_processing") -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE manual_order_requests
+                SET status = 'BLOCKED',
+                    block_reason = ?,
+                    stale_processing_reason = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE request_id = ?
+                  AND status = 'PROCESSING'
+                  AND COALESCE(linked_order_id, '') = ''
+                """,
+                (reason, reason, request_id),
+            )
+            return cursor.rowcount == 1
 
 
 def _bools(data: dict[str, object]) -> dict[str, object]:
