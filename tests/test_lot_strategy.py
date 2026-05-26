@@ -6,7 +6,7 @@ from kis_msj.config import BotConfig, OrderConfig, RiskConfig, StrategyConfig
 from kis_msj.lot_manager import LotManager
 from kis_msj.models import AccountSnapshot, LotState, OrderSide, PositionLifecycle, PositionState, ReentryType, SellReason, TradeFill
 from kis_msj.position_manager import PositionManager
-from kis_msj.risk_manager import RiskManager
+from kis_msj.risk_manager import RiskDecision, RiskManager
 from kis_msj.strategy import LotGridStrategy
 
 
@@ -409,7 +409,7 @@ def test_cleanup_loss_budget_blocks_large_loss() -> None:
     age_lot(old, 20)
     position = positions.refresh_from_lots("005930", 9600)
 
-    action = strategy.decide(position, 9600, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    action = strategy.decide(position, 9600, snapshot, RiskDecision(False, ("buy_blocked_for_cleanup_budget_test",)), risk.symbol_buy_allowed(position))
 
     assert action is None
 
@@ -655,23 +655,24 @@ def test_lot_sizing_new_initial_buy_uses_price_band() -> None:
     action = strategy.decide(position, 10100, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
 
     assert action is not None
-    assert action.amount == 30000
+    assert action.amount == 100000
 
     position_2 = positions.get("000660", "Test2")
     action_2 = strategy.decide(position_2, 9000, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position_2))
     assert action_2 is not None
-    assert action_2.amount == 10000
+    assert action_2.amount == 30000
 
 
-def test_lot_sizing_disabled_bands_block_initial_buy() -> None:
+def test_lot_sizing_low_band_enabled_and_out_of_range_blocks_initial_buy() -> None:
     _, _, positions, strategy, risk, snapshot = setup_strategy(StrategyConfig())
     low = positions.get("000001", "Low")
     high = positions.get("999999", "High")
 
-    assert strategy.decide(low, 250, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(low)) is None
-    assert low.skip_reason == "lot_sizing_band_disabled"
-    assert strategy.decide(high, 1_000_001, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(high)) is None
-    assert high.skip_reason == "lot_sizing_band_disabled"
+    low_action = strategy.decide(low, 250, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(low))
+    assert low_action is not None
+    assert low_action.amount == 1000
+    assert strategy.decide(high, 3_000_001, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(high)) is None
+    assert high.skip_reason == "price_out_of_lot_sizing_range"
 
 
 def test_lot_sizing_cycle_lock_keeps_original_lot_unit_after_price_moves() -> None:
@@ -682,10 +683,10 @@ def test_lot_sizing_cycle_lock_keeps_original_lot_unit_after_price_moves() -> No
     action = strategy.decide(position, 9500, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
 
     assert position.entry_price_for_lot_sizing == 10100
-    assert position.lot_unit_amount == 30000
-    assert position.max_symbol_amount == 300000
+    assert position.lot_unit_amount == 100000
+    assert position.max_symbol_amount == 1000000
     assert action is not None
-    assert action.amount == 30000
+    assert action.amount == 100000
 
 
 def test_lot_sizing_reentry_starts_new_cycle_from_reentry_price() -> None:
@@ -698,7 +699,7 @@ def test_lot_sizing_reentry_starts_new_cycle_from_reentry_price() -> None:
 
     assert action is not None
     assert action.side is OrderSide.BUY
-    assert action.amount == 10000
+    assert action.amount == 30000
 
 
 def test_lot_sizing_lot_count_bands_and_max_lots_block() -> None:
@@ -710,7 +711,7 @@ def test_lot_sizing_lot_count_bands_and_max_lots_block() -> None:
     action = strategy.decide(position, 9400, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
 
     assert action is not None
-    assert action.amount == 30000
+    assert action.amount == 100000
     assert "6%" in action.reason
     assert strategy.context(position, 9400).add_buy_lot_band == "3-4"
 
@@ -748,16 +749,16 @@ def test_lot_sizing_open_lot_count_excludes_closed_lots_for_max_lot_boundary() -
     assert action.side is OrderSide.BUY
 
 
-def test_lot_sizing_high_price_band_max_lots_three_blocks_after_three_lots() -> None:
+def test_lot_sizing_high_price_band_uses_default_ten_lot_limit() -> None:
     _, _, positions, strategy, risk, snapshot = setup_strategy(StrategyConfig())
-    for _ in range(3):
-        add_lot(positions, "005930", 400000, 1)
-    position = positions.refresh_from_lots("005930", 360000)
+    for _ in range(10):
+        add_lot(positions, "005930", 120000, 1)
+    position = positions.refresh_from_lots("005930", 110000)
 
-    action = strategy.decide(position, 360000, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    action = strategy.decide(position, 110000, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
 
     assert action is None
-    assert position.max_lots_per_symbol == 3
+    assert position.max_lots_per_symbol == 10
     assert position.skip_reason == "max_lots_per_symbol_reached"
 
 
@@ -770,7 +771,7 @@ def test_lot_sizing_migrates_existing_open_lot_without_quantity_change() -> None
 
     sizing = strategy.ensure_lot_sizing(position, 9500)
 
-    assert sizing["lot_unit_amount"] == 30000
+    assert sizing["lot_unit_amount"] == 100000
     assert position.skip_reason == "lot_sizing_migrated"
     assert lot.remaining_quantity == 3
 

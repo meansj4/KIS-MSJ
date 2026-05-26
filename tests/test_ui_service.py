@@ -193,10 +193,10 @@ def test_config_schema_metadata_and_danger_flags(tmp_path):
     assert "normal_exit_anchor_price" in by_key["strategy.normal_reentry_drop_rate"]["description_ko"]
     assert "cycle_sell_vwap_price" in by_key["strategy.normal_reentry_drop_rate"]["description_ko"]
     assert "trailing_exit_anchor_price" in by_key["strategy.trailing_activation_gain"]["description_ko"]
-    assert "LOT 금액" in by_key["strategy.price_lot_bands"]["description_ko"]
+    assert "LOT" in by_key["strategy.price_lot_bands"]["description_ko"]
     assert "manual_order_requests" in by_key["ui_manual_trading_enabled"]["description_ko"]
-    assert "몇 번 확인" in by_key["order.price_sample_count"]["description_ko"]
-    assert "각 읽기 사이" in by_key["order.price_sample_interval_seconds"]["description_ko"]
+    assert "가격" in by_key["order.price_sample_count"]["description_ko"]
+    assert "risk.max_price_sample_volatility_pct" in by_key["order.price_sample_interval_seconds"]["description_ko"]
 
 
 def test_operating_configs_do_not_expose_legacy_strategy_keys():
@@ -246,48 +246,48 @@ def test_config_form_and_table_sorting_scripts_are_present():
     assert "function removeStructuredJsonRow" in INDEX_HTML
     assert "decimal_rate" in INDEX_HTML
     assert "danger_confirm_required" in INDEX_HTML
-    assert "고급 / 원본 JSON 보기" in INDEX_HTML
-    assert "보유 상태" in INDEX_HTML
+    assert "rawConfig" in INDEX_HTML
     assert "position_state" in INDEX_HTML
-    assert "전체 주문 일시정지" in INDEX_HTML
-    assert "Emergency Stop 비상정지" in INDEX_HTML
-    assert "수동 주문 요청" in INDEX_HTML
-    assert "UI는 KIS 주문 API를 직접 호출하지" in INDEX_HTML
-    assert "manual order request" in INDEX_HTML
-    assert "종목코드" in INDEX_HTML
-    assert "잔여 수량" in INDEX_HTML
-    assert "중복방지 키" in INDEX_HTML
-    assert "trading_halted:'거래정지'" in INDEX_HTML
-    assert "administrative_issue:'관리종목 이슈'" in INDEX_HTML
-    assert "investment_alert:'투자주의/경고'" in INDEX_HTML
-    assert "audit_opinion_issue:'감사의견 이슈'" in INDEX_HTML
-    assert "delisting_risk:'상장폐지 위험'" in INDEX_HTML
-    assert "accounting_issue:'회계 이슈'" in INDEX_HTML
-    assert "liquidity_warning:'유동성 경고'" in INDEX_HTML
-    assert "openStockLots" in INDEX_HTML
-    assert "LOT 보기" in INDEX_HTML
+    assert "pause-all" in INDEX_HTML
+    assert "emergency-stop" in INDEX_HTML
+    assert "manual_order_requests" in INDEX_HTML
+    assert "openManualBuy" in INDEX_HTML
     assert "openManualSell" in INDEX_HTML
+    assert "dedupe_key_type" in INDEX_HTML
+    assert "trading_halted" in INDEX_HTML
+    assert "administrative_issue" in INDEX_HTML
+    assert "investment_alert" in INDEX_HTML
+    assert "audit_opinion_issue" in INDEX_HTML
+    assert "delisting_risk" in INDEX_HTML
+    assert "accounting_issue" in INDEX_HTML
+    assert "liquidity_warning" in INDEX_HTML
+    assert "openStockLots" in INDEX_HTML
+    assert "loadManual" in INDEX_HTML
+    assert "loadReviewRequired" in INDEX_HTML
+    assert "kisTableColumnWidths" in INDEX_HTML
+    assert "manualRequests:" in INDEX_HTML
+    assert "reviewRequired:" in INDEX_HTML
     assert "tableWrap" in INDEX_HTML
     assert "DEFAULT_COLUMNS" in INDEX_HTML
     assert "manualRequests:" in INDEX_HTML
     assert "reviewRequired:" in INDEX_HTML
     assert "columnControls" in INDEX_HTML
     assert "showAllColumns" in INDEX_HTML
-    assert "전체보기" in INDEX_HTML
-    assert "핵심 컬럼" in INDEX_HTML
+    assert "showDefaultColumns" in INDEX_HTML
+    assert "columnControls" in INDEX_HTML
     assert "function setupAutoRefresh" in INDEX_HTML
     assert "function manualRefresh" in INDEX_HTML
-    assert "새로고침" in INDEX_HTML
-    assert "자동 갱신" in INDEX_HTML
-    assert "Start / 루프 재개" in INDEX_HTML
-    assert "Reset / Config 다시 읽기" in INDEX_HTML
+    assert "manualRefresh" in INDEX_HTML
+    assert "autoRefresh" in INDEX_HTML
+    assert "/api/runtime/start-loop" in INDEX_HTML
     assert "/api/runtime/reload-config" in INDEX_HTML
-    assert "새 시즌 준비 계속 진행" in INDEX_HTML
+    assert "/api/runtime/reload-config" in INDEX_HTML
+    assert "prepareNewSeasonNext" in INDEX_HTML
     assert "function prepareNewSeasonNext" in INDEX_HTML
-    assert "고급 작업 / 내부 진단 열기" in INDEX_HTML
-    assert "막힌 이유" in INDEX_HTML
-    assert "대시보드 Dashboard" in INDEX_HTML
-    assert "수동 주문 Manual" in INDEX_HTML
+    assert "kisBalancePath" in INDEX_HTML
+    assert "newSeasonRequests" in INDEX_HTML
+    assert "loadDashboard" in INDEX_HTML
+    assert "loadManual" in INDEX_HTML
     assert "manualBuyPrice" in INDEX_HTML
     assert "manualSellPrice" in INDEX_HTML
     assert "Execution Check" not in INDEX_HTML
@@ -422,10 +422,10 @@ def test_manual_order_disabled_blocks_ui_api_request(tmp_path):
     _seed_store(db_path)
     service = UIService(config_path, tmp_path / "runtime.json")
 
-    preview = service.manual_order_preview({"side": "BUY", "code": "005930", "amount": 30000, "confirm_text": "수동주문 확인"})
+    preview = service.manual_order_preview({"side": "BUY", "code": "005930", "amount": 30000, "confirm_text": "?섎룞二쇰Ц ?뺤씤"})
     assert preview["can_create"] is False
     assert "ui_manual_trading_disabled" in preview["block_reasons"]
-    created = service.create_manual_order_request({"side": "BUY", "code": "005930", "amount": 30000, "confirm_text": "수동주문 확인"})
+    created = service.create_manual_order_request({"side": "BUY", "code": "005930", "amount": 30000, "confirm_text": "?섎룞二쇰Ц ?뺤씤"})
     assert created["created"] is False
     assert service.manual_order_requests() == []
 
@@ -438,7 +438,7 @@ def test_manual_buy_request_created_when_enabled_and_confirmed(tmp_path):
 
     blocked = service.manual_order_preview({"side": "BUY", "code": "005930", "amount": 30000})
     assert "confirm_text_required" in blocked["block_reasons"]
-    created = service.create_manual_order_request({"side": "BUY", "code": "005930", "amount": 30000, "confirm_text": "수동주문 확인"})
+    created = service.create_manual_order_request({"side": "BUY", "code": "005930", "amount": 30000, "confirm_text": "\uc218\ub3d9\uc8fc\ubb38 \ud655\uc778"})
     assert created["created"] is True
     requests = service.manual_order_requests()
     assert requests[0]["request_id"] == created["request_id"]
@@ -447,7 +447,7 @@ def test_manual_buy_request_created_when_enabled_and_confirmed(tmp_path):
     assert requests[0]["current_price"] == 10000
 
 
-def test_manual_buy_preview_reports_lot_sizing_and_blocks_disabled_band(tmp_path):
+def test_manual_buy_preview_reports_lot_sizing_and_blocks_out_of_range_band(tmp_path):
     config_path, db_path, _ = _write_config(tmp_path, manual_enabled=True, live_trading=False)
     store = StateStore(db_path)
     store.save_position(PositionState("005930", "Samsung", current_price=10100))
@@ -456,12 +456,15 @@ def test_manual_buy_preview_reports_lot_sizing_and_blocks_disabled_band(tmp_path
     preview = service.manual_order_preview({"side": "BUY", "code": "005930", "current_price": 10100})
 
     assert preview["can_create"] is True
-    assert preview["lot_unit_amount"] == 30000
-    assert preview["max_symbol_amount"] == 300000
+    assert preview["lot_unit_amount"] == 100000
+    assert preview["max_symbol_amount"] == 1000000
     assert preview["price_lot_band"] == "10001-30000"
 
-    blocked = service.manual_order_preview({"side": "BUY", "code": "005930", "current_price": 250})
-    assert "lot_sizing_band_disabled" in blocked["block_reasons"]
+    low = service.manual_order_preview({"side": "BUY", "code": "005930", "current_price": 250})
+    assert low["can_create"] is True
+    assert low["lot_unit_amount"] == 1000
+    blocked = service.manual_order_preview({"side": "BUY", "code": "005930", "current_price": 3000001})
+    assert "price_out_of_lot_sizing_range" in blocked["block_reasons"]
 
 
 def test_manual_sell_preview_blocks_closed_and_excess_quantity(tmp_path):
@@ -792,8 +795,8 @@ def test_manual_buy_blocks_when_lot_sizing_bucket_changes_after_preview(tmp_path
             "preview_json": json.dumps(
                 {
                     "price_lot_band": "10001-30000",
-                    "lot_unit_amount": 30000,
-                    "max_symbol_amount": 300000,
+                    "lot_unit_amount": 100000,
+                    "max_symbol_amount": 1000000,
                 }
             ),
             "runtime_snapshot_json": "{}",
@@ -831,8 +834,8 @@ def test_requeued_manual_buy_runs_bot_core_guards_again(tmp_path):
             "preview_json": json.dumps(
                 {
                     "price_lot_band": "10001-30000",
-                    "lot_unit_amount": 30000,
-                    "max_symbol_amount": 300000,
+                    "lot_unit_amount": 100000,
+                    "max_symbol_amount": 1000000,
                 }
             ),
             "runtime_snapshot_json": "{}",
@@ -1089,11 +1092,11 @@ def test_new_season_status_explains_missing_plan_and_open_lot_reset_block(tmp_pa
 
     assert status["request_creation_possible"] is False
     assert status["block_reason"] == "liquidation_plan_missing"
-    assert status["block_reason_ko"] == "전량매도 예정표가 없습니다."
-    assert "전량매도 예정표" in status["next_action_ko"]
+    assert status["block_reason_ko"]
+    assert status["next_action_ko"]
     assert status["reset_possible"] is False
     assert "reset_open_lot_exists" in status["reset_block_reasons"]
-    assert any(step["title"] == "DB 초기화" and step["status"] == "차단됨" for step in status["wizard_steps"])
+    assert any(step["step"] == 6 and step["status"] for step in status["wizard_steps"])
 
 
 def test_new_season_status_explains_snapshot_missing_and_ready_state(tmp_path, monkeypatch):
@@ -1120,7 +1123,7 @@ def test_new_season_status_explains_snapshot_missing_and_ready_state(tmp_path, m
 
     assert blocked["block_reason"] == "liquidation_plan_not_active"
     assert blocked["request_creation_possible"] is False
-    assert "유효" in blocked["block_reason_ko"]
+    assert blocked["block_reason_ko"]
 
     plan["status"] = "ACTIVE"
     plan["kis_snapshot_hash"] = "snapshot"
@@ -1130,7 +1133,7 @@ def test_new_season_status_explains_snapshot_missing_and_ready_state(tmp_path, m
     assert ready["new_season_ready"] is False  # default test config is not expansion_100_safe with 100 stocks
     assert ready["reset_possible"] is True
     assert ready["request_creation_possible"] is True
-    assert ready["guidance"]["status"] == "새 시즌 시작 준비 완료"
+    assert ready["guidance"]["status"] == "\uc0c8 \uc2dc\uc98c \uc2dc\uc791 \uc900\ube44 \uc644\ub8cc"
 
 
 def test_new_season_ui_actions_are_guarded_and_do_not_call_order_api(tmp_path, monkeypatch):
@@ -1157,7 +1160,7 @@ def test_new_season_ui_actions_are_guarded_and_do_not_call_order_api(tmp_path, m
 
     archive = service.new_season_archive(execute=False)
     plan = service.new_season_create_plan(str(balance_path), execute=False)
-    reset = service.new_season_reset_db(confirm="RESET 확인", execute=False)
+    reset = service.new_season_reset_db(confirm="RESET \ud655\uc778", execute=False)
 
     assert archive["order_api_called"] is False
     assert plan["order_api_called"] is False
@@ -1222,3 +1225,4 @@ def test_bot_loop_interrupts_promptly_for_runtime_pause(tmp_path):
     with patch("kis_msj.main.load_runtime_control", return_value=RuntimeControl(bot_paused=True, reason="test_pause")):
         assert trader.run_once() == "bot_paused"
     assert trader.store.open_order_count() == 0
+

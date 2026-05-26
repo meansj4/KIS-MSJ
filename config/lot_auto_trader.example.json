@@ -220,10 +220,9 @@
       {
         "min_price": 0,
         "max_price": 300,
-        "lot_unit_amount": 0,
-        "max_symbol_amount": 0,
-        "enabled": false,
-        "note": "초저가주는 자동매수 제외 또는 paper 전용"
+        "lot_unit_amount": 1000,
+        "max_symbol_amount": 10000,
+        "enabled": true
       },
       {
         "min_price": 301,
@@ -234,48 +233,52 @@
       },
       {
         "min_price": 1001,
-        "max_price": 10000,
+        "max_price": 3000,
         "lot_unit_amount": 10000,
         "max_symbol_amount": 100000,
         "enabled": true
       },
       {
-        "min_price": 10001,
-        "max_price": 30000,
+        "min_price": 3001,
+        "max_price": 10000,
         "lot_unit_amount": 30000,
         "max_symbol_amount": 300000,
         "enabled": true
       },
       {
-        "min_price": 30001,
-        "max_price": 100000,
+        "min_price": 10001,
+        "max_price": 30000,
         "lot_unit_amount": 100000,
         "max_symbol_amount": 1000000,
         "enabled": true
       },
       {
-        "min_price": 100001,
-        "max_price": 300000,
+        "min_price": 30001,
+        "max_price": 100000,
         "lot_unit_amount": 300000,
         "max_symbol_amount": 3000000,
         "enabled": true
       },
       {
+        "min_price": 100001,
+        "max_price": 300000,
+        "lot_unit_amount": 1000000,
+        "max_symbol_amount": 10000000,
+        "enabled": true
+      },
+      {
         "min_price": 300001,
         "max_price": 1000000,
-        "lot_unit_amount": 1000000,
-        "max_symbol_amount": 3000000,
-        "enabled": true,
-        "max_lots": 3,
-        "note": "고가주는 3 LOT까지만"
+        "lot_unit_amount": 3000000,
+        "max_symbol_amount": 30000000,
+        "enabled": true
       },
       {
         "min_price": 1000001,
         "max_price": 3000000,
-        "lot_unit_amount": 0,
-        "max_symbol_amount": 0,
-        "enabled": false,
-        "note": "초고가주는 자동매수 제외, manual only"
+        "lot_unit_amount": 10000000,
+        "max_symbol_amount": 100000000,
+        "enabled": true
       }
     ],
     "add_buy_lot_bands": [

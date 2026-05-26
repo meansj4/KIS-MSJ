@@ -119,14 +119,15 @@ class StrategyConfig:
     stale_lot_review_age_weeks: int = 20
     lot_sizing_mode: str = "cycle_locked_by_entry_price"
     price_lot_bands: tuple[PriceLotBand, ...] = (
-        PriceLotBand(0, 300, 0, 0, False, note="초저가주는 자동매수 제외 또는 paper 전용"),
+        PriceLotBand(0, 300, 1_000, 10_000, True),
         PriceLotBand(301, 1_000, 3_000, 30_000, True),
-        PriceLotBand(1_001, 10_000, 10_000, 100_000, True),
-        PriceLotBand(10_001, 30_000, 30_000, 300_000, True),
-        PriceLotBand(30_001, 100_000, 100_000, 1_000_000, True),
-        PriceLotBand(100_001, 300_000, 300_000, 3_000_000, True),
-        PriceLotBand(300_001, 1_000_000, 1_000_000, 3_000_000, True, max_lots=3, note="고가주는 3 LOT까지만"),
-        PriceLotBand(1_000_001, 3_000_000, 0, 0, False, note="초고가주는 자동매수 제외, manual only"),
+        PriceLotBand(1_001, 3_000, 10_000, 100_000, True),
+        PriceLotBand(3_001, 10_000, 30_000, 300_000, True),
+        PriceLotBand(10_001, 30_000, 100_000, 1_000_000, True),
+        PriceLotBand(30_001, 100_000, 300_000, 3_000_000, True),
+        PriceLotBand(100_001, 300_000, 1_000_000, 10_000_000, True),
+        PriceLotBand(300_001, 1_000_000, 3_000_000, 30_000_000, True),
+        PriceLotBand(1_000_001, 3_000_000, 10_000_000, 100_000_000, True),
     )
     add_buy_lot_bands: tuple[AddBuyLotBand, ...] = (
         AddBuyLotBand(1, 2, 0.04, 1),
