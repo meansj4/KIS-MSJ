@@ -224,6 +224,14 @@ class UpstreamWatchConfig:
 
 
 @dataclass(frozen=True)
+class ExperimentConfig:
+    run_id: str = ""
+    experiment_name: str = ""
+    operator_note: str = ""
+    purpose: str = ""
+
+
+@dataclass(frozen=True)
 class BotConfig:
     stocks: tuple[StockConfig, ...] = ()
     strategy: StrategyConfig = field(default_factory=StrategyConfig)
@@ -232,6 +240,7 @@ class BotConfig:
     market_hours: MarketHoursConfig = field(default_factory=MarketHoursConfig)
     kis_account: KisAccountConfig = field(default_factory=KisAccountConfig)
     upstream_watch: UpstreamWatchConfig = field(default_factory=UpstreamWatchConfig)
+    experiment: ExperimentConfig = field(default_factory=ExperimentConfig)
     storage_path: str = str(PROJECT_ROOT / "data" / "lot_auto_trader_state.sqlite3")
     log_path: str = str(PROJECT_ROOT / "logs" / "lot_auto_trader.log")
     loop_interval_seconds: float = 15.0
@@ -256,6 +265,7 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> BotConfig:
         market_hours=MarketHoursConfig(**{**asdict(base.market_hours), **raw.get("market_hours", {})}),
         kis_account=KisAccountConfig(**{**asdict(base.kis_account), **raw.get("kis_account", {})}),
         upstream_watch=UpstreamWatchConfig(**{**asdict(base.upstream_watch), **raw.get("upstream_watch", {})}),
+        experiment=ExperimentConfig(**{**asdict(base.experiment), **raw.get("experiment", {})}),
         storage_path=str(raw.get("storage_path", base.storage_path)),
         log_path=str(raw.get("log_path", base.log_path)),
         loop_interval_seconds=float(raw.get("loop_interval_seconds", base.loop_interval_seconds)),

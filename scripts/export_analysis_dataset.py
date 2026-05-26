@@ -24,6 +24,9 @@ TABLES = (
     "fills",
     "manual_order_requests",
     "decisions",
+    "price_snapshots",
+    "daily_prices",
+    "liquidity_snapshots",
 )
 SENSITIVE_KEYS = ("account", "acct", "cano", "acnt", "appkey", "appsecret", "token", "authorization", "auth")
 
@@ -110,7 +113,7 @@ def _filtered_rows(connection: sqlite3.Connection, table: str, *, date_from: str
 
 
 def _time_column(columns: set[str]) -> str:
-    for candidate in ("filled_at", "requested_at", "created_at", "updated_at", "buy_filled_at", "last_update_time"):
+    for candidate in ("filled_at", "requested_at", "created_at", "updated_at", "buy_filled_at", "last_update_time", "sampled_at", "date", "collected_at"):
         if candidate in columns:
             return candidate
     return ""
@@ -191,6 +194,7 @@ def _summary(connection: sqlite3.Connection, exported: dict[str, int], *, date_f
             if "run_id" in row.keys() and row["run_id"]
         }
     )
+    market_counts = _market_data_summary(connection, code=code, date_from=date_from, date_to=date_to, config_hash=config_hash)
     return {
         "exported_row_counts": exported,
         "total_buy_fills": len(buy_fills),
@@ -206,6 +210,29 @@ def _summary(connection: sqlite3.Connection, exported: dict[str, int], *, date_f
         "max_capital_used_estimate": capital_used,
         "config_hashes": config_hashes,
         "run_ids": run_ids,
+        **market_counts,
+    }
+
+
+def _market_data_summary(connection: sqlite3.Connection, *, code: str, date_from: str, date_to: str, config_hash: str) -> dict[str, Any]:
+    price_rows = _filtered_rows(connection, "price_snapshots", date_from=date_from, date_to=date_to, code=code, config_hash=config_hash) if _table_exists(connection, "price_snapshots") else []
+    daily_rows = _filtered_rows(connection, "daily_prices", date_from=date_from, date_to=date_to, code=code, config_hash="") if _table_exists(connection, "daily_prices") else []
+    liquidity_rows = _filtered_rows(connection, "liquidity_snapshots", date_from=date_from, date_to=date_to, code=code, config_hash="") if _table_exists(connection, "liquidity_snapshots") else []
+    symbols_with_price = {str(row["code"]) for row in price_rows if "code" in row.keys()}
+    position_symbols = {
+        str(row["code"])
+        for row in (_filtered_rows(connection, "positions", date_from="", date_to="", code=code, config_hash="") if _table_exists(connection, "positions") else [])
+        if "code" in row.keys()
+    }
+    daily_dates = sorted(str(row["date"]) for row in daily_rows if "date" in row.keys() and row["date"])
+    return {
+        "price_snapshots_count": len(price_rows),
+        "daily_prices_count": len(daily_rows),
+        "liquidity_snapshots_count": len(liquidity_rows),
+        "symbols_with_price_data_count": len(symbols_with_price),
+        "earliest_price_date": daily_dates[0] if daily_dates else "",
+        "latest_price_date": daily_dates[-1] if daily_dates else "",
+        "market_data_missing_symbols": sorted(position_symbols - symbols_with_price),
     }
 
 
@@ -226,6 +253,8 @@ def _skipped_actions(connection: sqlite3.Connection, *, date_from: str, date_to:
             _sanitize_row(
                 {
                     "decision_time": data.get("created_at", ""),
+                    "decision_id": data.get("id", ""),
+                    "price_snapshot_id": data.get("price_snapshot_id", ""),
                     "config_hash": data.get("config_hash", ""),
                     "run_id": data.get("run_id", ""),
                     "experiment_name": data.get("experiment_name", ""),
@@ -261,11 +290,13 @@ def _metadata(summary: dict[str, Any]) -> dict[str, Any]:
             "config_hash/run_id segmented outcomes",
             "blocked/skipped action context",
             "manual vs automatic request outcomes",
+            "decision-time price snapshots when available",
+            "daily price context when collected",
         ],
         "cannot_fully_analyze_without_price_history": [
             "accurate what-if backtests for configs not used live",
-            "post-block opportunity cost over N days",
-            "MDD/MFE between fills",
+            "post-block opportunity cost over N days without daily/minute prices",
+            "precise intraday MDD/MFE without minute prices",
             "limit-order fill probability",
         ],
         "kis_order_api_called": False,

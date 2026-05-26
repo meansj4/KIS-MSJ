@@ -2109,5 +2109,11 @@
   "log_path": "C:\\MSJ\\KIS-MSJ\\logs\\lot_auto_trader.log",
   "loop_interval_seconds": 3,
   "max_loop_count": null,
-  "ui_manual_trading_enabled": false
+  "ui_manual_trading_enabled": false,
+  "experiment": {
+    "run_id": "",
+    "experiment_name": "",
+    "operator_note": "",
+    "purpose": ""
+  }
 }

@@ -364,9 +364,23 @@ class UIService:
     def analysis_status(self, positions: list[dict[str, Any]], lots: list[dict[str, Any]], fills: list[dict[str, Any]]) -> dict[str, Any]:
         config_snapshots = self._table("config_snapshots")
         decisions = self._table("decisions")
+        price_snapshots = self._table("price_snapshots")
+        daily_prices = self._table("daily_prices")
+        liquidity_snapshots = self._table("liquidity_snapshots")
         closed_lots = [lot for lot in lots if str(lot.get("status") or "") == "CLOSED" or int(lot.get("remaining_quantity") or 0) <= 0]
         open_lots = [lot for lot in lots if str(lot.get("status") or "") != "CLOSED" and int(lot.get("remaining_quantity") or 0) > 0]
         dates = {str(fill.get("filled_at") or "")[:10] for fill in fills if str(fill.get("filled_at") or "")}
+        price_codes = {str(row.get("code") or "") for row in price_snapshots if row.get("code")}
+        configured_codes = {stock.code for stock in self.config.stocks if stock.enabled and not stock.manual_only}
+        latest_market_at = max((str(row.get("collected_at") or row.get("sampled_at") or "") for row in price_snapshots + daily_prices + liquidity_snapshots), default="")
+        current_hash = config_hash(self.config)
+        run_id = self.config.experiment.run_id or self.config.run_id or f"{self.config.risk.profile}_{current_hash}"
+        experiment_name = self.config.experiment.experiment_name or self.config.experiment_name or self.config.risk.profile
+        what_if_level = "actual_trade_analysis"
+        if daily_prices:
+            what_if_level = "blocked_candidate_daily_followup_possible"
+        if price_snapshots and daily_prices:
+            what_if_level = "config_comparison_and_limited_what_if"
         return {
             "fill_count": len(fills),
             "closed_lot_count": len(closed_lots),
@@ -376,7 +390,16 @@ class UIService:
             "trading_day_count": len(dates),
             "config_snapshot_count": len(config_snapshots),
             "decision_record_count": len(decisions),
-            "current_config_hash": config_hash(self.config),
+            "current_config_hash": current_hash,
+            "current_run_id": run_id,
+            "current_experiment_name": experiment_name,
+            "price_snapshots_count": len(price_snapshots),
+            "daily_prices_count": len(daily_prices),
+            "liquidity_snapshots_count": len(liquidity_snapshots),
+            "symbols_with_price_data_count": len(price_codes),
+            "market_data_missing_symbols_count": len(configured_codes - price_codes),
+            "latest_market_data_collected_at": latest_market_at,
+            "what_if_analysis_level": what_if_level,
             "analysis_export_ready": bool(fills or decisions),
         }
 
@@ -1377,8 +1400,8 @@ class UIService:
             "status": "REQUESTED",
             "config_hash": config_hash(self.config),
             "config_version": config_hash(self.config),
-            "run_id": self.config.run_id or f"{self.config.risk.profile}_{config_hash(self.config)}",
-            "experiment_name": self.config.experiment_name or self.config.risk.profile,
+            "run_id": self.config.experiment.run_id or self.config.run_id or f"{self.config.risk.profile}_{config_hash(self.config)}",
+            "experiment_name": self.config.experiment.experiment_name or self.config.experiment_name or self.config.risk.profile,
         }
         from .storage import StateStore
 

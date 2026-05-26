@@ -52,7 +52,7 @@ Last updated: 2026-05-26
 현재는 `expansion_100_safe` config가 적용되어 있으나 OPEN LOT이 남아 있으므로 DB reset은 차단되는 것이 정상이다. 다음 단계는 실제 계좌 잔고 확인 자료인 KIS balance snapshot 준비, 전량매도 예정표 생성, 전량매도 request 생성 여부 결정이다.
 
 
-Analysis/tuning data preparation: see [docs/analysis_and_tuning.md](analysis_and_tuning.md) for config snapshot, decision context, export dataset, and tuning metric guidance.
+Analysis/tuning data preparation: see [docs/analysis_and_tuning.md](analysis_and_tuning.md) for config snapshots, run/experiment metadata, decision-time price snapshots, market-data collection, export dataset, and tuning metric guidance.
 
 ## 1. 전체 목적과 한 줄 요약
 

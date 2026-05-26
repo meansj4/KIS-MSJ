@@ -285,6 +285,68 @@ class StateStore:
             _ensure_column(connection, "decisions", "run_id", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(connection, "decisions", "experiment_name", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(connection, "decisions", "profile_name", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "decisions", "price_snapshot_id", "INTEGER NOT NULL DEFAULT 0")
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS price_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    code TEXT NOT NULL,
+                    sampled_at TEXT NOT NULL,
+                    current_price INTEGER NOT NULL DEFAULT 0,
+                    previous_close INTEGER,
+                    day_open INTEGER,
+                    day_high INTEGER,
+                    day_low INTEGER,
+                    volume INTEGER,
+                    trading_value INTEGER,
+                    bid_price INTEGER,
+                    ask_price INTEGER,
+                    spread INTEGER,
+                    spread_rate REAL,
+                    source TEXT NOT NULL DEFAULT '',
+                    run_id TEXT NOT NULL DEFAULT '',
+                    config_hash TEXT NOT NULL DEFAULT '',
+                    decision_id INTEGER NOT NULL DEFAULT 0,
+                    collected_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    missing_fields_json TEXT NOT NULL DEFAULT '[]',
+                    raw_json TEXT NOT NULL DEFAULT '{}'
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS daily_prices (
+                    code TEXT NOT NULL,
+                    date TEXT NOT NULL,
+                    open INTEGER NOT NULL DEFAULT 0,
+                    high INTEGER NOT NULL DEFAULT 0,
+                    low INTEGER NOT NULL DEFAULT 0,
+                    close INTEGER NOT NULL DEFAULT 0,
+                    volume INTEGER NOT NULL DEFAULT 0,
+                    trading_value INTEGER NOT NULL DEFAULT 0,
+                    source TEXT NOT NULL DEFAULT '',
+                    collected_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (code, date, source)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS liquidity_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    code TEXT NOT NULL,
+                    sampled_at TEXT NOT NULL,
+                    best_bid INTEGER,
+                    best_ask INTEGER,
+                    spread INTEGER,
+                    spread_rate REAL,
+                    bid_size INTEGER,
+                    ask_size INTEGER,
+                    source TEXT NOT NULL DEFAULT '',
+                    collected_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
 
     def _backup_before_migration_if_needed(self, connection: sqlite3.Connection) -> None:
         if self._migration_backup_done or not self._db_existed_before_init:
@@ -471,9 +533,9 @@ class StateStore:
                 ),
             )
 
-    def record_decision(self, payload: dict[str, object]) -> None:
+    def record_decision(self, payload: dict[str, object]) -> int:
         with self._connect() as connection:
-            connection.execute(
+            cursor = connection.execute(
                 """
                 INSERT INTO decisions (
                     config_hash, config_version, run_id, experiment_name, profile_name, code, action, action_created,
@@ -494,6 +556,84 @@ class StateStore:
                     str(payload.get("skip_reason") or ""),
                     int(float(payload.get("current_price") or 0)),
                     json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def record_price_snapshot(self, snapshot: dict[str, object]) -> int:
+        missing_fields = snapshot.get("missing_fields_json", snapshot.get("missing_fields", []))
+        if not isinstance(missing_fields, str):
+            missing_fields = json.dumps(missing_fields, ensure_ascii=False, sort_keys=True)
+        raw_json = snapshot.get("raw_json", {})
+        if not isinstance(raw_json, str):
+            raw_json = json.dumps(raw_json, ensure_ascii=False, sort_keys=True)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO price_snapshots (
+                    code, sampled_at, current_price, previous_close, day_open, day_high, day_low,
+                    volume, trading_value, bid_price, ask_price, spread, spread_rate, source,
+                    run_id, config_hash, decision_id, collected_at, missing_fields_json, raw_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(snapshot.get("code") or "").zfill(6),
+                    str(snapshot.get("sampled_at") or datetime.now().isoformat(timespec="seconds")),
+                    int(float(snapshot.get("current_price") or 0)),
+                    _nullable_int(snapshot.get("previous_close")),
+                    _nullable_int(snapshot.get("day_open")),
+                    _nullable_int(snapshot.get("day_high")),
+                    _nullable_int(snapshot.get("day_low")),
+                    _nullable_int(snapshot.get("volume")),
+                    _nullable_int(snapshot.get("trading_value")),
+                    _nullable_int(snapshot.get("bid_price")),
+                    _nullable_int(snapshot.get("ask_price")),
+                    _nullable_int(snapshot.get("spread")),
+                    _nullable_float(snapshot.get("spread_rate")),
+                    str(snapshot.get("source") or ""),
+                    str(snapshot.get("run_id") or self.active_run_id),
+                    str(snapshot.get("config_hash") or self.active_config_hash),
+                    int(snapshot.get("decision_id") or 0),
+                    str(snapshot.get("collected_at") or datetime.now().isoformat(timespec="seconds")),
+                    str(missing_fields),
+                    str(raw_json),
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def link_decision_price_snapshot(self, decision_id: int, snapshot_id: int) -> None:
+        with self._connect() as connection:
+            connection.execute("UPDATE decisions SET price_snapshot_id = ? WHERE id = ?", (snapshot_id, decision_id))
+
+    def upsert_daily_price(self, row: dict[str, object]) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO daily_prices (
+                    code, date, open, high, low, close, volume, trading_value, source, collected_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(code, date, source) DO UPDATE SET
+                    open=excluded.open,
+                    high=excluded.high,
+                    low=excluded.low,
+                    close=excluded.close,
+                    volume=excluded.volume,
+                    trading_value=excluded.trading_value,
+                    collected_at=excluded.collected_at
+                """,
+                (
+                    str(row.get("code") or "").zfill(6),
+                    str(row.get("date") or datetime.now().date().isoformat()),
+                    int(float(row.get("open") or 0)),
+                    int(float(row.get("high") or 0)),
+                    int(float(row.get("low") or 0)),
+                    int(float(row.get("close") or 0)),
+                    int(float(row.get("volume") or 0)),
+                    int(float(row.get("trading_value") or 0)),
+                    str(row.get("source") or ""),
+                    str(row.get("collected_at") or datetime.now().isoformat(timespec="seconds")),
                 ),
             )
 
@@ -935,6 +1075,18 @@ def _ensure_column(connection: sqlite3.Connection, table: str, column: str, defi
 
 def _parse_timestamp(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
+
+
+def _nullable_int(value: object) -> int | None:
+    if value is None or value == "":
+        return None
+    return int(float(value))
+
+
+def _nullable_float(value: object) -> float | None:
+    if value is None or value == "":
+        return None
+    return float(value)
 
 
 def _normalize_order_id(order_id: str) -> str:

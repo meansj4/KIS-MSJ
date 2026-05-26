@@ -14,7 +14,7 @@ from .config import DEFAULT_CONFIG_PATH, BotConfig, config_hash, config_to_dict,
 from .kis_client import KisClient, MockKisClient
 from .logger import configure_trade_logger, log_decision
 from .lot_manager import LotManager
-from .models import AccountSnapshot, OrderSide, PositionState, SellReason
+from .models import AccountSnapshot, OrderSide, PositionState, Quote, SellReason
 from .models import PositionLifecycle
 from .notifier import LogNotifier
 from .order_manager import OrderManager
@@ -37,14 +37,14 @@ class AutoTrader:
         self.logger = configure_trade_logger(config.log_path)
         self.store = StateStore(config.storage_path)
         self.config_hash = config_hash(config)
-        self.run_id = config.run_id or f"{config.risk.profile}_{self.config_hash}"
-        self.experiment_name = config.experiment_name or config.risk.profile
+        self.run_id = config.experiment.run_id or config.run_id or f"{config.risk.profile}_{self.config_hash}"
+        self.experiment_name = config.experiment.experiment_name or config.experiment_name or config.risk.profile
         self.store.set_active_config(self.config_hash, run_id=self.run_id, experiment_name=self.experiment_name, profile_name=config.risk.profile)
         self.store.record_config_snapshot(
             self.config_hash,
             config_to_dict(config),
             source="bot_init",
-            operator_note=config.operator_note,
+            operator_note=config.experiment.operator_note or config.operator_note,
             run_id=self.run_id,
             experiment_name=self.experiment_name,
             profile_name=config.risk.profile,
@@ -369,6 +369,7 @@ class AutoTrader:
             portfolio_preview,
             final_block_reason,
             bool(action),
+            samples=samples,
         )
         if action is None:
             return
@@ -406,6 +407,8 @@ class AutoTrader:
         portfolio_risk_block_reason: str = "",
         final_block_reason: str = "",
         action_created: bool = False,
+        *,
+        samples: Sequence[Quote] = (),
     ) -> None:
         last_lot = self.lot_manager.last_buy_lot(position.code)
         last_lot_drop = (current_price - last_lot.buy_price) / last_lot.buy_price * 100.0 if last_lot else 0.0
@@ -416,6 +419,7 @@ class AutoTrader:
             for lot in lots
         )
         avg_profit_pct = (current_price - position.average_price) / position.average_price * 100.0 if position.average_price else 0.0
+        price_context = self.price_context(position, current_price, samples)
         decision_data = dict(
             config_hash=self.config_hash,
             run_id=self.run_id,
@@ -425,17 +429,23 @@ class AutoTrader:
             code=position.code,
             name=position.name,
             current_price=current_price,
-            sampled_price_source=type(self.client).__name__,
-            sampled_at=datetime.now().isoformat(timespec="seconds"),
-            previous_close="",
-            day_open="",
-            day_high="",
-            day_low="",
-            volume="",
-            trading_value="",
-            bid_price="",
-            ask_price="",
-            spread="",
+            sampled_price_source=price_context["source"],
+            sampled_at=price_context["sampled_at"],
+            previous_close=price_context["previous_close"] or "",
+            day_open=price_context["day_open"] or "",
+            day_high=price_context["day_high"] or "",
+            day_low=price_context["day_low"] or "",
+            volume=price_context["volume"] or "",
+            trading_value=price_context["trading_value"] or "",
+            bid_price=price_context["bid_price"] or "",
+            ask_price=price_context["ask_price"] or "",
+            spread=price_context["spread"] or "",
+            spread_rate=price_context["spread_rate"] or "",
+            price_context_available=price_context["available"],
+            price_context_source=price_context["source"],
+            price_context_missing_fields=",".join(price_context["missing_fields"]),
+            price_context_error=price_context["error"],
+            price_context_collected_at=price_context["collected_at"],
             position_state=context.position_state,
             position_pnl_rate=f"{context.position_pnl_rate:.4f}",
             pnl_mode=context.pnl_mode,
@@ -548,7 +558,53 @@ class AutoTrader:
             block_reason=final_block_reason or portfolio_risk_block_reason or context.skip_reason,
         )
         log_decision(self.logger, **decision_data)
-        self.store.record_decision(decision_data)
+        decision_id = self.store.record_decision(decision_data)
+        price_context.update(
+            {
+                "code": position.code,
+                "current_price": current_price,
+                "run_id": self.run_id,
+                "config_hash": self.config_hash,
+                "decision_id": decision_id,
+            }
+        )
+        snapshot_id = self.store.record_price_snapshot(price_context)
+        self.store.link_decision_price_snapshot(decision_id, snapshot_id)
+
+    def price_context(self, position: PositionState, current_price: int, samples: Sequence[Quote]) -> dict[str, object]:
+        sampled_at = samples[-1].timestamp.isoformat(timespec="seconds") if samples else datetime.now().isoformat(timespec="seconds")
+        missing = [
+            "previous_close",
+            "day_open",
+            "day_high",
+            "day_low",
+            "volume",
+            "trading_value",
+            "bid_price",
+            "ask_price",
+            "spread",
+            "spread_rate",
+        ]
+        return {
+            "sampled_at": sampled_at,
+            "current_price": current_price,
+            "previous_close": None,
+            "day_open": None,
+            "day_high": None,
+            "day_low": None,
+            "volume": None,
+            "trading_value": None,
+            "bid_price": None,
+            "ask_price": None,
+            "spread": None,
+            "spread_rate": None,
+            "source": type(self.client).__name__,
+            "available": current_price > 0,
+            "missing_fields": missing,
+            "error": "" if current_price > 0 else "current_price_missing",
+            "collected_at": datetime.now().isoformat(timespec="seconds"),
+            "raw_json": {"sample_count": len(samples), "name": position.name},
+        }
 
     def pre_request_block_reason(self, position: PositionState, action, portfolio_preview: str = "") -> str:
         """Return the final guard reason that blocks an action before any order request."""
