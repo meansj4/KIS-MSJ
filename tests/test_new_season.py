@@ -117,6 +117,23 @@ def test_reset_requires_confirm_and_blocks_open_orders(tmp_path) -> None:
     assert db_path.exists()
 
 
+def test_reset_blocks_pending_manual_requests_and_open_lots(tmp_path) -> None:
+    db_path = tmp_path / "state.sqlite3"
+    config_path = _write_config(tmp_path, db_path)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("CREATE TABLE manual_order_requests (status TEXT)")
+        connection.execute("CREATE TABLE lots (remaining_quantity INTEGER, status TEXT)")
+        connection.execute("INSERT INTO manual_order_requests VALUES ('SUBMITTED')")
+        connection.execute("INSERT INTO lots VALUES (1, 'OPEN')")
+
+    blocked = prepare_new_season.reset_db(config_path, prepare_new_season.CONFIRM_RESET, dry_run=False)
+
+    assert blocked["reason"] == "reset_blocked_by_open_order_or_sync_mismatch"
+    assert blocked["blockers"]["pending_manual_request_count"] == 1
+    assert blocked["blockers"]["open_lot_count"] == 1
+    assert db_path.exists()
+
+
 def test_reset_dry_run_with_confirm_keeps_db(tmp_path) -> None:
     db_path = tmp_path / "state.sqlite3"
     config_path = _write_config(tmp_path, db_path)
@@ -146,3 +163,45 @@ def test_liquidation_plan_does_not_create_orders_or_requests(tmp_path) -> None:
     assert result["manual_requests_created"] is False
     with sqlite3.connect(db_path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM manual_order_requests").fetchone()[0] == 0
+
+
+def test_liquidation_manual_requests_require_confirm_and_use_queue_only(tmp_path) -> None:
+    db_path = tmp_path / "state.sqlite3"
+    config_path = _write_config(tmp_path, db_path)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE manual_order_requests (
+                request_id TEXT, source TEXT, requested_by TEXT, requested_at TEXT, code TEXT, side TEXT,
+                current_price INTEGER, amount INTEGER, quantity INTEGER, lot_id TEXT, order_type TEXT,
+                preview_json TEXT, runtime_snapshot_json TEXT, live_trading INTEGER, confirm_text_verified INTEGER,
+                status TEXT, block_reason TEXT, linked_order_id TEXT, created_at TEXT, updated_at TEXT
+            )
+            """
+        )
+        connection.execute("CREATE TABLE orders (status TEXT)")
+        connection.execute("CREATE TABLE positions (sync_status TEXT, lot_quantity_mismatch INTEGER)")
+        connection.execute("CREATE TABLE lots (lot_id TEXT, code TEXT, remaining_quantity INTEGER, buy_price INTEGER, status TEXT, buy_filled_at TEXT)")
+        connection.execute("CREATE TABLE positions_extra (code TEXT)")
+        connection.execute("CREATE TABLE fills (id INTEGER)")
+        connection.execute("DROP TABLE positions_extra")
+        connection.execute("DROP TABLE fills")
+        connection.execute("CREATE TABLE positions_tmp (code TEXT)")
+        connection.execute("DROP TABLE positions_tmp")
+        connection.execute("INSERT INTO lots VALUES ('LOT-1', '005930', 2, 70000, 'OPEN', '2026-05-26T09:00:00')")
+        connection.execute("ALTER TABLE positions ADD COLUMN code TEXT")
+        connection.execute("ALTER TABLE positions ADD COLUMN name TEXT")
+        connection.execute("ALTER TABLE positions ADD COLUMN current_price INTEGER")
+        connection.execute("INSERT INTO positions (sync_status, lot_quantity_mismatch, code, name, current_price) VALUES ('', 0, '005930', '삼성전자', 71000)")
+
+    no_confirm = prepare_new_season.create_liquidation_manual_requests(config_path, "", dry_run=False)
+    assert no_confirm["reason"] == "confirm_required"
+    dry_run = prepare_new_season.create_liquidation_manual_requests(config_path, prepare_new_season.CONFIRM_LIQUIDATION, dry_run=True)
+    assert dry_run["reason"] == "dry_run"
+    created = prepare_new_season.create_liquidation_manual_requests(config_path, prepare_new_season.CONFIRM_LIQUIDATION, dry_run=False)
+
+    assert created["created"] is True
+    assert created["request_count"] == 1
+    with sqlite3.connect(db_path) as connection:
+        row = connection.execute("SELECT side, status, lot_id, quantity FROM manual_order_requests").fetchone()
+    assert row == ("SELL", "REQUESTED", "LOT-1", 2)

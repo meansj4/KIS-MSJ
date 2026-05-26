@@ -256,8 +256,11 @@ def liquidation_plan(config_path: Path, output_dir: Path, dry_run: bool) -> dict
     return {"plan_path": str(path), "item_count": len(items), **payload}
 
 
+PENDING_MANUAL_STATUSES = ("REQUESTED", "PROCESSING", "ACCEPTED", "SUBMITTED")
+
+
 def reset_blockers(db_path: Path) -> dict[str, Any]:
-    blockers = {"open_order_count": 0, "sync_required_count": 0, "lot_mismatch_count": 0}
+    blockers = {"open_order_count": 0, "pending_manual_request_count": 0, "open_lot_count": 0, "sync_required_count": 0, "lot_mismatch_count": 0}
     if not db_path.exists():
         return blockers
     with sqlite3.connect(db_path) as connection:
@@ -266,6 +269,17 @@ def reset_blockers(db_path: Path) -> dict[str, Any]:
             blockers["open_order_count"] = int(row[0] or 0)
         except sqlite3.Error:
             blockers["open_order_count"] = 0
+        try:
+            placeholders = ",".join("?" for _ in PENDING_MANUAL_STATUSES)
+            row = connection.execute(f"SELECT COUNT(*) FROM manual_order_requests WHERE status IN ({placeholders})", PENDING_MANUAL_STATUSES).fetchone()
+            blockers["pending_manual_request_count"] = int(row[0] or 0)
+        except sqlite3.Error:
+            blockers["pending_manual_request_count"] = 0
+        try:
+            row = connection.execute("SELECT COUNT(*) FROM lots WHERE remaining_quantity > 0 AND status != 'CLOSED'").fetchone()
+            blockers["open_lot_count"] = int(row[0] or 0)
+        except sqlite3.Error:
+            blockers["open_lot_count"] = 0
         try:
             row = connection.execute("SELECT COUNT(*) FROM positions WHERE sync_status = 'SYNC_REQUIRED'").fetchone()
             blockers["sync_required_count"] = int(row[0] or 0)
@@ -295,6 +309,61 @@ def reset_db(config_path: Path, confirm: str, dry_run: bool) -> dict[str, Any]:
     return {"reset": True, "db_path": str(db_path), "dry_run": False}
 
 
+def create_liquidation_manual_requests(config_path: Path, confirm: str, dry_run: bool) -> dict[str, Any]:
+    if confirm != CONFIRM_LIQUIDATION:
+        return {"created": False, "reason": "confirm_required", "required_confirm_text": CONFIRM_LIQUIDATION, "dry_run": dry_run}
+    config = load_json(config_path)
+    db_path = Path(config.get("storage_path", ""))
+    if not db_path.exists():
+        return {"created": False, "reason": "db_not_found", "dry_run": dry_run}
+    blockers = reset_blockers(db_path)
+    if blockers["open_order_count"] or blockers["pending_manual_request_count"] or blockers["sync_required_count"] or blockers["lot_mismatch_count"]:
+        return {"created": False, "reason": "liquidation_request_blocked_by_pending_work", "blockers": blockers, "dry_run": dry_run}
+    plan = liquidation_plan(config_path, Path("exports"), dry_run=True)
+    items = plan["items"]
+    if dry_run:
+        return {"created": False, "reason": "dry_run", "request_count": len(items), "dry_run": True}
+    now = datetime.now().isoformat(timespec="seconds")
+    with sqlite3.connect(db_path) as connection:
+        for index, item in enumerate(items, start=1):
+            request_id = f"LIQ-{datetime.now().strftime('%Y%m%d%H%M%S')}-{index:04d}"
+            preview = {"liquidation_plan": True, **item}
+            runtime_snapshot = {"source": "prepare_new_season", "confirm_text": CONFIRM_LIQUIDATION}
+            connection.execute(
+                """
+                INSERT INTO manual_order_requests (
+                    request_id, source, requested_by, requested_at, code, side, current_price, amount, quantity, lot_id,
+                    order_type, preview_json, runtime_snapshot_json, live_trading, confirm_text_verified,
+                    status, block_reason, linked_order_id, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    request_id,
+                    "local_script_liquidation",
+                    "prepare_new_season",
+                    now,
+                    str(item["code"]).zfill(6),
+                    "SELL",
+                    int(item.get("current_price") or 0),
+                    int(item.get("current_price") or 0) * int(item.get("remaining_quantity") or 0),
+                    int(item.get("remaining_quantity") or 0),
+                    str(item.get("lot_id") or ""),
+                    "LIMIT",
+                    json.dumps(preview, ensure_ascii=False),
+                    json.dumps(runtime_snapshot, ensure_ascii=False),
+                    int(bool(config.get("order", {}).get("live_trading", False))),
+                    1,
+                    "REQUESTED",
+                    "",
+                    "",
+                    now,
+                    now,
+                ),
+            )
+    return {"created": True, "request_count": len(items), "dry_run": False}
+
+
 def validate_candidates() -> dict[str, Any]:
     rows = build_stock_rows()
     codes = [row["code"] for row in rows]
@@ -312,6 +381,7 @@ def main() -> None:
     parser.add_argument("--apply-config", action="store_true")
     parser.add_argument("--archive", action="store_true")
     parser.add_argument("--liquidation-plan", action="store_true")
+    parser.add_argument("--create-liquidation-requests", action="store_true")
     parser.add_argument("--reset-db", action="store_true")
     parser.add_argument("--confirm", default="")
     parser.add_argument("--dry-run", action="store_true", default=True)
@@ -327,6 +397,8 @@ def main() -> None:
         result["config"] = apply_expansion_config(config_path, args.profile, dry_run)
     if args.liquidation_plan:
         result["liquidation_plan"] = liquidation_plan(config_path, Path("exports"), dry_run)
+    if args.create_liquidation_requests:
+        result["liquidation_requests"] = create_liquidation_manual_requests(config_path, args.confirm, dry_run)
     if args.reset_db:
         result["reset_db"] = reset_db(config_path, args.confirm, dry_run)
     print(json.dumps(result, ensure_ascii=False, indent=2))
