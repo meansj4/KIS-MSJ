@@ -635,9 +635,11 @@ def test_review_recheck_sync_mismatch_goes_sync_required(tmp_path):
     )
     service = UIService(config_path, tmp_path / "runtime.json")
 
+    status = service.review_status("005930")
     result = service.review_recheck("005930")
     position = StateStore(db_path).load_positions()["005930"]
 
+    assert any("reconciliation" in action for action in status["recommended_actions"])
     assert result["event"] == "review_required_still_active"
     assert position.position_state == PositionLifecycle.SYNC_REQUIRED.value
     assert position.sync_status == PositionLifecycle.SYNC_REQUIRED.value

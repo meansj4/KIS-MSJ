@@ -795,6 +795,53 @@ def test_lot_sizing_sell_target_uses_current_lot_band_not_original_lot_target() 
     assert action.sell_reason == SellReason.PROFIT_TAKE.value
 
 
+def test_target_profit_lot_band_uses_current_six_open_lots_for_old_lot() -> None:
+    _, _, positions, strategy, risk, snapshot = setup_strategy(StrategyConfig())
+    first = add_lot(positions, "005930", 10000, 1)
+    for _ in range(5):
+        add_lot(positions, "005930", 10000, 1)
+    position = positions.refresh_from_lots("005930", 10400)
+
+    action = strategy.decide(position, 10400, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    context = strategy.context(position, 10400)
+
+    assert context.current_open_lot_count == 6
+    assert context.target_profit_lot_band == "5-6"
+    assert context.current_base_target_profit_rate == pytest.approx(0.04)
+    assert context.original_lot_base_target_profit_rate == pytest.approx(first.base_target_profit_rate)
+    assert context.target_profit_source == "current_lot_band"
+    assert action is not None
+    assert action.side is OrderSide.SELL
+
+
+def test_target_profit_recalculates_up_after_partial_lot_sales_reduce_open_count() -> None:
+    _, lots, positions, strategy, risk, snapshot = setup_strategy(StrategyConfig(estimated_fee_tax_pct=0))
+    created = [add_lot(positions, "005930", 10000, 1) for _ in range(6)]
+    position = positions.refresh_from_lots("005930", 10400)
+    context_before = strategy.context(position, 10400)
+
+    assert context_before.current_open_lot_count == 6
+    assert context_before.target_profit_lot_band == "5-6"
+    assert context_before.current_base_target_profit_rate == pytest.approx(0.04)
+
+    for index, lot in enumerate(created[:2], start=1):
+        positions.apply_fill(TradeFill("005930", "Test", OrderSide.SELL, 1, 10400, f"SELL-{index}", datetime.now(), lot.lot_id, sell_reason=SellReason.PROFIT_TAKE.value))
+    position = positions.refresh_from_lots("005930", 10400)
+    context_after = strategy.context(position, 10400)
+    action_at_four_percent = strategy.decide(position, 10400, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+
+    assert len(lots.open_lots("005930")) == 4
+    assert context_after.current_open_lot_count == 4
+    assert context_after.target_profit_lot_band == "3-4"
+    assert context_after.current_base_target_profit_rate == pytest.approx(0.05)
+    assert all(lot.effective_target_profit_rate == pytest.approx(0.05, abs=0.001) for lot in lots.open_lots("005930"))
+    assert action_at_four_percent is None or action_at_four_percent.side is not OrderSide.SELL
+
+    action_at_five_percent = strategy.decide(position, 10500, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    assert action_at_five_percent is not None
+    assert action_at_five_percent.side is OrderSide.SELL
+
+
 def test_lot_sizing_age_decay_applies_to_current_lot_band_target() -> None:
     _, lots, positions, strategy, risk, snapshot = setup_strategy(StrategyConfig(estimated_fee_tax_pct=0))
     old = add_lot(positions, "005930", 10000, 1)
