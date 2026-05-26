@@ -202,6 +202,9 @@ def test_config_form_and_table_sorting_scripts_are_present():
     assert "table(f, 'fills')" in INDEX_HTML
     assert "function renderConfigField" in INDEX_HTML
     assert "function renderStructuredJsonEditor" in INDEX_HTML
+    assert "function renderReadableObject" in INDEX_HTML
+    assert "function renderResult" in INDEX_HTML
+    assert "function formatNumber" in INDEX_HTML
     assert "function addStructuredJsonRow" in INDEX_HTML
     assert "function removeStructuredJsonRow" in INDEX_HTML
     assert "decimal_rate" in INDEX_HTML
@@ -244,6 +247,8 @@ def test_config_form_and_table_sorting_scripts_are_present():
     assert "/api/runtime/reload-config" in INDEX_HTML
     assert "새 시즌 준비 계속 진행" in INDEX_HTML
     assert "function prepareNewSeasonNext" in INDEX_HTML
+    assert "고급 작업 / 내부 진단 열기" in INDEX_HTML
+    assert "막힌 이유" in INDEX_HTML
     assert "대시보드 Dashboard" in INDEX_HTML
     assert "수동 주문 Manual" in INDEX_HTML
     assert "manualBuyPrice" in INDEX_HTML

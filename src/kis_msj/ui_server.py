@@ -241,11 +241,19 @@ function badgeClass(value) {
 }
 function displayCell(key, value) {
   if (value === null || value === undefined || value === '') return '<span class="empty">-</span>';
+  if (typeof value === 'number') return esc(formatNumber(value));
   const translated = valueLabel(value);
   if (/state|status|reason|side|dedupe|flag|enabled|paused|candidate|stale|duplicate|reflected/i.test(key)) {
     return `<span class="badge ${badgeClass(value)}">${esc(translated)}</span><span class="key">${esc(value)}</span>`;
   }
+  if (/^-?\d+\.\d{4,}$/.test(String(value))) return esc(formatNumber(Number(value)));
   return esc(value);
+}
+function formatNumber(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return value;
+  if (Number.isInteger(n)) return String(n);
+  return String(Math.round(n * 1000) / 1000);
 }
 const sortState = {};
 const DEFAULT_COLUMNS = {
@@ -374,7 +382,32 @@ async function reloadCurrent() {
   return loadDashboard();
 }
 function metrics(obj) {
-  return '<div class="grid">' + Object.entries(obj || {}).map(([k,v]) => `<div class="metric"><strong>${esc(labelFor(k))}<span class="key">${esc(k)}</span></strong>${displayCell(k, typeof v === 'object' ? JSON.stringify(v) : v)}</div>`).join('') + '</div>';
+  return '<div class="grid">' + Object.entries(obj || {}).map(([k,v]) => `<div class="metric"><strong>${esc(labelFor(k))}<span class="key">${esc(k)}</span></strong>${typeof v === 'object' && v !== null ? renderReadableObject(v) : displayCell(k, v)}</div>`).join('') + '</div>';
+}
+function renderReadableObject(value, opts={}) {
+  if (value === null || value === undefined || value === '') return '<span class="empty">-</span>';
+  if (Array.isArray(value)) {
+    if (!value.length) return '<span class="empty">-</span>';
+    if (value.every(item => item && typeof item === 'object' && !Array.isArray(item))) {
+      const keys = Array.from(new Set(value.flatMap(item => Object.keys(item))));
+      const rows = value.map(item => '<tr>' + keys.map(k => `<td class="${cellClass(k, item[k])}">${displayCell(k, item[k])}</td>`).join('') + '</tr>').join('');
+      return `<div class="tableWrap"><table><thead><tr>${keys.map(k => `<th>${headerLabel(k)}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>${opts.raw ? rawDetails(value) : ''}`;
+    }
+    return '<div>' + value.map(v => `<span class="badge neutral">${esc(v)}</span>`).join(' ') + '</div>' + (opts.raw ? rawDetails(value) : '');
+  }
+  if (typeof value === 'object') {
+    const rows = Object.entries(value).map(([k,v]) => `<tr><th>${headerLabel(k)}</th><td>${typeof v === 'object' && v !== null ? renderReadableObject(v) : displayCell(k, v)}</td></tr>`).join('');
+    return `<div class="tableWrap"><table><tbody>${rows}</tbody></table></div>${opts.raw ? rawDetails(value) : ''}`;
+  }
+  return displayCell('', value);
+}
+function rawDetails(value) {
+  return `<details><summary>원본 JSON 보기</summary><pre>${esc(JSON.stringify(value, null, 2))}</pre></details>`;
+}
+function renderResult(targetId, value) {
+  const el = document.getElementById(targetId);
+  if (!el) return;
+  el.innerHTML = renderReadableObject(value, {raw:true});
 }
 async function refreshBanner() {
   const s = await api('/api/status');
@@ -502,13 +535,52 @@ async function loadManualOrders() {
       <small class="muted">CLOSED LOT, open SELL order, RISK_BLOCKED, SYNC_REQUIRED, runtime sell pause 상태에서는 차단됩니다.</small>
     </div>
   </div>
-  <h3>미리보기 / 생성 결과</h3><pre id="manualResult"></pre>
+  <h3>미리보기 / 생성 결과</h3><div id="manualResult"></div>
   <h3>수동 주문 요청 목록</h3>${table(window.manualRequestRows, 'manualRequests')}`;
 }
 async function loadNewSeason() {
   currentView = 'newSeason';
   const s = await api('/api/new-season/status');
   const msg = s.guidance || {};
+  const blockedGuide = s.block_reason_ko || (s.reset_block_reasons_ko || [])[0] || msg.reason || '';
+  const needsBalance = (s.open_lot_count || 0) > 0;
+  const inputHelp = needsBalance ? `<div class="controlCard">
+      <h3>필요한 입력</h3>
+      <label>KIS 잔고 snapshot JSON 경로<span class="key">kis_balance_json_path</span></label>
+      <input id="kisBalancePath" placeholder="예: exports/kis_balance_20260526.json" value="${esc(window.kisBalancePath || '')}">
+      <label>전량매도 예정표 경로<span class="key">liquidation_plan_path</span></label>
+      <input id="liquidationPlanPath" placeholder="자동 생성 후 채워집니다" value="${esc(window.liquidationPlanPath || s.plan_path || '')}">
+      <label>전량매도 요청 확인 문구<span class="key">confirm</span></label>
+      <input id="liquidationConfirm" placeholder="전량매도 요청 확인" value="${esc(window.liquidationConfirm || '')}">
+    </div>` : '';
+  document.getElementById('content').innerHTML = `<h2>새 시즌 준비</h2>
+  <div class="manualBox">
+    <strong>${esc(msg.status || '현재 상태 확인')}</strong>
+    <p>${esc(msg.description || '')}</p>
+    ${blockedGuide ? `<p class="bad"><strong>막힌 이유</strong>: ${esc(blockedGuide)}</p>` : ''}
+    <p><strong>다음에 할 일</strong>: ${esc(msg.next_action || '아래 버튼을 눌러 다음 가능한 단계를 진행하세요.')}</p>
+    <p><button class="primary" onclick="prepareNewSeasonNext()">새 시즌 준비 계속 진행</button></p>
+    <p class="muted">이 버튼은 KIS 주문 API를 직접 호출하지 않습니다. 전량매도는 manual_order_requests 요청만 만들고, 실제 주문 처리는 실행 중인 Bot Core가 담당합니다.</p>
+  </div>
+  ${s.new_season_ready ? '<div class="danger" style="background:#166534">새 시즌 시작 준비 완료</div>' : ''}
+  <div class="grid">
+    <div class="metric"><strong>OPEN LOT<span class="key">open_lot_count</span></strong>${displayCell('open_lot_count', s.open_lot_count)}</div>
+    <div class="metric"><strong>미체결 주문<span class="key">pending_order_count</span></strong>${displayCell('pending_order_count', s.pending_order_count)}</div>
+    <div class="metric"><strong>미처리 수동 요청<span class="key">pending_manual_request_count</span></strong>${displayCell('pending_manual_request_count', s.pending_manual_request_count)}</div>
+    <div class="metric"><strong>현재 예정표<span class="key">plan_status</span></strong>${displayCell('plan_status', s.plan_status || '없음')}</div>
+  </div>
+  ${inputHelp}
+  <details class="manualBox"><summary>고급 작업 / 내부 진단 열기</summary>
+    <p><button onclick="newSeasonArchive(false)">백업 dry-run</button> <button onclick="newSeasonArchive(true)">백업 생성</button></p>
+    <p><input id="planMaxAge" type="number" value="${esc(window.planMaxAge || 60)}" min="1" style="width:90px"> 분 유효
+    <button onclick="newSeasonPlan(false)">예정표 dry-run</button> <button onclick="newSeasonPlan(true)">예정표 생성</button></p>
+    <p><button onclick="newSeasonRequests(false)">전량매도 요청 dry-run</button> <button onclick="newSeasonRequests(true)">manual SELL request 생성</button></p>
+    <p><input id="resetConfirm" placeholder="RESET 확인" value="${esc(window.resetConfirm || '')}">
+    <button onclick="newSeasonReset(false)">reset dry-run</button> <button class="dangerBtn" onclick="newSeasonReset(true)">DB 초기화 실행</button></p>
+    <div id="newSeasonResult">${window.newSeasonLastResultObject ? renderReadableObject(window.newSeasonLastResultObject, {raw:true}) : ''}</div>
+    ${metrics(s)}
+  </details>`;
+  return;
   const steps = (s.wizard_steps || []).map(step => `
     <div class="controlCard ${step.status === '차단됨' || step.status === '아직 불가' ? 'dangerZone' : ''}">
       <h3>${esc(step.step)}단계. ${esc(step.title)}</h3>
@@ -569,6 +641,7 @@ async function newSeasonArchive(execute) {
   const r = await api('/api/new-season/archive', {method:'POST', body:JSON.stringify({execute})});
   window.newSeasonArchiveDone = execute || window.newSeasonArchiveDone;
   window.newSeasonLastResult = JSON.stringify(r, null, 2);
+  window.newSeasonLastResultObject = r;
   await loadNewSeason();
 }
 function rememberNewSeasonInputs() {
@@ -585,6 +658,7 @@ async function newSeasonPlan(execute) {
   if (execute && !kis_balance_json_path) { alert('KIS 잔고 snapshot JSON 경로가 필요합니다.'); return; }
   const r = await api('/api/new-season/liquidation-plan', {method:'POST', body:JSON.stringify({execute, kis_balance_json_path, max_age_minutes})});
   window.newSeasonLastResult = JSON.stringify(r, null, 2);
+  window.newSeasonLastResultObject = r;
   if (r.result && r.result.plan_path) window.liquidationPlanPath = r.result.plan_path;
   await loadNewSeason();
   if (r.result && r.result.plan_path) document.getElementById('liquidationPlanPath').value = r.result.plan_path;
@@ -597,6 +671,7 @@ async function newSeasonRequests(execute) {
   if (execute && confirmText !== '전량매도 요청 확인') { alert('confirm text로 "전량매도 요청 확인"을 입력해야 합니다.'); return; }
   const r = await api('/api/new-season/liquidation-requests', {method:'POST', body:JSON.stringify({execute, kis_balance_json_path, plan_path, confirm: confirmText})});
   window.newSeasonLastResult = JSON.stringify(r, null, 2);
+  window.newSeasonLastResultObject = r;
   await loadNewSeason();
 }
 async function newSeasonReset(execute) {
@@ -606,6 +681,7 @@ async function newSeasonReset(execute) {
   if (execute && !confirm('DB 초기화는 되돌리기 어렵습니다. archive와 전량매도/reconciliation 완료를 확인했나요?')) return;
   const r = await api('/api/new-season/reset-db', {method:'POST', body:JSON.stringify({execute, confirm: confirmText})});
   window.newSeasonLastResult = JSON.stringify(r, null, 2);
+  window.newSeasonLastResultObject = r;
   await loadNewSeason();
 }
 async function prepareNewSeasonNext() {
@@ -653,14 +729,14 @@ async function loadReviewRequired() {
 }
 async function reviewRecheck(code) {
   const r = await api('/api/review-required/' + encodeURIComponent(code) + '/recheck', {method:'POST', body:JSON.stringify({})});
-  document.getElementById('reviewResult').innerHTML = '<pre>'+esc(JSON.stringify(r, null, 2))+'</pre>';
   await loadReviewRequired();
+  renderResult('reviewResult', r);
 }
 async function reviewAck(code) {
   const note = prompt('확인 메모를 입력하세요. acknowledge는 BUY 차단을 해제하지 않습니다.', '') || '';
   const r = await api('/api/review-required/' + encodeURIComponent(code) + '/acknowledge', {method:'POST', body:JSON.stringify({note, acknowledged_by:'local_ui'})});
-  document.getElementById('reviewResult').innerHTML = '<pre>'+esc(JSON.stringify(r, null, 2))+'</pre>';
   await loadReviewRequired();
+  renderResult('reviewResult', r);
 }
 function manualPayload(side) {
   if (side === 'BUY') return {
@@ -684,15 +760,15 @@ function manualPayload(side) {
 }
 async function previewManual(side) {
   const r = await api('/api/manual-orders/preview', {method:'POST', body:JSON.stringify(manualPayload(side))});
-  document.getElementById('manualResult').textContent = JSON.stringify(r, null, 2);
+  renderResult('manualResult', r);
 }
 async function createManual(side) {
   const preview = await api('/api/manual-orders/preview', {method:'POST', body:JSON.stringify(manualPayload(side))});
-  if (!preview.can_create) { document.getElementById('manualResult').textContent = JSON.stringify(preview, null, 2); return; }
+  if (!preview.can_create) { renderResult('manualResult', preview); return; }
   if (!confirm('manual order request를 생성합니다. 실제 주문은 Bot Core가 별도로 처리합니다. 계속할까요?')) return;
   const r = await api('/api/manual-orders', {method:'POST', body:JSON.stringify(manualPayload(side))});
   await loadManualOrders();
-  document.getElementById('manualResult').textContent = JSON.stringify(r, null, 2);
+  renderResult('manualResult', r);
 }
 async function loadConfig() {
   currentView = 'config';
@@ -709,7 +785,7 @@ function renderConfig(sectionName) {
   const nav = '<div class="sectionNav">' + sections.map(s => `<button class="${s===selected?'primary':''}" onclick="renderConfig('${esc(s)}')">${esc(s)}</button>`).join('') + '</div>';
   const fields = (configSchema.sections[selected] || []).map(renderConfigField).join('');
   const raw = `<details><summary>고급 / 원본 JSON 보기</summary><p class="warn">원본 JSON 직접 편집도 같은 validation, diff, backup, atomic save를 거칩니다.</p><textarea id="rawConfig" oninput="rawConfigChanged()">${esc(JSON.stringify(configDraft, null, 2))}</textarea></details>`;
-  document.getElementById('content').innerHTML = `<h2>Config</h2>${nav}<div>${fields}</div>${raw}<div class="configActions"><button onclick="previewConfigChanges()">변경사항 확인</button> <button class="primary" onclick="saveConfigForm()">백업 후 저장</button> <button onclick="loadConfig()">되돌리기</button><pre id="cfgResult"></pre></div>`;
+  document.getElementById('content').innerHTML = `<h2>Config</h2>${nav}<div>${fields}</div>${raw}<div class="configActions"><button onclick="previewConfigChanges()">변경사항 확인</button> <button class="primary" onclick="saveConfigForm()">백업 후 저장</button> <button onclick="loadConfig()">되돌리기</button><div id="cfgResult"></div></div>`;
 }
 function renderConfigField(meta) {
   const current = getPath(configDraft, meta.key);
@@ -721,7 +797,12 @@ function renderConfigField(meta) {
   else if (meta.type === 'json' && Array.isArray(current)) input = renderStructuredJsonEditor(meta, current);
   else if (meta.type === 'json') input = `<textarea onchange="configInputChanged('${esc(meta.key)}', this.value, 'json')">${esc(JSON.stringify(current, null, 2))}</textarea>`;
   else input = `<input type="${meta.type === 'time' ? 'time' : 'text'}" value="${esc(toDisplay(current, meta))}" onchange="configInputChanged('${esc(meta.key)}', this.value, '${esc(meta.config_format)}')">`;
-  return `<div class="field ${changed ? 'changed' : ''}"><div><label>${esc(meta.label_ko)}</label><small>${esc(meta.key)}</small></div><div>${input}<small>${esc(meta.description_ko || '')}${danger}<br>단위: ${esc(meta.unit || '')} / 저장 형식: ${esc(meta.config_format || '')} / 재시작 필요: ${meta.requires_restart ? '예' : '아니오'}</small></div><div><small>현재값</small>${esc(toDisplay(original, meta))}</div></div>`;
+  return `<div class="field ${changed ? 'changed' : ''}"><div><label>${esc(meta.label_ko)}</label><small>${esc(meta.key)}</small></div><div>${input}<small>${esc(meta.description_ko || '')}${danger}<br>단위: ${esc(meta.unit || '')} / 저장 형식: ${esc(meta.config_format || '')} / 재시작 필요: ${meta.requires_restart ? '예' : '아니오'}</small></div><div><small>현재값</small>${renderConfigOriginalValue(original, meta)}</div></div>`;
+}
+function renderConfigOriginalValue(value, meta) {
+  if (meta.type === 'json') return renderReadableObject(value, {raw:true});
+  const displayed = toDisplay(value, meta);
+  return displayCell(meta.key, displayed);
 }
 const STRUCTURED_JSON_TEMPLATES = {
   'strategy.price_lot_bands': {keys:['min_price','max_price','lot_unit_amount','max_symbol_amount','max_lots','enabled','note'], row:{min_price:0,max_price:0,lot_unit_amount:0,max_symbol_amount:0,enabled:true,note:''}},
@@ -783,8 +864,9 @@ function getPath(obj, path) { return path.split('.').reduce((acc,k) => acc == nu
 function setPath(obj, path, value) { const parts = path.split('.'); let target = obj; parts.slice(0,-1).forEach(k => { if (!target[k]) target[k] = {}; target = target[k]; }); target[parts.at(-1)] = value; }
 function toDisplay(value, meta) {
   if (value === null || value === undefined) return '';
-  if (meta.display_format === 'decimal_percent') return Number(value) * 100;
+  if (meta.display_format === 'decimal_percent') return formatNumber(Number(value) * 100);
   if (meta.type === 'json') return JSON.stringify(value, null, 2);
+  if (typeof value === 'number') return formatNumber(value);
   return value;
 }
 function fromDisplay(value, format) {
@@ -801,14 +883,14 @@ function configInputChanged(path, value, format) {
     setPath(configDraft, path, fromDisplay(value, format));
     renderConfig(window.configSection);
   } catch (err) {
-    document.getElementById('cfgResult').textContent = '입력값 오류: ' + err.message;
+    document.getElementById('cfgResult').innerHTML = `<p class="bad">입력값 오류: ${esc(err.message)}</p>`;
   }
 }
 function rawConfigChanged() {
   try {
     configDraft = JSON.parse(document.getElementById('rawConfig').value);
   } catch (err) {
-    document.getElementById('cfgResult').textContent = 'JSON 오류: ' + err.message;
+    document.getElementById('cfgResult').innerHTML = `<p class="bad">JSON 오류: ${esc(err.message)}</p>`;
   }
 }
 function diffConfig(before, after, prefix='') {
@@ -827,18 +909,18 @@ async function previewConfigChanges() {
   const validation = await api('/api/config/validate', {method:'POST', body:JSON.stringify(configDraft)});
   const dangerKeys = new Set(configSchema.danger_confirm_keys || []);
   const danger = changes.filter(c => dangerKeys.has(c.key)).map(c => c.key);
-  document.getElementById('cfgResult').textContent = JSON.stringify({valid: validation.valid, errors: validation.errors, danger_confirm_required: danger, changes}, null, 2);
+  renderResult('cfgResult', {valid: validation.valid, errors: validation.errors, danger_confirm_required: danger, changes});
 }
 async function saveConfigForm() {
   const changes = diffConfig(configOriginal, configDraft);
   const dangerKeys = new Set(configSchema.danger_confirm_keys || []);
   const danger = changes.filter(c => dangerKeys.has(c.key)).map(c => c.key);
   const validation = await api('/api/config/validate', {method:'POST', body:JSON.stringify(configDraft)});
-  if (!validation.valid) { document.getElementById('cfgResult').textContent = JSON.stringify(validation, null, 2); return; }
+  if (!validation.valid) { renderResult('cfgResult', validation); return; }
   if (danger.length && !confirm('위험 설정 변경이 포함되어 있습니다: ' + danger.join(', ') + '\n계속할까요?')) return;
   if (!confirm('config/backups에 백업을 만들고 atomic save를 수행합니다. 계속할까요?')) return;
   const r = await api('/api/config', {method:'PATCH', body:JSON.stringify(configDraft)});
-  document.getElementById('cfgResult').textContent = JSON.stringify({saved:r, changes}, null, 2);
+  renderResult('cfgResult', {saved:r, changes});
   configOriginal = await api('/api/config');
   configDraft = JSON.parse(JSON.stringify(configOriginal));
 }
