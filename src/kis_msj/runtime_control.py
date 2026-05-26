@@ -18,6 +18,9 @@ DEFAULT_RUNTIME_CONTROL_PATH = PROJECT_ROOT / "config" / "runtime_control.json"
 
 @dataclass(frozen=True)
 class RuntimeControl:
+    bot_paused: bool = False
+    config_reload_requested: bool = False
+    config_reload_requested_at: str = ""
     all_orders_paused: bool = False
     buy_paused: bool = False
     sell_paused: bool = False

@@ -651,6 +651,8 @@ class UIService:
     def runtime_set(self, **updates: Any) -> dict[str, Any]:
         current = asdict(load_runtime_control(self.runtime_path))
         current.update(updates)
+        if updates.get("config_reload_requested"):
+            current["config_reload_requested_at"] = datetime.now().isoformat(timespec="seconds")
         current["updated_at"] = datetime.now().isoformat(timespec="seconds")
         control = RuntimeControl(**{key: current.get(key) for key in RuntimeControl.__dataclass_fields__})
         save_runtime_control(control, self.runtime_path)

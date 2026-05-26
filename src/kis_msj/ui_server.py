@@ -11,6 +11,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from .config import DEFAULT_CONFIG_PATH
+from .runtime_control import DEFAULT_RUNTIME_CONTROL_PATH
 from .ui_service import UIService
 
 
@@ -70,6 +71,11 @@ INDEX_HTML = r"""<!doctype html>
     .rowActions { display: flex; gap: 6px; align-items: center; }
     .rowActions button { padding: 5px 8px; font-size: 12px; }
     .detailPanel { border: 1px solid #d7dde3; border-radius: 8px; padding: 12px; background: #fbfcfe; margin-top: 12px; }
+    .columnControls { border: 1px solid #e2e7ec; border-radius: 8px; padding: 10px; background: #fbfcfe; margin: 8px 0; }
+    .columnControls summary { cursor: pointer; font-weight: 800; }
+    .columnControls .checks { display: flex; flex-wrap: wrap; gap: 8px 12px; margin-top: 10px; }
+    .columnControls label { display: inline-flex; gap: 4px; align-items: center; font-size: 12px; }
+    .refreshBar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; background: #eef5ff; border-bottom: 1px solid #d7dde3; padding: 8px 18px; }
     pre { background: #0b1020; color: #d6e2ff; padding: 12px; border-radius: 6px; overflow: auto; max-height: 420px; }
     input, textarea, select { padding: 7px; border: 1px solid #b8c2cc; border-radius: 6px; }
     textarea { width: 100%; min-height: 240px; font-family: ui-monospace, Consolas, monospace; }
@@ -78,6 +84,12 @@ INDEX_HTML = r"""<!doctype html>
 <body>
 <header><div>KIS LOT Bot Control</div><div>localhost read/control UI - 주문 API 없음</div></header>
 <div id="banner"></div>
+<div class="refreshBar">
+  <button onclick="manualRefresh()">새로고침</button>
+  <label>자동 갱신 <input id="autoRefreshEnabled" type="checkbox" checked onchange="setupAutoRefresh()"></label>
+  <label>간격(초) <input id="autoRefreshSeconds" type="number" min="3" value="10" style="width:70px" onchange="setupAutoRefresh()"></label>
+  <span class="muted" id="lastRefreshAt">-</span>
+</div>
 <main>
   <div class="tabs">
     <button onclick="loadDashboard()">Dashboard</button>
@@ -99,6 +111,19 @@ async function api(path, options={}) {
   return data;
 }
 function esc(v) { return String(v ?? '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+let autoRefreshTimer = null;
+function setupAutoRefresh() {
+  if (autoRefreshTimer) clearInterval(autoRefreshTimer);
+  const enabled = document.getElementById('autoRefreshEnabled')?.checked;
+  const seconds = Math.max(3, Number(document.getElementById('autoRefreshSeconds')?.value || 10));
+  if (enabled) autoRefreshTimer = setInterval(() => { if (currentView !== 'config') manualRefresh(); }, seconds * 1000);
+}
+async function manualRefresh() {
+  await refreshBanner();
+  await reloadCurrent();
+  const target = document.getElementById('lastRefreshAt');
+  if (target) target.textContent = '마지막 갱신: ' + new Date().toLocaleTimeString();
+}
 const LABELS = {
   code:'종목코드', name:'종목명', enabled:'사용 여부', position_state:'보유 상태',
   current_price:'현재가', open_lot_count:'OPEN LOT 수', invested_amount:'투입금',
@@ -215,23 +240,72 @@ function displayCell(key, value) {
   return esc(value);
 }
 const sortState = {};
+const DEFAULT_COLUMNS = {
+  stocks: ['code','name','enabled','position_state','current_price','open_lot_count','invested_amount','profit_loss_pct','risk_block_reasons','skip_reason','final_block_reason'],
+  lots: ['lot_id','code','name','status','buy_price','remaining_quantity','current_price','unrealized_pnl','unrealized_pnl_rate','age_weeks','effective_target_profit_rate','sell_trigger_price','cleanup_candidate','stale_lot','last_sell_reason'],
+  stockLots: ['lot_id','code','name','status','buy_price','remaining_quantity','current_price','unrealized_pnl','unrealized_pnl_rate','age_weeks','effective_target_profit_rate','sell_trigger_price','cleanup_candidate','stale_lot','last_sell_reason'],
+  orders: ['order_id','code','name','side','status','quantity','limit_price','reason','requested_at','updated_at','lot_id','sell_reason','reentry_type'],
+  fills: ['fill_id','execution_id','dedupe_key_type','order_id','code','name','side','price','quantity','filled_at','lot_id','sell_reason','reentry_type']
+};
+const columnPrefs = {};
 let configOriginal = null;
 let configDraft = null;
 let configSchema = null;
 function table(rows, tableId='default', opts={}) {
   if (!rows || !rows.length) return '<p>No data</p>';
   const keys = Object.keys(rows[0]);
+  const visibleKeys = visibleColumns(tableId, keys);
   const state = sortState[tableId] || opts.defaultSort || null;
   const sorted = state ? sortRows(rows, state.key, state.dir) : [...rows];
   const actionHeader = opts.actions ? '<th>작업<span class="key">actions</span></th>' : '';
   const actionCells = (row) => opts.actions ? `<td>${rowActions(tableId, row)}</td>` : '';
-  return '<div class="sortHint">컬럼 헤더를 클릭하면 오름차순, 내림차순, 기본순으로 전환합니다. 표 안쪽 가로 스크롤은 화면 중간에서도 바로 사용할 수 있습니다.</div><div class="tableWrap"><table data-table-id="'+esc(tableId)+'"><thead><tr>' +
+  return columnControls(tableId, keys, visibleKeys) + '<div class="sortHint">컬럼 헤더를 클릭하면 정렬됩니다. 기본은 핵심 컬럼만 표시하며, 컬럼 선택에서 숨긴 정보를 다시 볼 수 있습니다.</div><div class="tableWrap"><table data-table-id="'+esc(tableId)+'"><thead><tr>' +
     actionHeader +
-    keys.map(k => `<th onclick="sortTable('${esc(tableId)}','${esc(k)}')">${headerLabel(k)}${state && state.key === k ? (state.dir === 'asc' ? ' ▲' : ' ▼') : ''}</th>`).join('') +
+    visibleKeys.map(k => `<th onclick="sortTable('${esc(tableId)}','${esc(k)}')">${headerLabel(k)}${state && state.key === k ? (state.dir === 'asc' ? ' ▲' : ' ▼') : ''}</th>`).join('') +
     '</tr></thead><tbody>' +
-    sorted.map(r => '<tr>' + actionCells(r) + keys.map(k => `<td class="${cellClass(k, r[k])}">${displayCell(k, r[k])}</td>`).join('') + '</tr>').join('') + '</tbody></table></div>';
+    sorted.map(r => '<tr>' + actionCells(r) + visibleKeys.map(k => `<td class="${cellClass(k, r[k])}">${displayCell(k, r[k])}</td>`).join('') + '</tr>').join('') + '</tbody></table></div>';
 }
-function rowActions(tableId, row) {
+function visibleColumns(tableId, keys) {
+  if (columnPrefs[tableId]) return keys.filter(k => columnPrefs[tableId].has(k));
+  const defaults = DEFAULT_COLUMNS[tableId];
+  return defaults ? keys.filter(k => defaults.includes(k)) : keys;
+}
+function columnControls(tableId, keys, visibleKeys) {
+  if (!DEFAULT_COLUMNS[tableId]) return '';
+  const visible = new Set(visibleKeys);
+  return `<details class="columnControls"><summary>컬럼 선택: ${visibleKeys.length}/${keys.length}개 표시</summary>
+    <div class="rowActions"><button onclick="showDefaultColumns('${esc(tableId)}')">핵심 컬럼</button><button onclick="showAllColumns('${esc(tableId)}')">전체보기</button></div>
+    <div class="checks">${keys.map(k => `<label><input type="checkbox" ${visible.has(k) ? 'checked' : ''} onchange="toggleColumn('${esc(tableId)}','${esc(k)}',this.checked)"> ${esc(labelFor(k))}<span class="key">${esc(k)}</span></label>`).join('')}</div>
+  </details>`;
+}
+function showDefaultColumns(tableId) {
+  delete columnPrefs[tableId];
+  if (tableId === 'stockLots' && window.selectedStockCode) { openStockLots(window.selectedStockCode); return; }
+  reloadCurrent();
+}
+function showAllColumns(tableId) {
+  const rows = rowsForTable(tableId);
+  if (rows.length) columnPrefs[tableId] = new Set(Object.keys(rows[0]));
+  if (tableId === 'stockLots' && window.selectedStockCode) { openStockLots(window.selectedStockCode); return; }
+  reloadCurrent();
+}
+function toggleColumn(tableId, key, checked) {
+  const rows = rowsForTable(tableId);
+  const allKeys = rows.length ? Object.keys(rows[0]) : [];
+  const current = new Set(visibleColumns(tableId, allKeys));
+  if (checked) current.add(key); else current.delete(key);
+  columnPrefs[tableId] = current;
+  if (tableId === 'stockLots' && window.selectedStockCode) { openStockLots(window.selectedStockCode); return; }
+  reloadCurrent();
+}
+function rowsForTable(tableId) {
+  if (tableId === 'stocks') return window.stockRows || [];
+  if (tableId === 'lots') return window.lotRows || [];
+  if (tableId === 'stockLots') return window.stockLotRows || [];
+  if (tableId === 'orders') return window.orderRows || [];
+  if (tableId === 'fills') return window.fillRows || [];
+  return [];
+}function rowActions(tableId, row) {
   if (tableId === 'stocks') {
     return `<div class="rowActions"><button onclick="openStockLots('${esc(row.code)}')">LOT 보기</button><button onclick="openManualBuy('${esc(row.code)}')">수동 매수</button></div>`;
   }
@@ -276,6 +350,9 @@ async function reloadCurrent() {
   if (currentView === 'stocks') return loadStocks();
   if (currentView === 'lots') return loadLots();
   if (currentView === 'orders') return loadOrders();
+  if (currentView === 'runtime') return loadRuntime();
+  if (currentView === 'manual') return loadManualOrders();
+  if (currentView === 'logs') return loadLogs();
   if (currentView === 'config') return renderConfig();
   return loadDashboard();
 }
@@ -317,9 +394,11 @@ function renderStockTable() {
   document.getElementById('stockTable').innerHTML = table(rows, 'stocks', {actions:true});
 }
 async function openStockLots(code) {
+  window.selectedStockCode = code;
   const detail = await api('/api/stocks/' + encodeURIComponent(code));
   const lots = detail.lots || [];
   const stock = detail.stock || {};
+  window.stockLotRows = lots;
   document.getElementById('stockLotPanel').innerHTML = `<div class="detailPanel"><h3>${esc(stock.name || '')} ${esc(code)} 보유 LOT</h3><p class="muted">종목별 LOT 수익률, 잔여 수량, cleanup/stale 상태를 확인하고 OPEN LOT은 수동 매도 요청 화면으로 보낼 수 있습니다.</p>${table(lots, 'stockLots', {actions:true})}</div>`;
 }
 async function openManualBuy(code) {
@@ -337,12 +416,15 @@ async function openManualSell(code, lotId, remainingQty) {
 async function loadLots() {
   currentView = 'lots';
   const rows = await api('/api/lots');
+  window.lotRows = rows;
   if (!sortState.lots) sortState.lots = {key:'unrealized_pnl_rate', dir:'asc'};
   document.getElementById('content').innerHTML = '<h2>LOT</h2><div class="manualBox"><strong>LOT별 수동 매도 요청</strong><p class="muted">OPEN LOT 행의 수동 매도 버튼으로 LOT ID와 잔여 수량을 자동 입력할 수 있습니다. CLOSED LOT, open SELL order, RISK_BLOCKED, SYNC_REQUIRED, runtime sell pause 상태에서는 요청 생성도 차단됩니다.</p></div>' + table(rows, 'lots', {actions:true});
 }
 async function loadOrders() {
   currentView = 'orders';
   const o=await api('/api/orders'), f=await api('/api/fills');
+  window.orderRows = o;
+  window.fillRows = f;
   if (!sortState.orders) sortState.orders = {key:'requested_at', dir:'desc'};
   if (!sortState.fills) sortState.fills = {key:'filled_at', dir:'desc'};
   document.getElementById('content').innerHTML = '<h2>주문</h2>'+table(o, 'orders')+'<h2>체결</h2>'+table(f, 'fills');
@@ -353,6 +435,12 @@ async function loadRuntime() {
   currentView = 'runtime';
   const r=await api('/api/runtime');
   document.getElementById('content').innerHTML = `<h2>런타임 제어</h2>${metrics(r)}
+  <div class="manualBox"><strong>봇 루프 제어</strong><p class="muted">봇 프로세스가 이미 실행 중일 때 적용됩니다. UI가 새 프로세스를 띄우거나 KIS 주문 API를 직접 호출하지 않습니다.</p>
+    <button onclick="runtimePost('/api/runtime/start-loop','ui_start_loop')">Start / 루프 재개</button>
+    <button onclick="runtimePost('/api/runtime/pause-loop','ui_pause_loop')">Loop Pause</button>
+    <button onclick="runtimePost('/api/runtime/reload-config','ui_reload_config')">Reset / Config 다시 읽기</button>
+    <p class="muted">Config 저장 후 Reset을 누르면 실행 중인 봇이 다음 루프에서 최신 config를 다시 읽습니다.</p>
+  </div>
   <div class="grid">
     <div class="controlCard"><button onclick="runtime('/api/runtime/pause-all')">전체 주문 일시정지</button><p class="muted">모든 신규 주문 요청을 차단합니다.</p></div>
     <div class="controlCard"><button onclick="runtime('/api/runtime/pause-buy')">매수 일시정지</button><p class="muted">신규 매수, 추가매수, 재진입 매수를 차단합니다.</p></div>
@@ -364,12 +452,14 @@ async function loadRuntime() {
   </div>`;
 }
 async function runtime(path) { await api(path, {method:'POST'}); await loadRuntime(); }
+async function runtimePost(path, reason) { await api(path, {method:'POST', body:JSON.stringify({reason})}); await loadRuntime(); }
 async function loadManualOrders() {
   currentView = 'manual';
   const cfg = await api('/api/config');
   const requests = await api('/api/manual-order-requests');
   document.getElementById('content').innerHTML = `<h2>수동 주문 요청</h2>
   <div class="manualBox"><strong>현재 기능 상태</strong><p>ui_manual_trading_enabled=${esc(cfg.ui_manual_trading_enabled)}. UI는 KIS 주문 API를 직접 호출하지 않고 manual_order_requests 큐에 요청만 생성합니다.</p></div>
+  <div class="manualBox"><strong>수동 주문 테스트 방법</strong><p class="muted">1) Config에서 ui_manual_trading_enabled=true로 저장합니다. 2) Runtime Control에서 Reset / Config 다시 읽기를 누릅니다. 3) 여기서 미리보기 후 요청 생성을 누르면 DB의 manual_order_requests에 REQUESTED로 저장되고, 실행 중인 봇이 다음 루프에서 기존 order_manager 경로로 처리합니다.</p></div>
   <div class="grid">
     <div class="controlCard">
       <h3>수동 매수 요청</h3>
@@ -594,6 +684,15 @@ class UIHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/runtime/pause-all":
                 self._send_json(self.service.runtime_set(all_orders_paused=True, reason=data.get("reason", "ui_pause_all")))
                 return
+            if parsed.path == "/api/runtime/start-loop":
+                self._send_json(self.service.runtime_set(bot_paused=False, reason=data.get("reason", "ui_start_loop")))
+                return
+            if parsed.path == "/api/runtime/pause-loop":
+                self._send_json(self.service.runtime_set(bot_paused=True, reason=data.get("reason", "ui_pause_loop")))
+                return
+            if parsed.path == "/api/runtime/reload-config":
+                self._send_json(self.service.runtime_set(config_reload_requested=True, reason=data.get("reason", "ui_reload_config")))
+                return
             if parsed.path == "/api/runtime/pause-buy":
                 self._send_json(self.service.runtime_set(buy_paused=True, reason=data.get("reason", "ui_pause_buy")))
                 return
@@ -658,8 +757,8 @@ class UIHandler(BaseHTTPRequestHandler):
         return
 
 
-def build_server(config_path: Path, host: str = "127.0.0.1", port: int = 8765) -> ThreadingHTTPServer:
-    service = UIService(config_path)
+def build_server(config_path: Path, host: str = "127.0.0.1", port: int = 8765, runtime_path: Path | None = None) -> ThreadingHTTPServer:
+    service = UIService(config_path, runtime_path or DEFAULT_RUNTIME_CONTROL_PATH)
 
     class BoundHandler(UIHandler):
         pass
@@ -684,4 +783,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
 

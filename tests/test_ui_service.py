@@ -223,6 +223,18 @@ def test_config_form_and_table_sorting_scripts_are_present():
     assert "LOT 보기" in INDEX_HTML
     assert "openManualSell" in INDEX_HTML
     assert "tableWrap" in INDEX_HTML
+    assert "DEFAULT_COLUMNS" in INDEX_HTML
+    assert "columnControls" in INDEX_HTML
+    assert "showAllColumns" in INDEX_HTML
+    assert "전체보기" in INDEX_HTML
+    assert "핵심 컬럼" in INDEX_HTML
+    assert "function setupAutoRefresh" in INDEX_HTML
+    assert "function manualRefresh" in INDEX_HTML
+    assert "새로고침" in INDEX_HTML
+    assert "자동 갱신" in INDEX_HTML
+    assert "Start / 루프 재개" in INDEX_HTML
+    assert "Reset / Config 다시 읽기" in INDEX_HTML
+    assert "/api/runtime/reload-config" in INDEX_HTML
     assert "Execution Check" not in INDEX_HTML
 
 
@@ -243,6 +255,24 @@ def test_runtime_controls_are_readable_and_block_actions(tmp_path):
     assert runtime_block_reason(RuntimeControl(cleanup_paused=True), cleanup) == "runtime_cleanup_paused"
     reentry = StrategyAction(OrderSide.BUY, 30000, None, "reentry_buy", reentry_type=ReentryType.NORMAL_REENTRY.value)
     assert runtime_block_reason(RuntimeControl(reentry_paused=True), reentry) == "runtime_reentry_paused"
+
+
+def test_runtime_loop_pause_and_config_reload_flags(tmp_path):
+    config_path, _, _ = _write_config(tmp_path)
+    runtime_path = tmp_path / "runtime.json"
+    service = UIService(config_path, runtime_path)
+
+    paused = service.runtime_set(bot_paused=True, reason="ui_pause_loop")
+    assert paused["bot_paused"] is True
+    assert paused["reason"] == "ui_pause_loop"
+
+    reload_requested = service.runtime_set(config_reload_requested=True, reason="ui_reload_config")
+    assert reload_requested["config_reload_requested"] is True
+    assert reload_requested["config_reload_requested_at"]
+
+    resumed = service.runtime_set(bot_paused=False, reason="ui_start_loop")
+    assert resumed["bot_paused"] is False
+    assert resumed["config_reload_requested"] is True
 
 
 def test_execution_mapping_and_reconciliation_logs(tmp_path):
@@ -268,7 +298,7 @@ def test_execution_mapping_and_reconciliation_logs(tmp_path):
 def test_http_api_status_config_runtime_and_no_order_endpoint(tmp_path):
     config_path, db_path, _ = _write_config(tmp_path)
     _seed_store(db_path)
-    server = build_server(config_path, "127.0.0.1", 0)
+    server = build_server(config_path, "127.0.0.1", 0, tmp_path / "runtime.json")
     try:
         host, port = server.server_address
         import threading
@@ -295,6 +325,19 @@ def test_http_api_status_config_runtime_and_no_order_endpoint(tmp_path):
         connection.request("POST", "/api/runtime/pause-cleanup", body="{}", headers={"content-type": "application/json"})
         paused = json.loads(connection.getresponse().read().decode("utf-8"))
         assert paused["cleanup_paused"] is True
+
+        connection.request("POST", "/api/runtime/pause-loop", body="{}", headers={"content-type": "application/json"})
+        loop_paused = json.loads(connection.getresponse().read().decode("utf-8"))
+        assert loop_paused["bot_paused"] is True
+
+        connection.request("POST", "/api/runtime/start-loop", body="{}", headers={"content-type": "application/json"})
+        loop_started = json.loads(connection.getresponse().read().decode("utf-8"))
+        assert loop_started["bot_paused"] is False
+
+        connection.request("POST", "/api/runtime/reload-config", body="{}", headers={"content-type": "application/json"})
+        reload_requested = json.loads(connection.getresponse().read().decode("utf-8"))
+        assert reload_requested["config_reload_requested"] is True
+        assert reload_requested["config_reload_requested_at"]
 
         connection.request("GET", "/api/place-order")
         missing = connection.getresponse()

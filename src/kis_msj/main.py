@@ -20,7 +20,7 @@ from .order_manager import OrderManager
 from .position_manager import PositionManager
 from .price_provider import PriceSampler
 from .risk_manager import RiskManager
-from .runtime_control import load_runtime_control, runtime_block_reason
+from .runtime_control import DEFAULT_RUNTIME_CONTROL_PATH, RuntimeControl, load_runtime_control, runtime_block_reason, save_runtime_control
 from .storage import StateStore
 from .strategy import LotGridStrategy, StrategyAction
 from .upstream_watcher import UpstreamWatcher
@@ -47,6 +47,9 @@ class AutoTrader:
         self.price_sampler = PriceSampler(self.client, config.order.price_sample_count, config.order.price_sample_interval_seconds)
         self.order_manager = OrderManager(config, self.client, self.store, self.logger)
         self._startup_recent_executions_reconciled = False
+
+    def reload_config(self, config: BotConfig, *, use_mock_client: bool = False) -> None:
+        self.__init__(config, use_mock_client=use_mock_client)
 
     def startup_sync(self) -> AccountSnapshot:
         snapshot = self.client.account_snapshot()
@@ -536,7 +539,30 @@ def main(argv: Sequence[str] | None = None) -> int:
     loop_count = 0
     while True:
         try:
-            trader.run_once()
+            runtime = load_runtime_control()
+            if runtime.config_reload_requested:
+                config = load_config(args.config)
+                trader.reload_config(config, use_mock_client=args.mock)
+                save_runtime_control(
+                    RuntimeControl(
+                        bot_paused=runtime.bot_paused,
+                        all_orders_paused=runtime.all_orders_paused,
+                        buy_paused=runtime.buy_paused,
+                        sell_paused=runtime.sell_paused,
+                        cleanup_paused=runtime.cleanup_paused,
+                        reentry_paused=runtime.reentry_paused,
+                        reason="config_reloaded",
+                        updated_by=runtime.updated_by,
+                        expires_at=runtime.expires_at,
+                    ),
+                    DEFAULT_RUNTIME_CONTROL_PATH,
+                )
+                trader.logger.info("runtime_config_reloaded config=%s", args.config)
+                runtime = load_runtime_control()
+            if runtime.bot_paused:
+                trader.logger.info("bot_loop_paused reason=%s", runtime.reason)
+            else:
+                trader.run_once()
         except Exception as error:  # noqa: BLE001
             trader.risk_manager.data_mismatch_detected = True
             trader.notifier.notify("auto-trader error", f"{type(error).__name__}: {error}")
