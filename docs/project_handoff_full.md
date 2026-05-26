@@ -13,6 +13,9 @@
 - [LOT sizing 전략](strategy_lot_sizing.md)
 - [새 시즌 reset](new_season_reset.md)
 - [100종목 확장 config](expansion_100_config.md)
+- [전체 프로젝트 감사/정리 보고서](project_audit_cleanup_report.md)
+
+최신 전체 소스/문서 감사 결과는 [docs/project_audit_cleanup_report.md](project_audit_cleanup_report.md)를 참고한다.
 
 Last updated: 2026-05-26  
 기준 테스트 결과: `147 passed` (`.\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest_tmp_final_logic_check`)  

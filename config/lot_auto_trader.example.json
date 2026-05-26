@@ -1,25 +1,204 @@
 {
   "stocks": [
-    {"code": "005930", "name": "Samsung Electronics", "enabled": true, "trading_halted": false, "administrative_issue": false, "investment_alert": false},
-    {"code": "000660", "name": "SK hynix", "enabled": true},
-    {"code": "005380", "name": "Hyundai Motor", "enabled": true},
-    {"code": "035420", "name": "NAVER", "enabled": true},
-    {"code": "051910", "name": "LG Chem", "enabled": true},
-    {"code": "006400", "name": "Samsung SDI", "enabled": true},
-    {"code": "068270", "name": "Celltrion", "enabled": true},
-    {"code": "105560", "name": "KB Financial", "enabled": true},
-    {"code": "055550", "name": "Shinhan Financial", "enabled": true},
-    {"code": "012330", "name": "Hyundai Mobis", "enabled": true}
+    {
+      "code": "005930",
+      "name": "삼성전자",
+      "enabled": true,
+      "market": "KOSPI",
+      "sector": "반도체",
+      "note": "KOSPI 100 후보군",
+      "reason": "expansion_100_candidate",
+      "manual_only": false,
+      "priority": 1,
+      "group": "expansion_100",
+      "trading_halted": false,
+      "administrative_issue": false,
+      "investment_alert": false,
+      "audit_opinion_issue": false,
+      "delisting_risk": false,
+      "accounting_issue": false,
+      "liquidity_warning": false
+    },
+    {
+      "code": "000660",
+      "name": "SK하이닉스",
+      "enabled": true,
+      "market": "KOSPI",
+      "sector": "반도체",
+      "note": "KOSPI 100 후보군",
+      "reason": "expansion_100_candidate",
+      "manual_only": false,
+      "priority": 2,
+      "group": "expansion_100",
+      "trading_halted": false,
+      "administrative_issue": false,
+      "investment_alert": false,
+      "audit_opinion_issue": false,
+      "delisting_risk": false,
+      "accounting_issue": false,
+      "liquidity_warning": false
+    },
+    {
+      "code": "005380",
+      "name": "현대차",
+      "enabled": true,
+      "market": "KOSPI",
+      "sector": "자동차",
+      "note": "KOSPI 100 후보군",
+      "reason": "expansion_100_candidate",
+      "manual_only": false,
+      "priority": 3,
+      "group": "expansion_100",
+      "trading_halted": false,
+      "administrative_issue": false,
+      "investment_alert": false,
+      "audit_opinion_issue": false,
+      "delisting_risk": false,
+      "accounting_issue": false,
+      "liquidity_warning": false
+    },
+    {
+      "code": "000270",
+      "name": "기아",
+      "enabled": true,
+      "market": "KOSPI",
+      "sector": "자동차",
+      "note": "KOSPI 100 후보군",
+      "reason": "expansion_100_candidate",
+      "manual_only": false,
+      "priority": 4,
+      "group": "expansion_100",
+      "trading_halted": false,
+      "administrative_issue": false,
+      "investment_alert": false,
+      "audit_opinion_issue": false,
+      "delisting_risk": false,
+      "accounting_issue": false,
+      "liquidity_warning": false
+    },
+    {
+      "code": "012330",
+      "name": "현대모비스",
+      "enabled": true,
+      "market": "KOSPI",
+      "sector": "자동차부품",
+      "note": "KOSPI 100 후보군",
+      "reason": "expansion_100_candidate",
+      "manual_only": false,
+      "priority": 5,
+      "group": "expansion_100",
+      "trading_halted": false,
+      "administrative_issue": false,
+      "investment_alert": false,
+      "audit_opinion_issue": false,
+      "delisting_risk": false,
+      "accounting_issue": false,
+      "liquidity_warning": false
+    },
+    {
+      "code": "005935",
+      "name": "삼성전자우",
+      "enabled": false,
+      "market": "KOSPI",
+      "sector": "반도체우선주",
+      "note": "KIS KOSPI master 검증에서 미확인되어 자동매수 비활성",
+      "reason": "expansion_100_candidate",
+      "manual_only": true,
+      "priority": 6,
+      "group": "expansion_100",
+      "trading_halted": false,
+      "administrative_issue": false,
+      "investment_alert": false,
+      "audit_opinion_issue": false,
+      "delisting_risk": false,
+      "accounting_issue": false,
+      "liquidity_warning": true
+    },
+    {
+      "code": "035420",
+      "name": "NAVER",
+      "enabled": true,
+      "market": "KOSPI",
+      "sector": "플랫폼",
+      "note": "KOSPI 100 후보군",
+      "reason": "expansion_100_candidate",
+      "manual_only": false,
+      "priority": 7,
+      "group": "expansion_100",
+      "trading_halted": false,
+      "administrative_issue": false,
+      "investment_alert": false,
+      "audit_opinion_issue": false,
+      "delisting_risk": false,
+      "accounting_issue": false,
+      "liquidity_warning": false
+    },
+    {
+      "code": "035720",
+      "name": "카카오",
+      "enabled": true,
+      "market": "KOSPI",
+      "sector": "플랫폼",
+      "note": "KOSPI 100 후보군",
+      "reason": "expansion_100_candidate",
+      "manual_only": false,
+      "priority": 8,
+      "group": "expansion_100",
+      "trading_halted": false,
+      "administrative_issue": false,
+      "investment_alert": false,
+      "audit_opinion_issue": false,
+      "delisting_risk": false,
+      "accounting_issue": false,
+      "liquidity_warning": false
+    },
+    {
+      "code": "207940",
+      "name": "삼성바이오로직스",
+      "enabled": true,
+      "market": "KOSPI",
+      "sector": "바이오",
+      "note": "KOSPI 100 후보군",
+      "reason": "expansion_100_candidate",
+      "manual_only": false,
+      "priority": 9,
+      "group": "expansion_100",
+      "trading_halted": false,
+      "administrative_issue": false,
+      "investment_alert": false,
+      "audit_opinion_issue": false,
+      "delisting_risk": false,
+      "accounting_issue": false,
+      "liquidity_warning": false
+    },
+    {
+      "code": "068270",
+      "name": "셀트리온",
+      "enabled": true,
+      "market": "KOSPI",
+      "sector": "바이오",
+      "note": "KOSPI 100 후보군",
+      "reason": "expansion_100_candidate",
+      "manual_only": false,
+      "priority": 10,
+      "group": "expansion_100",
+      "trading_halted": false,
+      "administrative_issue": false,
+      "investment_alert": false,
+      "audit_opinion_issue": false,
+      "delisting_risk": false,
+      "accounting_issue": false,
+      "liquidity_warning": false
+    }
   ],
   "strategy": {
     "initial_buy_amount": 30000,
     "auto_buy_limit": 300000,
     "absolute_max_investment": 500000,
-    "review_loss_pct": -20.0,
+    "review_loss_pct": -20,
     "max_open_lots_before_review": 12,
     "pnl_minus_threshold": -0.01,
     "pnl_plus_threshold": 0.01,
-    "reentry_drop_rate": 0.04,
     "normal_reentry_drop_rate": 0.04,
     "trailing_activation_gain": 0.05,
     "trailing_reentry_drop_rate": 0.08,
@@ -34,31 +213,206 @@
     "cleanup_buy_cooldown_days": 3,
     "cleanup_reentry_cooldown_days": 5,
     "cleanup_auto_return_to_wait_reentry": false,
+    "stale_lot_loss_rate": -0.15,
+    "stale_lot_min_age_weeks": 8,
+    "stale_lot_price_gap_rate": -0.1,
+    "review_symbol_loss_rate": -0.2,
+    "stale_lot_review_age_weeks": 20,
+    "lot_sizing_mode": "cycle_locked_by_entry_price",
+    "price_lot_bands": [
+      {
+        "min_price": 0,
+        "max_price": 300,
+        "lot_unit_amount": 0,
+        "max_symbol_amount": 0,
+        "enabled": false,
+        "note": "초저가주는 자동매수 제외 또는 paper 전용"
+      },
+      {
+        "min_price": 301,
+        "max_price": 1000,
+        "lot_unit_amount": 3000,
+        "max_symbol_amount": 30000,
+        "enabled": true
+      },
+      {
+        "min_price": 1001,
+        "max_price": 10000,
+        "lot_unit_amount": 10000,
+        "max_symbol_amount": 100000,
+        "enabled": true
+      },
+      {
+        "min_price": 10001,
+        "max_price": 30000,
+        "lot_unit_amount": 30000,
+        "max_symbol_amount": 300000,
+        "enabled": true
+      },
+      {
+        "min_price": 30001,
+        "max_price": 100000,
+        "lot_unit_amount": 100000,
+        "max_symbol_amount": 1000000,
+        "enabled": true
+      },
+      {
+        "min_price": 100001,
+        "max_price": 300000,
+        "lot_unit_amount": 300000,
+        "max_symbol_amount": 3000000,
+        "enabled": true
+      },
+      {
+        "min_price": 300001,
+        "max_price": 1000000,
+        "lot_unit_amount": 1000000,
+        "max_symbol_amount": 3000000,
+        "enabled": true,
+        "max_lots": 3,
+        "note": "고가주는 3 LOT까지만"
+      },
+      {
+        "min_price": 1000001,
+        "max_price": 3000000,
+        "lot_unit_amount": 0,
+        "max_symbol_amount": 0,
+        "enabled": false,
+        "note": "초고가주는 자동매수 제외, manual only"
+      }
+    ],
+    "add_buy_lot_bands": [
+      {
+        "min_lots": 1,
+        "max_lots": 2,
+        "drop_rate": 0.04,
+        "add_lot_count": 1
+      },
+      {
+        "min_lots": 3,
+        "max_lots": 4,
+        "drop_rate": 0.06,
+        "add_lot_count": 1
+      },
+      {
+        "min_lots": 5,
+        "max_lots": 6,
+        "drop_rate": 0.08,
+        "add_lot_count": 1
+      },
+      {
+        "min_lots": 7,
+        "max_lots": 8,
+        "drop_rate": 0.1,
+        "add_lot_count": 1
+      },
+      {
+        "min_lots": 9,
+        "max_lots": 10,
+        "drop_rate": 0.12,
+        "add_lot_count": 1
+      }
+    ],
+    "target_profit_lot_bands": [
+      {
+        "min_lots": 1,
+        "max_lots": 2,
+        "target_profit_rate": 0.06
+      },
+      {
+        "min_lots": 3,
+        "max_lots": 4,
+        "target_profit_rate": 0.05
+      },
+      {
+        "min_lots": 5,
+        "max_lots": 6,
+        "target_profit_rate": 0.04
+      },
+      {
+        "min_lots": 7,
+        "max_lots": 8,
+        "target_profit_rate": 0.03
+      },
+      {
+        "min_lots": 9,
+        "max_lots": 10,
+        "target_profit_rate": 0.02
+      }
+    ],
+    "max_lots_per_symbol_default": 10,
     "exposure_buy_bands": [
-      {"min_exposure": 1, "max_exposure": 60000, "drop_pct": 4.0, "amount": 30000},
-      {"min_exposure": 60001, "max_exposure": 120000, "drop_pct": 5.0, "amount": 30000},
-      {"min_exposure": 120001, "max_exposure": 200000, "drop_pct": 6.0, "amount": 40000},
-      {"min_exposure": 200001, "max_exposure": 300000, "drop_pct": 8.0, "amount": 50000}
+      {
+        "min_exposure": 1,
+        "max_exposure": 60000,
+        "drop_pct": 4,
+        "amount": 30000
+      },
+      {
+        "min_exposure": 60001,
+        "max_exposure": 120000,
+        "drop_pct": 5,
+        "amount": 30000
+      },
+      {
+        "min_exposure": 120001,
+        "max_exposure": 200000,
+        "drop_pct": 6,
+        "amount": 40000
+      },
+      {
+        "min_exposure": 200001,
+        "max_exposure": 300000,
+        "drop_pct": 8,
+        "amount": 50000
+      }
     ],
     "exposure_sell_bands": [
-      {"min_exposure": 1, "max_exposure": 60000, "target_profit_pct": 6.0},
-      {"min_exposure": 60001, "max_exposure": 120000, "target_profit_pct": 5.0},
-      {"min_exposure": 120001, "max_exposure": 200000, "target_profit_pct": 4.0},
-      {"min_exposure": 200001, "max_exposure": 300000, "target_profit_pct": 3.0},
-      {"min_exposure": 300001, "max_exposure": 500000, "target_profit_pct": 2.5}
+      {
+        "min_exposure": 1,
+        "max_exposure": 60000,
+        "target_profit_pct": 6
+      },
+      {
+        "min_exposure": 60001,
+        "max_exposure": 120000,
+        "target_profit_pct": 5
+      },
+      {
+        "min_exposure": 120001,
+        "max_exposure": 200000,
+        "target_profit_pct": 4
+      },
+      {
+        "min_exposure": 200001,
+        "max_exposure": 300000,
+        "target_profit_pct": 3
+      },
+      {
+        "min_exposure": 300001,
+        "max_exposure": 500000,
+        "target_profit_pct": 2.5
+      }
     ],
-    "high_exposure_partial_sell_pct": 50.0,
+    "high_exposure_partial_sell_pct": 50,
     "estimated_fee_tax_pct": 0.25
   },
   "risk": {
     "market_risk_mode": false,
     "daily_account_loss_limit_pct": -1.5,
-    "total_account_loss_limit_pct": -5.0,
+    "total_account_loss_limit_pct": -5,
     "max_review_positions": 3,
-    "min_cash_available": 300000,
+    "min_cash_available": 30000,
     "max_consecutive_api_errors": 5,
-    "max_price_sample_volatility_pct": 1.0,
-    "block_on_lot_mismatch": true
+    "max_price_sample_volatility_pct": 1,
+    "block_on_lot_mismatch": true,
+    "max_active_symbols": 100,
+    "max_total_open_lots": 300,
+    "max_total_invested_amount": 20000000,
+    "max_new_buy_per_day": 10,
+    "max_new_buy_amount_per_day": 2000000,
+    "max_total_initial_buy_amount_per_day": 2000000,
+    "profile": "expansion_100_safe"
   },
   "order": {
     "live_trading": false,
@@ -66,10 +420,16 @@
     "buy_limit_markup_pct": 0.3,
     "sell_limit_markdown_pct": 0.3,
     "price_sample_count": 5,
-    "price_sample_interval_seconds": 2.0,
-    "limit_order_timeout_seconds": 60,
-    "order_cooldown_seconds": 300,
-    "cancel_unfilled_on_start": false
+    "price_sample_interval_seconds": 2,
+    "limit_order_timeout_seconds": 30,
+    "order_cooldown_seconds": 600,
+    "min_order_request_interval_seconds": 10,
+    "cancel_unfilled_on_start": false,
+    "execution_query_buffer_minutes": 60,
+    "include_previous_day_for_open_orders": true,
+    "enable_execution_raw_log": true,
+    "reconcile_recent_executions_on_startup": true,
+    "startup_execution_lookup_days": 1
   },
   "market_hours": {
     "open_time": "09:00",
@@ -90,6 +450,8 @@
   },
   "storage_path": "data/lot_auto_trader_state.sqlite3",
   "log_path": "logs/lot_auto_trader.log",
-  "loop_interval_seconds": 15.0,
-  "max_loop_count": 1
+  "loop_interval_seconds": 3,
+  "max_loop_count": 1,
+  "ui_manual_trading_enabled": false,
+  "_example_note": "Current expansion_100_safe-compatible example. Use config/lot_auto_trader.json for the live candidate list."
 }

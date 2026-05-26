@@ -722,7 +722,7 @@ async function loadNewSeason() {
     <p>${esc(msg.description || '')}</p>
     ${msg.reason ? `<p class="bad"><strong>이유</strong>: ${esc(msg.reason)}</p>` : ''}
     <p><strong>다음 단계</strong>: ${esc(msg.next_action || '')}</p>
-    <p class="muted">내부 상태: request_creation_possible=${esc(s.request_creation_possible)} / block_reason=${esc(s.block_reason || '-')} / plan_status=${esc(s.plan_status || '-')}</p>
+    <details class="muted"><summary>고급 진단값 보기</summary><p>request_creation_possible=${esc(s.request_creation_possible)} / block_reason=${esc(s.block_reason || '-')} / plan_status=${esc(s.plan_status || '-')}</p></details>
   </div>
   ${s.new_season_ready ? '<div class="danger" style="background:#166534">새 시즌 시작 준비 완료</div>' : '<div class="manualBox"><strong>아직 준비가 끝나지 않았습니다.</strong><p>아래 단계 중 차단된 항목을 먼저 처리하세요.</p></div>'}
   <div class="manualBox">
