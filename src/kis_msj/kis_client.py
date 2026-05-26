@@ -113,6 +113,30 @@ class KisClient:
             positions=positions,
         )
 
+    def balance_snapshot_rows(self) -> tuple[dict[str, Any], ...]:
+        """Return read-only account holding rows for UI/new-season snapshot export.
+
+        This method uses the domestic-stock balance inquiry endpoint only. It does
+        not place, revise, or cancel orders.
+        """
+        self._require_account()
+        params = {
+            "CANO": self.account_number,
+            "ACNT_PRDT_CD": self.account_product_code,
+            "AFHR_FLPR_YN": "N",
+            "OFL_YN": "",
+            "INQR_DVSN": "02",
+            "UNPR_DVSN": "01",
+            "FUND_STTL_ICLD_YN": "N",
+            "FNCG_AMT_AUTO_RDPT_YN": "N",
+            "PRCS_DVSN": "01",
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": "",
+        }
+        response = self._request("GET", BALANCE_PATH, params=params, tr_id="VTTC8434R" if self.is_demo else "TTTC8434R")
+        rows = response.get("output1") or []
+        return tuple(_balance_snapshot_row(row) for row in rows if int(float(row.get("hldg_qty") or 0)) > 0)
+
     def place_order(self, request: OrderRequest) -> OrderResult:
         self._require_account()
         body = {
@@ -314,9 +338,27 @@ class MockKisClient:
     def open_orders(self) -> tuple[dict[str, Any], ...]:
         return ()
 
+    def balance_snapshot_rows(self) -> tuple[dict[str, Any], ...]:
+        return ()
+
 
 def _balance(row: dict[str, Any]) -> BalanceItem:
     return BalanceItem(str(row.get("pdno") or "").zfill(6), str(row.get("prdt_name") or ""), int(float(row.get("hldg_qty") or 0)), float(row.get("pchs_avg_pric") or 0), int(float(row.get("prpr") or 0)))
+
+
+def _balance_snapshot_row(row: dict[str, Any]) -> dict[str, Any]:
+    code = str(row.get("pdno") or row.get("code") or "").zfill(6)
+    item: dict[str, Any] = {
+        "code": code,
+        "name": str(row.get("prdt_name") or row.get("name") or ""),
+        "holding_quantity": int(float(row.get("hldg_qty") or row.get("holding_quantity") or row.get("quantity") or 0)),
+        "average_price": float(row.get("pchs_avg_pric") or row.get("average_price") or 0),
+        "current_price": int(float(row.get("prpr") or row.get("current_price") or 0)),
+    }
+    sellable = _first_value(row, ("ord_psbl_qty", "sellable_quantity", "available_quantity", "trad_psbl_qty"))
+    if sellable not in (None, ""):
+        item["sellable_quantity"] = int(float(sellable))
+    return item
 
 
 def _load_prices(path: Path) -> dict[str, int]:

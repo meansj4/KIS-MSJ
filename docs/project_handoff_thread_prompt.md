@@ -70,7 +70,7 @@ Last updated: 2026-05-26
 ## 현재 남은 핵심 리스크
 
 1. 실제 KIS raw execution field mapping은 첫 실체결 row 기준 최종 확인이 필요하다.
-2. KIS balance snapshot은 현재 JSON 파일 입력 검증 구조다. `scripts/prepare_new_season.py`에는 snapshot 자동 생성 기능이 없으므로 운영자가 별도 JSON을 준비해야 한다. 실제 전량매도 request 생성 단계에서는 최신 `generated_at`과 실제 `sellable_quantity`가 포함된 snapshot을 사용해야 한다.
+2. KIS balance snapshot은 UI New Season 탭에서 읽기 전용 KIS 잔고 조회로 생성할 수 있다. UI/API는 주문 API를 호출하지 않으며, 생성된 JSON 경로를 예정표/전량매도 요청 단계에 사용한다. `scripts/prepare_new_season.py` CLI는 여전히 기존 snapshot JSON 경로를 입력받아 검증한다. 실제 전량매도 request 생성 단계에서는 최신 `generated_at`과 실제 `sellable_quantity`가 포함된 snapshot을 사용해야 한다.
 3. OPEN LOT이 남아 있으면 DB reset 차단이 정상이다.
 4. `live_trading=false` 유지 상태에서 소액/제한 검증을 먼저 해야 한다.
 5. `cleanup_enabled=false` 유지 후 로그 안정화 뒤 cleanup 자동화를 검토한다.

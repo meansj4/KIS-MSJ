@@ -315,7 +315,9 @@ DB reset execute is allowed only when OPEN LOT is 0, in-progress orders are 0, i
 
 ## KIS balance snapshot current implementation status
 
-The current implementation validates a KIS balance snapshot JSON file path supplied by the operator/UI/script. `scripts/prepare_new_season.py` does not currently auto-create this snapshot from KIS. The operator must prepare or select a fresh JSON snapshot before creating liquidation requests. Do not create liquidation requests without a fresh snapshot.
+The Web UI can now create a KIS balance snapshot from the New Season tab by using the read-only KIS balance inquiry path. This is not an order API call and does not create, cancel, or submit any order. The generated JSON is saved under `exports/kis_balance_snapshot_YYYYMMDD_HHMMSS.json`, validated immediately, and the UI fills the snapshot path for the liquidation plan flow.
+
+The CLI script `scripts/prepare_new_season.py` still validates a snapshot JSON path that already exists; it does not fetch KIS balances by itself. For CLI operation, first create/select a fresh snapshot JSON, then pass it with `--kis-balance-json`. Do not create liquidation requests without a fresh snapshot.
 
 Supported JSON shape:
 

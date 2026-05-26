@@ -3,6 +3,8 @@
 > Authoritative source: `docs/project_handoff_full.md` is the latest full baseline. `docs/project_handoff_thread_prompt.md` is for starting a new chat, and `docs/project_handoff_summary.md` is the short summary. `local_ui.md`, `strategy_lot_sizing.md`, `new_season_reset.md`, and `expansion_100_config.md` are detailed references. If a reference doc conflicts with the full handoff, use `project_handoff_full.md` as the source of truth.  
 > Last updated: 2026-05-26 / Baseline tests: `156 passed` / Baseline config profile: `expansion_100_safe`. Re-check config, DB, logs, and KIS account state at runtime.
 
+> 2026-05-27 update: the New Season UI can generate a KIS balance snapshot by calling the read-only KIS balance inquiry endpoint. This is not an order API call. The generated JSON is saved under `exports/kis_balance_snapshot_YYYYMMDD_HHMMSS.json`, validated immediately, and can be used for liquidation plan/request creation. The CLI script `scripts/prepare_new_season.py` still expects an existing snapshot JSON path.
+
 
 관련 문서:
 
@@ -701,6 +703,8 @@ reset 차단 조건:
 
 ## 20. KIS balance snapshot / execution raw mapping
 
+Current UI behavior: the New Season tab provides `Generate KIS balance snapshot`, which performs a read-only KIS balance inquiry and writes a snapshot JSON file. The UI still does not call KIS order APIs. CLI workflows still pass an existing JSON file with `--kis-balance-json`.
+
 KIS balance snapshot은 전량매도 예정표/DB reset safety를 위해 필요하다. DB 기준 수량만으로 전량매도 request를 만들면 실제 계좌 잔고와 다를 수 있다.
 
 Snapshot에 필요한 값:
@@ -1393,7 +1397,7 @@ DB 초기화 버튼이 비활성인 대표 원인:
 | manual order 표현 | “KIS 직접 주문 API 없음 / manual request 생성 API는 있음”으로 통일한다. |
 | CLI options | `scripts/prepare_new_season.py --help` 기준으로 `--config`, `--archive-root`, `--profile`, `--apply-config`, `--archive`, `--liquidation-plan`, `--create-liquidation-requests`, `--kis-balance-json`, `--liquidation-plan-file`, `--plan-max-age-minutes`, `--reset-db`, `--confirm`, `--dry-run`, `--execute`를 확인했다. 문서에서 `--archive`는 실제 백업 실행 플래그이고, archive root 지정은 `--archive-root`가 맞다. |
 | API routes | `src/kis_msj/ui_server.py` 기준으로 `GET /api/status`, `/api/stocks`, `/api/lots`, `/api/orders`, `/api/fills`, `/api/manual-order-requests`, `POST /api/manual-orders/preview`, `POST /api/manual-orders`, review API, new-season API가 존재함을 확인했다. 옛 `/api/manual-order-preview` 표기는 사용하지 않는다. |
-| KIS snapshot 표현 | 현재 구현은 snapshot JSON 파일을 입력받아 검증하는 구조다. `prepare_new_season.py`에는 KIS 잔고 snapshot 자동 생성 기능이 없으므로 운영자가 별도 JSON을 준비해야 한다. loader는 `code/pdno/symbol`, `holding_quantity/hldg_qty/quantity`, `sellable_quantity/ord_psbl_qty/available_quantity`를 지원한다. preview/dry-run에서는 `generated_at` 또는 `sellable_quantity` 누락을 warning으로 허용할 수 있지만, 실제 request 생성 단계에서는 둘 다 필수다. |
+| KIS snapshot ?? | UI New Season tab can generate a snapshot JSON through read-only KIS balance inquiry. CLI `prepare_new_season.py` still validates an existing JSON path. Preview/dry-run can warn on missing `generated_at` or `sellable_quantity`; actual request creation requires both. |
 | Snapshot strict mode | 최신 보강 기준으로 preview/dry-run은 `generated_at` 누락, `sellable_quantity` 누락을 warning으로 plan에 남길 수 있다. 실제 liquidation request 생성 단계에서는 `generated_at`과 실제 `sellable_quantity`가 필수이며, 누락/파싱 실패/age 초과/매도가능수량 부족은 차단한다. |
 | 중복/구버전 문서 | `docs` 폴더의 주요 문서 7개를 확인했으며 같은 목적의 구버전/중복 문서는 발견하지 못했다. |
 | 문서 링크 | 주요 문서 상단의 상대 링크가 실제 파일명과 일치함을 확인했다. |

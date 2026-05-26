@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import DEFAULT_CONFIG_PATH, BotConfig, load_config
+from .kis_client import KisClient
 from .lot_manager import LotManager
 from .models import OrderSide, PositionLifecycle, PositionState
 from .runtime_control import DEFAULT_RUNTIME_CONTROL_PATH, RuntimeControl, load_runtime_control, runtime_block_reason, save_runtime_control
@@ -544,6 +545,44 @@ class UIService:
             "request_creation_block_reason": block_reason,
             "guide": _reason_guide(block_reason) if block_reason else {"title": "전량매도 요청 생성 가능", "description": "snapshot이 request 생성 조건을 만족합니다.", "next_action": "전량매도 예정표를 생성하거나 요청 생성 단계로 진행하세요."},
         }
+
+    def new_season_generate_kis_balance_snapshot(self, output_dir: str = "exports", max_age_minutes: int = 60) -> dict[str, Any]:
+        try:
+            client = KisClient(self.config.kis_account, enable_execution_raw_log=False)
+            rows = list(client.balance_snapshot_rows())
+            generated_at = datetime.now().astimezone().isoformat(timespec="seconds")
+            output_path = Path(output_dir or "exports")
+            output_path.mkdir(parents=True, exist_ok=True)
+            path = output_path / f"kis_balance_snapshot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            account_number = getattr(client, "account_number", "")
+            masked = f"****{account_number[-4:]}" if account_number else ""
+            payload = {
+                "generated_at": generated_at,
+                "source": "local_ui_kis_balance_snapshot",
+                "account_id_masked": masked,
+                "positions": rows,
+            }
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            validation = self.new_season_validate_snapshot(str(path), max_age_minutes=max_age_minutes)
+            result = {
+                "created": True,
+                "path": str(path),
+                "position_count": len(rows),
+                "generated_at": generated_at,
+                "validation": validation,
+                "order_api_called": False,
+                "kis_order_api_called": False,
+            }
+        except Exception as error:
+            result = {
+                "created": False,
+                "reason": "liquidation_kis_balance_fetch_failed",
+                "message": str(error),
+                "order_api_called": False,
+                "kis_order_api_called": False,
+            }
+        self._append_audit_log("new_season_kis_balance_snapshot_generated", {key: result.get(key) for key in ("created", "path", "position_count", "reason", "message")})
+        return result
 
     def new_season_create_liquidation_requests(self, plan_path: str = "", kis_balance_json_path: str = "", confirm: str = "", execute: bool = False) -> dict[str, Any]:
         module = _prepare_new_season_module()

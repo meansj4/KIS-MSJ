@@ -285,6 +285,8 @@ def test_config_form_and_table_sorting_scripts_are_present():
     assert "prepareNewSeasonNext" in INDEX_HTML
     assert "function prepareNewSeasonNext" in INDEX_HTML
     assert "kisBalancePath" in INDEX_HTML
+    assert "newSeasonGenerateSnapshot" in INDEX_HTML
+    assert "/api/new-season/kis-balance-snapshot" in INDEX_HTML
     assert "newSeasonRequests" in INDEX_HTML
     assert "loadDashboard" in INDEX_HTML
     assert "loadManual" in INDEX_HTML
@@ -1211,6 +1213,58 @@ def test_new_season_snapshot_validator_distinguishes_preview_and_request(tmp_pat
     assert valid["snapshot_valid_for_request"] is True
     assert valid["matched_positions_count"] == 1
     assert valid["request_creation_allowed"] is True
+
+
+def test_new_season_generates_kis_balance_snapshot_without_order_api(tmp_path):
+    config_path, db_path, _ = _write_config(tmp_path)
+    store = StateStore(db_path)
+    store.save_position(PositionState("005930", "Samsung", quantity=2, current_price=10000, position_state=PositionLifecycle.HOLDING.value))
+    store.save_lot(
+        LotState(
+            "LOT-SNAPSHOT",
+            "005930",
+            "2026-05-01T09:05:00",
+            buy_price=10000,
+            buy_quantity=2,
+            buy_amount=20000,
+            remaining_quantity=2,
+            target_profit_pct=6.0,
+            target_sell_price=10600,
+        )
+    )
+
+    class FakeKisClient:
+        account_number = "12345678"
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def balance_snapshot_rows(self):
+            return (
+                {
+                    "code": "005930",
+                    "name": "Samsung",
+                    "holding_quantity": 2,
+                    "sellable_quantity": 2,
+                    "average_price": 10000,
+                    "current_price": 11000,
+                },
+            )
+
+    service = UIService(config_path, tmp_path / "runtime.json")
+    with patch("kis_msj.ui_service.KisClient", FakeKisClient):
+        result = service.new_season_generate_kis_balance_snapshot(str(tmp_path / "exports"), max_age_minutes=60)
+
+    assert result["created"] is True
+    assert result["order_api_called"] is False
+    assert result["kis_order_api_called"] is False
+    path = Path(result["path"])
+    assert path.exists()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["source"] == "local_ui_kis_balance_snapshot"
+    assert payload["account_id_masked"] == "****5678"
+    assert payload["positions"][0]["sellable_quantity"] == 2
+    assert result["validation"]["snapshot_valid_for_request"] is True
 
 
 def test_bot_loop_interrupts_promptly_for_runtime_pause(tmp_path):

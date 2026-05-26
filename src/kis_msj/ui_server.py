@@ -700,6 +700,8 @@ async function loadNewSeason() {
       <h3>필요한 입력</h3>
       <label>KIS 잔고 snapshot JSON 경로<span class="key">kis_balance_json_path</span></label>
       <input id="kisBalancePath" placeholder="예: exports/kis_balance_20260526.json" value="${esc(window.kisBalancePath || '')}">
+      <p><button onclick="newSeasonGenerateSnapshot()">KIS 잔고 snapshot 생성</button></p>
+      <p class="muted">읽기 전용 KIS 잔고 조회만 사용합니다. 주문 API는 호출하지 않습니다.</p>
       <p><button onclick="newSeasonValidateSnapshot()">snapshot 검증</button></p>
       <div id="snapshotValidationResult"></div>
       <label>전량매도 예정표 경로<span class="key">liquidation_plan_path</span></label>
@@ -767,6 +769,8 @@ async function loadNewSeason() {
       <div class="controlCard">
         <h4>2~3. 잔고 snapshot으로 전량매도 예정표 생성</h4>
         <input id="kisBalancePath" placeholder="KIS 잔고 snapshot JSON 경로" value="${esc(window.kisBalancePath || '')}">
+      <p><button onclick="newSeasonGenerateSnapshot()">KIS 잔고 snapshot 생성</button></p>
+      <p class="muted">읽기 전용 KIS 잔고 조회만 사용합니다. 주문 API는 호출하지 않습니다.</p>
         <input id="planMaxAge" type="number" value="${esc(window.planMaxAge || 60)}" min="1" style="width:90px"> 분 유효
         <p><button onclick="newSeasonPlan(false)">예정표 dry-run</button>
         <button onclick="newSeasonPlan(true)">예정표 생성</button></p>
@@ -835,6 +839,22 @@ async function newSeasonValidateSnapshot() {
     <p class="muted">매칭 ${esc(r.matched_positions_count || 0)}개 / 불일치 ${esc(r.mismatched_positions_count || 0)}개 / snapshot 누락 ${esc((r.missing_in_snapshot_codes || []).join(', ') || '-')} / snapshot 초과 ${esc((r.extra_in_snapshot_codes || []).join(', ') || '-')}</p>
   </div>`;
 }
+
+async function newSeasonGenerateSnapshot() {
+  rememberNewSeasonInputs();
+  const target = document.getElementById('snapshotValidationResult') || document.getElementById('newSeasonResult');
+  if (!confirm('읽기 전용 KIS 잔고 조회로 snapshot을 생성합니다. 주문 API는 호출하지 않습니다. 계속할까요?')) return;
+  const r = await api('/api/new-season/kis-balance-snapshot', {method:'POST', body:JSON.stringify({max_age_minutes: Number(window.planMaxAge || 60)})});
+  if (r.created && r.path) {
+    window.kisBalancePath = r.path;
+    const input = document.getElementById('kisBalancePath');
+    if (input) input.value = r.path;
+  }
+  window.newSeasonLastResult = JSON.stringify(r, null, 2);
+  window.newSeasonLastResultObject = r;
+  if (target) target.innerHTML = renderReadableObject(r);
+}
+
 async function newSeasonRequests(execute) {
   rememberNewSeasonInputs();
   const kis_balance_json_path = document.getElementById('kisBalancePath').value;
@@ -1238,6 +1258,9 @@ class UIHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/new-season/validate-snapshot":
                 self._send_json(self.service.new_season_validate_snapshot(data.get("kis_balance_json_path", ""), int(data.get("max_age_minutes") or 60)))
+                return
+            if parsed.path == "/api/new-season/kis-balance-snapshot":
+                self._send_json(self.service.new_season_generate_kis_balance_snapshot(data.get("output_dir", "exports"), int(data.get("max_age_minutes") or 60)))
                 return
             if parsed.path == "/api/new-season/liquidation-requests":
                 self._send_json(self.service.new_season_create_liquidation_requests(data.get("plan_path", ""), data.get("kis_balance_json_path", ""), data.get("confirm", ""), bool(data.get("execute", False))))
