@@ -179,6 +179,15 @@ def test_config_schema_metadata_and_danger_flags(tmp_path):
     assert by_key["strategy.pnl_minus_threshold"]["display_format"] == "decimal_percent"
     assert by_key["strategy.pnl_minus_threshold"]["config_format"] == "decimal_rate"
     assert by_key["strategy.exposure_buy_bands"]["config_format"] == "json"
+    assert "strategy.reentry_drop_rate" not in by_key
+    assert "normal_exit_anchor_price" in by_key["strategy.normal_reentry_drop_rate"]["description_ko"]
+    assert "cycle_sell_vwap_price" in by_key["strategy.normal_reentry_drop_rate"]["description_ko"]
+    assert "trailing_exit_anchor_price" in by_key["strategy.trailing_activation_gain"]["description_ko"]
+    assert "reference_buy_price" in by_key["strategy.exposure_buy_bands"]["description_ko"]
+    assert "manual_order_requests" in by_key["ui_manual_trading_enabled"]["description_ko"]
+    assert "몇 번 확인" in by_key["order.price_sample_count"]["description_ko"]
+    assert "각 읽기 사이" in by_key["order.price_sample_interval_seconds"]["description_ko"]
+    assert "지정가" in by_key["order.buy_limit_markup_pct"]["description_ko"]
     assert "order.live_trading" in schema["danger_confirm_keys"]
     assert "order.enable_execution_raw_log" in schema["danger_confirm_keys"]
 
@@ -186,7 +195,7 @@ def test_config_schema_metadata_and_danger_flags(tmp_path):
 def test_config_form_and_table_sorting_scripts_are_present():
     assert "function sortRows" in INDEX_HTML
     assert "function sortValue" in INDEX_HTML
-    assert "table(rows, 'stocks')" in INDEX_HTML
+    assert "table(rows, 'stocks', {actions:true})" in INDEX_HTML
     assert "table(o, 'orders')" in INDEX_HTML
     assert "table(f, 'fills')" in INDEX_HTML
     assert "function renderConfigField" in INDEX_HTML
@@ -203,6 +212,18 @@ def test_config_form_and_table_sorting_scripts_are_present():
     assert "종목코드" in INDEX_HTML
     assert "잔여 수량" in INDEX_HTML
     assert "중복방지 키" in INDEX_HTML
+    assert "trading_halted:'거래정지'" in INDEX_HTML
+    assert "administrative_issue:'관리종목 이슈'" in INDEX_HTML
+    assert "investment_alert:'투자주의/경고'" in INDEX_HTML
+    assert "audit_opinion_issue:'감사의견 이슈'" in INDEX_HTML
+    assert "delisting_risk:'상장폐지 위험'" in INDEX_HTML
+    assert "accounting_issue:'회계 이슈'" in INDEX_HTML
+    assert "liquidity_warning:'유동성 경고'" in INDEX_HTML
+    assert "openStockLots" in INDEX_HTML
+    assert "LOT 보기" in INDEX_HTML
+    assert "openManualSell" in INDEX_HTML
+    assert "tableWrap" in INDEX_HTML
+    assert "Execution Check" not in INDEX_HTML
 
 
 def test_runtime_controls_are_readable_and_block_actions(tmp_path):

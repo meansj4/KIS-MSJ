@@ -490,3 +490,45 @@ UI 로그 표시는 아래 키 또는 계좌번호처럼 보이는 긴 숫자를
 8. `lots` 와 `positions` 는 fill insert 성공 후에만 갱신됩니다.
 
 UI 서버는 KIS 주문 API를 직접 호출하지 않습니다.
+
+## 최근 UI 사용성 개선
+
+- Stocks, Lots, Orders, Fills 테이블은 각 표 안쪽에 독립 스크롤 영역을 둡니다. 페이지 맨 아래까지 내리지 않아도 표 하단의 좌우 스크롤바를 바로 사용할 수 있습니다.
+- Stocks 탭의 각 종목 행에는 `LOT 보기` 버튼이 있습니다. 이 버튼은 해당 종목의 LOT 목록을 같은 화면 아래 패널에 표시하며, LOT별 잔여 수량, 평가손익률, cleanup/stale 여부 등을 확인할 수 있습니다.
+- Stocks 탭의 `수동 매수` 버튼과 LOT 행의 `수동 매도` 버튼은 수동 주문 요청 화면을 열고 종목코드/LOT ID/잔여수량을 자동 입력합니다. UI는 KIS 주문 API를 직접 호출하지 않고 `manual_order_requests` 큐에 요청만 생성합니다.
+- 수동 주문 요청 기능은 `ui_manual_trading_enabled=false`가 기본값입니다. 비활성 상태에서는 미리보기/요청 생성이 서버에서 차단됩니다.
+- 첫 KIS raw execution mapping 검증이 완료되어 상단 탭의 `Execution Check` 화면은 제거했습니다. 관련 API는 내부 진단용으로 남겨둘 수 있지만, 일반 운영 UI에서는 노출하지 않습니다.
+
+## Config 설명 방식
+
+Config 탭의 설명은 단순히 "무엇인지"만 적지 않고, 실제 자동매매 흐름에서 "어디에 어떻게 쓰이는지"를 함께 적는 방향으로 관리합니다.
+
+`strategy.reentry_drop_rate`는 예전 단일 재진입 기준값이었고, 현재 로직에서는 사용하지 않습니다. 현재 재진입은 아래 두 값으로 분리되어 동작합니다.
+
+- `strategy.normal_reentry_drop_rate`: 전량 PROFIT_TAKE 후 일반 재진입 기준입니다. 기준가격은 전량 매도 사이클의 SELL 체결 VWAP과 median 중 낮은 값인 `normal_exit_anchor_price`입니다.
+- `strategy.trailing_activation_gain` / `strategy.trailing_reentry_drop_rate`: 전량 매도 후 더 올라간 종목을 고점 대비 조정 시 다시 보는 trailing 재진입 기준입니다. 활성화 기준가격은 SELL 체결 VWAP과 median 중 높은 값인 `trailing_exit_anchor_price`입니다.
+
+따라서 UI Config 화면에서는 `strategy.reentry_drop_rate`를 더 이상 표시하지 않습니다.
+
+예를 들어 Order 설정의 `price_sample_count`와 `price_sample_interval_seconds`는 함께 동작합니다.
+
+- `price_sample_count`: 주문 직전에 현재가를 몇 번 확인할지 정합니다. BUY/SELL action이 만들어진 뒤 바로 주문하지 않고, 이 횟수만큼 가격을 읽어 주문 직전 가격이 너무 흔들리지 않는지 확인합니다.
+- `price_sample_interval_seconds`: 위 가격 읽기 사이의 대기 시간입니다. 예를 들어 샘플 수가 5이고 간격이 0.2초이면, 주문 직전 약 0.8초 동안 가격을 5번 확인합니다.
+- 이 샘플들의 변동성이 `risk.max_price_sample_volatility_pct`를 넘으면 주문을 피하는 방식으로 주문 직전 급변 가격을 줄입니다.
+
+지정가 관련 설정도 실제 주문 가격 계산 방식을 함께 설명합니다.
+
+- `buy_limit_markup_pct`: 매수 지정가를 현재가보다 얼마나 높게 둘지 정합니다. 예: 현재가 10,000원, 값 0.3이면 약 10,030원 지정가 매수입니다.
+- `sell_limit_markdown_pct`: 매도 지정가를 현재가보다 얼마나 낮게 둘지 정합니다. 예: 현재가 10,000원, 값 0.3이면 약 9,970원 지정가 매도입니다.
+
+## Stocks 위험 플래그 한글 라벨
+
+Stocks 탭의 위험 플래그 컬럼은 한글 라벨과 내부 key를 함께 보여줍니다.
+
+- `trading_halted`: 거래정지
+- `administrative_issue`: 관리종목 이슈
+- `investment_alert`: 투자주의/경고
+- `audit_opinion_issue`: 감사의견 이슈
+- `delisting_risk`: 상장폐지 위험
+- `accounting_issue`: 회계 이슈
+- `liquidity_warning`: 유동성 경고

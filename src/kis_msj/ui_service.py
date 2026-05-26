@@ -70,13 +70,13 @@ CONFIG_METADATA: tuple[dict[str, Any], ...] = (
     {"section": "Risk", "key": "risk.max_new_buy_per_day", "label_ko": "일일 신규 매수 주문 제한", "description_ko": "initial_buy 주문 수 기준입니다. 거절/취소도 주문 난사 방지 목적으로 포함됩니다.", "type": "number", "unit": "회", "display_format": "integer", "config_format": "integer", "warning_level": "warning", "requires_restart": True},
     {"section": "Order", "key": "order.live_trading", "label_ko": "실거래 모드", "description_ko": "true이면 실제 KIS 주문 API를 통해 주문이 나갈 수 있습니다.", "type": "boolean", "unit": "bool", "display_format": "boolean", "config_format": "boolean", "warning_level": "critical", "requires_restart": True, "danger_confirm_required": True},
     {"section": "Order", "key": "order.emergency_market_order", "label_ko": "비상 시장가 주문", "description_ko": "true이면 비상 상황에서 시장가 주문을 허용할 수 있어 매우 위험합니다.", "type": "boolean", "unit": "bool", "display_format": "boolean", "config_format": "boolean", "warning_level": "critical", "requires_restart": True, "danger_confirm_required": True},
-    {"section": "Order", "key": "order.buy_limit_markup_pct", "label_ko": "매수 지정가 가산율", "description_ko": "현재가 대비 매수 지정가를 얼마나 높일지 정합니다. config 값은 이미 %입니다.", "type": "number", "unit": "%", "display_format": "percent_value", "config_format": "percent_value", "warning_level": "normal", "requires_restart": True},
-    {"section": "Order", "key": "order.sell_limit_markdown_pct", "label_ko": "매도 지정가 할인율", "description_ko": "현재가 대비 매도 지정가를 얼마나 낮출지 정합니다. config 값은 이미 %입니다.", "type": "number", "unit": "%", "display_format": "percent_value", "config_format": "percent_value", "warning_level": "normal", "requires_restart": True},
-    {"section": "Order", "key": "order.price_sample_count", "label_ko": "가격 샘플 수", "description_ko": "주문 전 가격 안정성을 보기 위해 수집하는 샘플 수입니다.", "type": "number", "unit": "개", "display_format": "integer", "config_format": "integer", "warning_level": "normal", "requires_restart": True},
-    {"section": "Order", "key": "order.price_sample_interval_seconds", "label_ko": "가격 샘플 간격", "description_ko": "가격 샘플 사이의 대기 시간입니다.", "type": "number", "unit": "초", "display_format": "number", "config_format": "number", "warning_level": "normal", "requires_restart": True},
-    {"section": "Order", "key": "order.limit_order_timeout_seconds", "label_ko": "지정가 주문 타임아웃", "description_ko": "미체결 지정가 주문을 취소/재확인하기 전 대기 시간입니다.", "type": "number", "unit": "초", "display_format": "integer", "config_format": "integer", "warning_level": "warning", "requires_restart": True},
-    {"section": "Order", "key": "order.order_cooldown_seconds", "label_ko": "주문 쿨다운", "description_ko": "같은 종목 주문 사이의 기본 대기 시간입니다.", "type": "number", "unit": "초", "display_format": "integer", "config_format": "integer", "warning_level": "normal", "requires_restart": True},
-    {"section": "Order", "key": "order.min_order_request_interval_seconds", "label_ko": "최소 주문 요청 간격", "description_ko": "주문 난사를 막기 위한 전체 주문 요청 최소 간격입니다.", "type": "number", "unit": "초", "display_format": "integer", "config_format": "integer", "warning_level": "normal", "requires_restart": True},
+    {"section": "Order", "key": "order.buy_limit_markup_pct", "label_ko": "매수 지정가 가산율", "description_ko": "BUY 주문을 낼 때 현재가 그대로 주문하지 않고, 체결 가능성을 높이기 위해 현재가보다 이 비율만큼 높은 지정가를 계산합니다. 예: 현재가 10,000원, 값 0.3이면 매수 지정가는 약 10,030원입니다. 시장가가 아니라 지정가 주문 정책입니다.", "type": "number", "unit": "%", "display_format": "percent_value", "config_format": "percent_value", "warning_level": "normal", "requires_restart": True},
+    {"section": "Order", "key": "order.sell_limit_markdown_pct", "label_ko": "매도 지정가 할인율", "description_ko": "SELL 주문을 낼 때 현재가 그대로 주문하지 않고, 체결 가능성을 높이기 위해 현재가보다 이 비율만큼 낮은 지정가를 계산합니다. 예: 현재가 10,000원, 값 0.3이면 매도 지정가는 약 9,970원입니다. 시장가가 아니라 지정가 주문 정책입니다.", "type": "number", "unit": "%", "display_format": "percent_value", "config_format": "percent_value", "warning_level": "normal", "requires_restart": True},
+    {"section": "Order", "key": "order.price_sample_count", "label_ko": "가격 샘플 수", "description_ko": "주문을 요청하기 직전에 현재가를 몇 번 확인할지 정합니다. 봇은 BUY/SELL action이 만들어진 뒤 바로 주문하지 않고, 이 횟수만큼 가격을 읽어 주문 직전 가격이 너무 흔들리지 않는지 확인합니다. 예: 값이 5이면 가격을 5번 읽고, 샘플들이 허용 변동성 안에 있을 때만 지정가 주문을 계산합니다.", "type": "number", "unit": "개", "display_format": "integer", "config_format": "integer", "warning_level": "normal", "requires_restart": True},
+    {"section": "Order", "key": "order.price_sample_interval_seconds", "label_ko": "가격 샘플 간격", "description_ko": "가격 샘플을 여러 번 읽을 때 각 읽기 사이에 기다리는 시간입니다. 예: 가격 샘플 수가 5이고 간격이 0.2초이면, 주문 직전 약 0.8초 동안 가격을 5번 확인합니다. 샘플 간 변동성이 risk.max_price_sample_volatility_pct를 넘으면 주문을 피합니다.", "type": "number", "unit": "초", "display_format": "number", "config_format": "number", "warning_level": "normal", "requires_restart": True},
+    {"section": "Order", "key": "order.limit_order_timeout_seconds", "label_ko": "지정가 주문 타임아웃", "description_ko": "지정가 주문을 낸 뒤 체결 확인을 기다리는 최대 시간입니다. 이 시간 안에 전량 체결되지 않으면 주문 상태를 다시 확인하고, 설정/상황에 따라 미체결 또는 부분체결 상태로 남겨 reconciliation이 계속 추적합니다.", "type": "number", "unit": "초", "display_format": "integer", "config_format": "integer", "warning_level": "warning", "requires_restart": True},
+    {"section": "Order", "key": "order.order_cooldown_seconds", "label_ko": "종목별 주문 쿨다운", "description_ko": "같은 종목에 대해 너무 짧은 시간 안에 연속 주문이 나가지 않도록 막는 대기 시간입니다. 특히 재진입/추가매수 직후 같은 종목에 다시 BUY가 몰리는 것을 줄이는 안전장치입니다.", "type": "number", "unit": "초", "display_format": "integer", "config_format": "integer", "warning_level": "normal", "requires_restart": True},
+    {"section": "Order", "key": "order.min_order_request_interval_seconds", "label_ko": "전체 최소 주문 요청 간격", "description_ko": "종목과 무관하게 봇 전체에서 주문 요청 사이에 최소로 띄울 시간입니다. 여러 종목이 동시에 조건을 만족해도 주문 API를 짧은 시간에 연속 호출하지 않도록 하는 전역 주문 난사 방지 장치입니다.", "type": "number", "unit": "초", "display_format": "integer", "config_format": "integer", "warning_level": "normal", "requires_restart": True},
     {"section": "Order", "key": "order.cancel_unfilled_on_start", "label_ko": "시작 시 미체결 취소", "description_ko": "봇 시작 시 미체결 주문 취소를 시도할 수 있어 주의가 필요합니다.", "type": "boolean", "unit": "bool", "display_format": "boolean", "config_format": "boolean", "warning_level": "danger", "requires_restart": True, "danger_confirm_required": True},
     {"section": "Order", "key": "order.execution_query_buffer_minutes", "label_ko": "체결 조회 버퍼", "description_ko": "open order requested_at 이전으로 체결 조회 범위를 넓히는 시간입니다.", "type": "number", "unit": "분", "display_format": "integer", "config_format": "integer", "warning_level": "normal", "requires_restart": True},
     {"section": "Order", "key": "order.include_previous_day_for_open_orders", "label_ko": "open order 전일 체결 포함", "description_ko": "open order가 있으면 최소 전일 00:00부터 체결 조회를 시도합니다.", "type": "boolean", "unit": "bool", "display_format": "boolean", "config_format": "boolean", "warning_level": "warning", "requires_restart": True},
@@ -102,6 +102,86 @@ CONFIG_METADATA: tuple[dict[str, Any], ...] = (
 )
 
 
+HIDDEN_CONFIG_KEYS = {"strategy.reentry_drop_rate"}
+
+
+DETAILED_CONFIG_DESCRIPTIONS: dict[str, str] = {
+    "strategy.initial_buy_amount": "한 번도 매수한 적 없는 NEVER_BOUGHT 종목에 처음 진입할 때 사용하는 1회 매수 예산입니다. 현재가가 이 금액보다 비싸서 1주도 살 수 없으면 initial_buy는 실행되지 않습니다. NORMAL_REENTRY/TRAILING_REENTRY로 다시 들어갈 때도 기본적으로 이 금액 1회분만 사용합니다.",
+    "strategy.auto_buy_limit": "종목 하나에 자동으로 계속 물타기할 수 있는 실무 한도입니다. OPEN LOT 기준 투입금이 커질수록 추가매수 간격은 exposure_buy_bands에 따라 넓어지고, 이 한도를 넘는 구간은 REVIEW_REQUIRED 후보가 되어 더 사기보다 사람이 검토하도록 유도합니다.",
+    "strategy.absolute_max_investment": "종목별 절대 투입 상한입니다. auto_buy_limit보다 더 강한 안전 상한으로, 이 수준에 가까워지면 자동 판단만으로 노출을 늘리는 것이 위험하다는 의미입니다. 보통 auto_buy_limit보다 크게 둡니다.",
+    "strategy.review_loss_pct": "종목 전체 손실률을 사람이 보기 시작해야 하는 기준입니다. 예를 들어 -20이면 해당 종목의 전체 평가손익률이 -20% 근처가 될 때 REVIEW_REQUIRED 후보가 됩니다. REVIEW_REQUIRED에서는 신규 BUY는 막고, 수익권 LOT의 PROFIT_TAKE SELL만 허용하는 보수 정책을 씁니다.",
+    "strategy.max_open_lots_before_review": "한 종목에 OPEN LOT이 너무 많이 쌓이면 전략이 복잡해지고 수동 확인이 필요합니다. 이 값은 그런 종목을 REVIEW_REQUIRED 후보로 표시하기 위한 LOT 개수 기준입니다. LOT을 강제로 팔지는 않고, 추가 BUY를 보수적으로 막는 데 사용됩니다.",
+    "strategy.pnl_minus_threshold": "보유 중 추가매수 기준가격을 정할 때 쓰는 포지션 손익 모드 기준입니다. 포지션 손익률이 이 값 이하이면 MINUS 모드가 되고, reference_buy_price는 OPEN LOT의 VWAP과 median 중 낮은 값으로 잡아 더 보수적으로 추가매수합니다. UI에는 %로 보이지만 config에는 -0.01처럼 소수로 저장됩니다.",
+    "strategy.pnl_plus_threshold": "포지션 손익률이 이 값 이상이면 PLUS 모드입니다. PLUS 모드에서는 포지션에 여유가 있다고 보고 reference_buy_price를 OPEN LOT의 VWAP과 median 중 높은 값으로 잡습니다. 그래도 예전처럼 최고가 LOT 하나를 직접 기준으로 쓰지는 않습니다.",
+    "strategy.normal_reentry_drop_rate": "PROFIT_TAKE 전량 매도 후 WAIT_REENTRY 상태에서만 쓰는 일반 재진입 하락률입니다. 기준 가격인 normal_exit_anchor_price는 해당 보유 사이클의 SELL 체결가들로 계산한 cycle_sell_vwap_price와 cycle_sell_median_price 중 낮은 값입니다. 현재가가 normal_exit_anchor_price에서 이 비율 이상 하락하면 NORMAL_REENTRY 후보가 됩니다.",
+    "strategy.trailing_activation_gain": "TRAILING_REENTRY를 켜기 위한 상승 조건입니다. 기준 가격인 trailing_exit_anchor_price는 전량 매도 사이클의 SELL 체결 VWAP과 median 중 높은 값입니다. 전량 매도 후 post_exit_high_price가 trailing_exit_anchor_price보다 이 비율 이상 올라간 적이 있어야, 이후 고점 대비 조정 매수 조건을 평가합니다.",
+    "strategy.trailing_reentry_drop_rate": "TRAILING_REENTRY의 고점 대비 조정폭입니다. 전량 매도 후 새 고점(post_exit_high_price)이 형성되고 trailing_activation_gain 조건을 만족한 뒤, 현재가가 그 고점에서 이 비율 이상 내려오면 TRAILING_REENTRY 후보가 됩니다. 이 조건은 판 가격보다 비싸게 다시 사는 상황도 허용하므로 initial_buy_amount 1회분으로 제한됩니다.",
+    "strategy.min_reentry_wait_minutes": "전량 PROFIT_TAKE 후 바로 다시 사는 것을 막기 위한 최소 대기시간입니다. WAIT_REENTRY가 된 뒤 이 시간이 지나야 NORMAL_REENTRY 또는 TRAILING_REENTRY가 실제 매수 후보가 될 수 있습니다.",
+    "strategy.max_trailing_reentry_per_day": "TRAILING_REENTRY는 상승 후 눌림목을 사는 장치라 과하면 추격매수가 될 수 있습니다. 이 값은 하루에 허용할 trailing 재진입 횟수입니다. NORMAL_REENTRY와는 별도로 관리됩니다.",
+    "strategy.reentry_buy_cooldown_minutes": "재진입 매수 체결 후 바로 추가매수가 이어지는 것을 막는 쿨다운입니다. NORMAL_REENTRY 또는 TRAILING_REENTRY로 새 LOT이 생긴 뒤 이 시간 동안 해당 종목의 추가 BUY를 막습니다.",
+    "strategy.age_decay_rate": "오래된 LOT이 목표수익률 때문에 영구 보존되는 문제를 줄이기 위한 주간 목표수익률 감소폭입니다. effective_target_profit_rate = base_target_profit_rate - lot_age_weeks * age_decay_rate로 계산됩니다. 예: base 6%, 값 0.5%p/주이면 12주 후 목표가 0% 근처까지 내려갑니다.",
+    "strategy.cleanup_enabled": "오래된 손실 LOT을 제한적으로 정리하는 CLEANUP_SELL 기능입니다. 켜도 아무 손실이나 팔지 않습니다. LOT 나이, effective target, 실제 손실률, cleanup_min_target_rate, 당일 실현수익 기반 cleanup_loss_budget, open order 없음, HOLDING 상태 조건을 모두 만족해야 합니다.",
+    "strategy.cleanup_min_age_weeks": "CLEANUP_SELL 후보가 되기 위한 LOT 최소 보유 주수입니다. 이보다 젊은 손실 LOT은 cleanup 대상이 아니며, 기존 전략대로 보유하거나 수익권 회복을 기다립니다.",
+    "strategy.cleanup_min_target_rate": "자동 cleanup으로 허용할 최대 손실률입니다. 예: -4%이면 -4%보다 더 큰 손실(-5%, -10% 등)은 자동 매도하지 않습니다. 0% 이상 매도는 cleanup이 아니라 PROFIT_TAKE입니다.",
+    "strategy.cleanup_profit_offset_ratio": "당일 실현수익 중 cleanup 손실로 상쇄해도 되는 비율입니다. 예: 당일 실현수익 10,000원, 값 30%이면 cleanup 손실 예산은 3,000원입니다. 예상 손실이 예산을 넘으면 CLEANUP_SELL은 차단됩니다.",
+    "strategy.cleanup_buy_cooldown_days": "일부 LOT만 CLEANUP_SELL 된 뒤 같은 종목을 바로 다시 사는 모순을 막는 캘린더 일수입니다. 이 기간 동안 해당 종목의 BUY는 막고 SELL 판단은 유지합니다.",
+    "strategy.cleanup_reentry_cooldown_days": "CLEANUP_SELL로 전량 매도되어 OPEN LOT이 0이 된 뒤 모든 BUY를 막는 캘린더 일수입니다. 기본 정책은 쿨다운 종료 후 자동 재진입이 아니라 REVIEW_REQUIRED로 보내 사람이 다시 볼 수 있게 하는 것입니다.",
+    "strategy.cleanup_auto_return_to_wait_reentry": "전량 CLEANUP_SELL 후 쿨다운이 끝났을 때 WAIT_REENTRY로 자동 복귀할지 정합니다. 기본 false가 안전합니다. true이면 손실 정리 직후 시간이 지나면 다시 자동 재진입 조건을 볼 수 있어 공격적입니다.",
+    "strategy.stale_lot_loss_rate": "STALE LOT 표시를 위한 손실률 기준입니다. 이 기준 이하 손실인 오래된 LOT은 주의가 필요한 LOT으로 표시됩니다. STALE은 즉시 손절 신호가 아니며, cleanup 조건과 loss budget이 맞을 때만 CLEANUP_SELL 후보가 됩니다.",
+    "strategy.stale_lot_min_age_weeks": "STALE LOT으로 보기 위한 최소 보유 주수입니다. 손실이 커도 너무 최근에 산 LOT은 바로 stale로 보지 않고, 일정 기간 지나도 회복하지 못한 LOT만 표시합니다.",
+    "strategy.stale_lot_price_gap_rate": "매수가 대비 현재가가 얼마나 낮아져야 STALE LOT 후보가 되는지 정합니다. 예: -10%이면 현재가가 buy_price의 90% 이하일 때 stale 조건 중 하나를 만족합니다.",
+    "strategy.review_symbol_loss_rate": "종목 전체 평가손실률이 이 기준 이하이면 REVIEW_REQUIRED 후보가 됩니다. REVIEW_REQUIRED는 더 사지 말고 사람이 확인하라는 상태이며, PROFIT_TAKE SELL은 허용하지만 CLEANUP_SELL은 기본적으로 차단합니다.",
+    "strategy.stale_lot_review_age_weeks": "STALE LOT이 너무 오래 지속되면 자동 로직만으로 계속 끌고 가기 어렵습니다. 이 주수 이상 오래된 stale LOT은 REVIEW_REQUIRED 후보가 됩니다.",
+    "strategy.exposure_buy_bands": "누적투입금 구간별 추가매수 규칙입니다. 각 band는 min_exposure~max_exposure 구간에서 reference_buy_price 대비 drop_pct% 이상 하락해야 amount만큼 추가매수한다는 뜻입니다. reference_buy_price는 손익 모드에 따라 OPEN LOT VWAP/median 대표값으로 계산되며, 누적투입금이 커질수록 drop_pct를 크게 둬 물타기 속도를 늦춥니다.",
+    "strategy.exposure_sell_bands": "누적투입금 구간별 기본 매도 목표수익률입니다. exposure가 작을 때는 높은 수익률을 목표로 하고, exposure가 커질수록 목표수익률을 낮춰 포지션 축소를 우선합니다. 실제 LOT별 매도 판단에는 이 base target에 age_decay_rate를 반영한 effective_target_profit_rate가 쓰입니다.",
+    "strategy.high_exposure_partial_sell_pct": "고투입 구간에서 전체 포지션을 줄이기 위해 부분 매도를 할 때 사용할 비율입니다. 포지션 축소 목적의 보수 장치이며, LOT 단위 매도 원칙과 체결 기준 DB 반영 원칙은 그대로 유지됩니다.",
+    "strategy.estimated_fee_tax_pct": "UI 미리보기와 손익 추정에서 사용하는 예상 수수료/세금 비율입니다. 실제 KIS 정산값과 완전히 같지는 않을 수 있지만, PROFIT_TAKE/CLEANUP 판단에서 net 추정치를 볼 때 보수적으로 참고합니다.",
+    "risk.market_risk_mode": "시장 전체가 위험하다고 판단될 때 켜는 수동 안전 플래그입니다. true이면 신규 BUY를 보수적으로 제한합니다. 급락장, 시스템 이상, 사람이 잠시 자동매매를 줄이고 싶을 때 쓰는 전역 위험 모드입니다.",
+    "risk.daily_account_loss_limit_pct": "하루 기준 계좌 손실률 제한입니다. 값은 % 단위이고 보통 음수입니다. 당일 손실이 이 기준을 넘으면 신규 주문을 줄이거나 차단해 하루 손실 확대를 막는 용도입니다.",
+    "risk.total_account_loss_limit_pct": "전체 계좌 기준 손실률 제한입니다. 하루 변동이 아니라 계좌 전체 손실이 커질 때 자동매매 노출을 줄이기 위한 전역 안전장치입니다.",
+    "risk.max_review_positions": "REVIEW_REQUIRED 종목이 너무 많아졌는지 확인하는 기준입니다. 검토 필요 종목이 많다는 것은 자동 운용 상태가 복잡해졌다는 뜻이므로, UI 경고와 운용 점검에 사용됩니다.",
+    "risk.min_cash_available": "계좌에 최소로 남겨둘 현금입니다. 이보다 현금이 적으면 신규 BUY를 막아 주문 실패와 현금 부족을 예방합니다. SELL은 이 제한 때문에 막지 않습니다.",
+    "risk.max_consecutive_api_errors": "KIS 조회/주문 관련 API 오류가 연속으로 몇 번까지 허용되는지 정합니다. 연속 오류가 많으면 가격, 잔고, 체결 상태를 믿기 어려워지므로 운용을 보수적으로 봅니다.",
+    "risk.max_price_sample_volatility_pct": "주문 직전 price_sample_count만큼 읽은 가격들이 이 비율보다 크게 흔들리면 주문을 피합니다. 예: 샘플 사이 가격이 급변하면 지정가 계산이 의미 없어질 수 있어 안전하게 차단합니다.",
+    "risk.block_on_lot_mismatch": "KIS 실제 잔고와 내부 OPEN LOT 합계가 맞지 않을 때 주문을 막을지 정합니다. false는 위험합니다. mismatch 상태에서 주문하면 lots/positions가 더 꼬일 수 있으므로 true가 기본 안전값입니다.",
+    "risk.max_active_symbols": "활성 종목 수가 이 값 이상이면 신규 initial_buy를 막습니다. 활성 종목은 OPEN LOT, open order, WAIT_REENTRY, COOLDOWN, REVIEW/RISK/SYNC 상태 등을 포함합니다. 기존 보유 종목의 SELL은 이 제한 때문에 막지 않습니다.",
+    "risk.max_total_open_lots": "계좌 전체 OPEN LOT 개수 제한입니다. 초과하면 신규 BUY와 추가매수를 막아 관리해야 할 LOT 수가 과도하게 늘어나는 것을 방지합니다. SELL은 계속 허용합니다.",
+    "risk.max_total_invested_amount": "계좌 전체 OPEN LOT 기준 총 투입금 제한입니다. 초과하면 모든 BUY를 막아 계좌 노출을 제한합니다. 이미 보유한 LOT을 줄이는 SELL은 허용합니다.",
+    "risk.max_new_buy_per_day": "하루에 허용할 신규 initial_buy 주문 수입니다. 체결 기준이 아니라 주문 요청 기준이므로 거절/취소도 포함합니다. 주문 난사를 막기 위한 보수 정책이며 reentry_buy는 여기에 포함하지 않습니다.",
+    "order.live_trading": "true이면 실제 KIS 주문 API로 주문 요청이 나갈 수 있습니다. UI 테스트나 설정 확인만 할 때는 이 값이 매우 중요합니다. live_trading=true에서는 수동 주문 요청에도 강한 확인 문구가 필요합니다.",
+    "order.emergency_market_order": "비상 상황에서 시장가 주문을 허용할 수 있는 플래그입니다. 현재 기본 주문 정책은 지정가입니다. 이 값을 true로 두면 예외적 상황에서 시장가 주문 가능성이 생기므로 매우 신중해야 합니다.",
+    "order.buy_limit_markup_pct": "BUY 주문을 낼 때 현재가 그대로 주문하지 않고, 체결 가능성을 높이기 위해 현재가보다 이 비율만큼 높은 지정가를 계산합니다. 예: 현재가 10,000원, 값 0.3이면 매수 지정가는 약 10,030원입니다. 시장가가 아니라 지정가 주문 정책입니다.",
+    "order.sell_limit_markdown_pct": "SELL 주문을 낼 때 현재가 그대로 주문하지 않고, 체결 가능성을 높이기 위해 현재가보다 이 비율만큼 낮은 지정가를 계산합니다. 예: 현재가 10,000원, 값 0.3이면 매도 지정가는 약 9,970원입니다. 시장가가 아니라 지정가 주문 정책입니다.",
+    "order.price_sample_count": "주문을 요청하기 직전에 현재가를 몇 번 확인할지 정합니다. 봇은 BUY/SELL action이 만들어진 뒤 바로 주문하지 않고, 이 횟수만큼 가격을 읽어 주문 직전 가격이 너무 흔들리지 않는지 확인합니다. 예: 값이 5이면 가격을 5번 읽고, 샘플들이 허용 변동성 안에 있을 때만 지정가 주문을 계산합니다.",
+    "order.price_sample_interval_seconds": "가격 샘플을 여러 번 읽을 때 각 읽기 사이에 기다리는 시간입니다. 예: 가격 샘플 수가 5이고 간격이 0.2초이면, 주문 직전 약 0.8초 동안 가격을 5번 확인합니다. 샘플 간 변동성이 risk.max_price_sample_volatility_pct를 넘으면 주문을 피합니다.",
+    "order.limit_order_timeout_seconds": "지정가 주문을 낸 뒤 체결 확인을 기다리는 최대 시간입니다. 이 시간 안에 전량 체결되지 않으면 주문 상태를 다시 확인하고, 미체결/부분체결 상태로 남겨 reconciliation이 계속 추적합니다.",
+    "order.order_cooldown_seconds": "같은 종목에 대해 너무 짧은 시간 안에 연속 주문이 나가지 않도록 막는 대기 시간입니다. 특히 재진입/추가매수 직후 같은 종목에 다시 BUY가 몰리는 것을 줄이는 안전장치입니다.",
+    "order.min_order_request_interval_seconds": "종목과 무관하게 봇 전체에서 주문 요청 사이에 최소로 띄울 시간입니다. 여러 종목이 동시에 조건을 만족해도 주문 API를 짧은 시간에 연속 호출하지 않도록 하는 전역 주문 난사 방지 장치입니다.",
+    "order.cancel_unfilled_on_start": "봇 시작 시 기존 미체결 주문을 취소하려고 시도할지 정합니다. 실제 주문 상태에 영향을 줄 수 있으므로 live_trading=true 환경에서는 특히 조심해야 합니다.",
+    "order.execution_query_buffer_minutes": "open REQUESTED/PARTIAL order가 있을 때, 그 주문 요청시각보다 이 시간만큼 더 과거부터 체결내역을 조회합니다. 봇 재시작이나 API 지연으로 체결을 놓치는 위험을 줄이기 위한 reconciliation 범위 버퍼입니다.",
+    "order.include_previous_day_for_open_orders": "open order가 있으면 오늘 체결만 보지 않고 최소 전일 00:00부터 조회를 시도할지 정합니다. 장마감 직전 주문, 다음날 재시작 같은 상황에서 전일 주문 체결을 놓치지 않기 위한 옵션입니다.",
+    "order.enable_execution_raw_log": "KIS 체결 응답 원본 필드 mapping을 확인하기 위한 임시 디버그 옵션입니다. 켜면 마스킹된 raw execution sample이 로그에 남습니다. 실체결 필드 검증 후에는 개인정보/로그량 관리를 위해 false로 되돌리는 것을 권장합니다.",
+    "order.reconcile_recent_executions_on_startup": "봇 시작 직후 open order 유무와 관계없이 최근 체결내역을 1회 조회해 미반영 봇 주문 체결을 복구할 기회를 제공합니다. manual/unmatched execution은 자동 LOT에 섞지 않습니다.",
+    "order.startup_execution_lookup_days": "시작 시 최근 며칠치 체결을 조회할지 정합니다. 값이 1이면 오늘 기준 최근 1일 범위를 봅니다. dedupe가 있으므로 이미 반영된 fill은 중복 반영하지 않습니다.",
+    "market_hours.open_time": "정규장 시작 시간입니다. 이 시간 전에는 신규 주문 판단을 하지 않거나 outside_trade_window로 차단합니다.",
+    "market_hours.close_time": "정규장 종료 시간입니다. 이 시간 이후에는 신규 주문이 차단됩니다. 장마감 전 차단 구간은 block_before_close_minutes가 별도로 적용됩니다.",
+    "market_hours.block_after_open_minutes": "장 시작 직후 변동성이 큰 구간을 피하기 위해 open_time 이후 이 분 수 동안 주문을 차단합니다. 예: 09:00 시작, 값 5이면 09:05 전까지 outside_trade_window가 될 수 있습니다.",
+    "market_hours.block_before_close_minutes": "장 마감 직전 체결/취소/동기화 리스크를 줄이기 위해 close_time 이전 이 분 수 동안 신규 주문을 차단합니다.",
+    "storage_path": "봇이 orders, fills, lots, positions, manual_order_requests를 저장하는 SQLite DB 경로입니다. UI는 이 DB를 읽어 상태를 보여주며, DB 파일을 바꾸면 다른 운용 상태를 보게 됩니다.",
+    "log_path": "자동거래 판단, 주문 요청, 체결 반영, reconciliation, raw execution mapping 로그를 기록하는 파일 경로입니다. UI Logs 화면과 진단 화면은 이 파일을 읽습니다.",
+    "kis_account.account_number_env": "실제 계좌번호 값을 config에 직접 쓰지 않고, 계좌번호가 들어 있는 환경변수 이름만 지정합니다. UI에도 실제 계좌번호는 표시하지 않습니다.",
+    "kis_account.account_product_code_env": "계좌 상품코드가 들어 있는 환경변수 이름입니다. 실제 값은 환경변수에서 읽고, config/UI에는 key 이름만 둡니다.",
+    "kis_account.customer_type": "KIS API 호출에 전달하는 고객 타입 코드입니다. 개인/법인 등 계정 유형에 맞는 값을 써야 하며, 잘못되면 API 요청이 실패할 수 있습니다.",
+    "upstream_watch.enabled": "KIS Open Trading API upstream 변경 감시 기능을 켤지 정합니다. 매매 판단 자체와는 별개이며, API 문서/레포 변경을 주기적으로 확인하는 보조 기능입니다.",
+    "upstream_watch.interval_seconds": "upstream_watch가 켜져 있을 때 변경 확인을 몇 초마다 할지 정합니다. 너무 짧게 두면 불필요한 fetch/확인이 많아질 수 있습니다.",
+    "upstream_watch.repo_path": "Open Trading API repository가 로컬에 있는 경로입니다. upstream 변경 감시 기능이 이 경로를 기준으로 동작합니다.",
+    "upstream_watch.fetch": "upstream 확인 시 git fetch 같은 원격 확인을 시도할지 정합니다. 네트워크/권한 영향을 받을 수 있으므로 기본은 보수적으로 둡니다.",
+    "loop_interval_seconds": "자동매매 메인 루프가 한 바퀴 돈 뒤 다음 루프까지 기다리는 시간입니다. 짧게 하면 반응은 빨라지지만 API 호출과 로그가 많아집니다. 길게 하면 안정적이지만 기회 포착이 느려집니다.",
+    "max_loop_count": "테스트 실행 때 루프를 몇 번만 돌리고 멈출지 정하는 값입니다. 비어 있으면 제한 없이 계속 돕니다. 실운용에서는 보통 null입니다.",
+    "ui_manual_trading_enabled": "UI에서 수동 매수/매도 요청을 생성할 수 있게 할지 정합니다. false이면 버튼/API 모두 요청 생성을 차단합니다. true여도 UI는 KIS 주문 API를 직접 호출하지 않고 manual_order_requests 큐에 요청만 넣습니다.",
+}
+
+
 class UIService:
     def __init__(self, config_path: str | Path = DEFAULT_CONFIG_PATH, runtime_path: str | Path = DEFAULT_RUNTIME_CONTROL_PATH) -> None:
         self.config_path = Path(config_path)
@@ -117,17 +197,26 @@ class UIService:
     def config_schema(self) -> dict[str, Any]:
         sections: dict[str, list[dict[str, Any]]] = {}
         for item in CONFIG_METADATA:
-            sections.setdefault(str(item["section"]), []).append(dict(item))
+            if item["key"] in HIDDEN_CONFIG_KEYS:
+                continue
+            enriched = dict(item)
+            if enriched["key"] in DETAILED_CONFIG_DESCRIPTIONS:
+                enriched["description_ko"] = DETAILED_CONFIG_DESCRIPTIONS[enriched["key"]]
+            sections.setdefault(str(enriched["section"]), []).append(enriched)
+        metadata = [dict(item) for item in CONFIG_METADATA if item["key"] not in HIDDEN_CONFIG_KEYS]
+        for item in metadata:
+            if item["key"] in DETAILED_CONFIG_DESCRIPTIONS:
+                item["description_ko"] = DETAILED_CONFIG_DESCRIPTIONS[item["key"]]
         return {
             "sections": sections,
-            "metadata": [dict(item) for item in CONFIG_METADATA],
+            "metadata": metadata,
             "restart_required_by_default": True,
             "conversion_notes": {
                 "decimal_rate": "UI에서는 percent로 보여주고 저장 시 100으로 나눈 소수로 변환합니다. 예: 4.0% -> 0.04",
                 "percent_value": "config 값 자체가 percent입니다. 예: 4.0 -> 4.0%",
                 "json": "배열/복합 구조는 JSON으로 편집하며 동일한 validation/backup/atomic save를 거칩니다.",
             },
-            "danger_confirm_keys": [item["key"] for item in CONFIG_METADATA if item.get("danger_confirm_required")],
+            "danger_confirm_keys": [item["key"] for item in metadata if item.get("danger_confirm_required")],
         }
 
     def status(self) -> dict[str, Any]:

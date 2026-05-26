@@ -297,7 +297,6 @@
     "max_open_lots_before_review": 12,
     "pnl_minus_threshold": -0.01,
     "pnl_plus_threshold": 0.01,
-    "reentry_drop_rate": 0.04,
     "normal_reentry_drop_rate": 0.04,
     "trailing_activation_gain": 0.05,
     "trailing_reentry_drop_rate": 0.08,

@@ -30,13 +30,15 @@ INDEX_HTML = r"""<!doctype html>
     button { border: 1px solid #b8c2cc; background: white; padding: 8px 10px; border-radius: 6px; cursor: pointer; }
     button.primary { background: #1f6feb; color: white; border-color: #1f6feb; }
     button.dangerBtn { background: #b42318; color: white; border-color: #b42318; }
-    section { background: white; border: 1px solid #d7dde3; border-radius: 8px; padding: 14px; overflow: auto; }
+    section { background: white; border: 1px solid #d7dde3; border-radius: 8px; padding: 14px; overflow: visible; }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
     .metric { border: 1px solid #e2e7ec; padding: 10px; border-radius: 6px; }
     .metric strong { display: block; font-size: 12px; color: #59636e; }
+    .tableWrap { overflow: auto; max-height: 68vh; border: 1px solid #e2e7ec; border-radius: 8px; background: white; margin: 10px 0 16px; }
+    .tableWrap table { min-width: max-content; }
     table { border-collapse: collapse; width: 100%; font-size: 13px; }
     th, td { border-bottom: 1px solid #e6ebf0; padding: 7px; text-align: left; white-space: nowrap; vertical-align: top; }
-    th { background: #e8eef5; position: sticky; top: 0; cursor: pointer; user-select: none; font-weight: 800; }
+    th { background: #e8eef5; position: sticky; top: 0; z-index: 1; cursor: pointer; user-select: none; font-weight: 800; }
     th:hover { background: #e5ebf1; }
     tr:hover td { background: #f8fbff; }
     .num { text-align: right; font-variant-numeric: tabular-nums; }
@@ -65,6 +67,9 @@ INDEX_HTML = r"""<!doctype html>
     .changed { background: #fff7db; }
     .configActions { position: sticky; bottom: 0; background: white; border-top: 1px solid #d7dde3; padding: 10px 0; }
     .sortHint { color: #59636e; font-size: 12px; margin: 4px 0 10px; }
+    .rowActions { display: flex; gap: 6px; align-items: center; }
+    .rowActions button { padding: 5px 8px; font-size: 12px; }
+    .detailPanel { border: 1px solid #d7dde3; border-radius: 8px; padding: 12px; background: #fbfcfe; margin-top: 12px; }
     pre { background: #0b1020; color: #d6e2ff; padding: 12px; border-radius: 6px; overflow: auto; max-height: 420px; }
     input, textarea, select { padding: 7px; border: 1px solid #b8c2cc; border-radius: 6px; }
     textarea { width: 100%; min-height: 240px; font-family: ui-monospace, Consolas, monospace; }
@@ -81,9 +86,8 @@ INDEX_HTML = r"""<!doctype html>
     <button onclick="loadOrders()">Orders/Fills</button>
     <button onclick="loadLogs()">Logs</button>
     <button onclick="loadConfig()">Config</button>
-    <button onclick="loadExecution()">Execution Check</button>
     <button onclick="loadRuntime()">Runtime Control</button>
-    <button onclick="loadManualOrders()">수동 주문 설계</button>
+    <button onclick="loadManualOrders()">수동 주문 요청</button>
   </div>
   <section id="content">Loading...</section>
 </main>
@@ -135,6 +139,44 @@ const VALUE_LABELS = {
   risk_blocked_buy_sell_blocked:'위험 차단 상태라 매수/매도 모두 차단', sync_required:'동기화 필요로 차단',
   review_required:'수동 검토 필요로 매수 차단'
 };
+Object.assign(LABELS, {
+  code:'종목코드', name:'종목명', enabled:'사용 여부',
+  trading_halted:'거래정지', administrative_issue:'관리종목 이슈', investment_alert:'투자주의/경고',
+  audit_opinion_issue:'감사의견 이슈', delisting_risk:'상장폐지 위험', accounting_issue:'회계 이슈',
+  liquidity_warning:'유동성 경고', position_state:'보유 상태', current_price:'현재가',
+  open_lot_count:'OPEN LOT 수', invested_amount:'투입금', profit_loss_pct:'평가손익률',
+  risk_block_reasons:'위험 차단 사유', last_decision:'최근 판단', skip_reason:'스킵 사유',
+  final_block_reason:'최종 차단 사유', lot_id:'LOT ID', status:'상태', buy_price:'매수가',
+  buy_quantity:'매수 수량', remaining_quantity:'잔여 수량', buy_amount:'매수 금액',
+  buy_filled_at:'매수 체결시각', buy_time:'매수시각', lot_age_days:'LOT 경과 일수',
+  age_weeks:'LOT 경과 주수', lot_age_weeks:'LOT 경과 주수', unrealized_pnl:'평가손익',
+  unrealized_pnl_rate:'평가손익률', base_target_profit_rate:'기본 목표수익률',
+  effective_target_profit_rate:'적용 목표수익률', sell_trigger_price:'매도 트리거 가격',
+  cleanup_candidate:'손실정리 후보', stale_lot:'STALE LOT', last_sell_reason:'최근 매도 사유',
+  order_id:'주문 ID', side:'매수/매도', order_type:'주문 유형', order_status:'주문 상태',
+  requested_price:'주문 요청가', requested_quantity:'주문 요청수량', quantity:'수량',
+  limit_price:'지정가', reason:'사유', requested_at:'주문 요청시각', updated_at:'갱신시각',
+  cleanup_flag:'Cleanup 여부', fill_id:'체결 ID', execution_id:'KIS 체결번호',
+  price:'체결가', filled_at:'체결시각', dedupe_key_type:'중복방지 키',
+  is_duplicate:'중복 여부', apply_fill:'체결 반영 여부',
+  position_lots_reflected:'포지션/LOT 반영 여부', source:'출처', requested_by:'요청자',
+  amount:'금액', live_trading:'실거래 여부', confirm_text_verified:'확인 문구 검증',
+  block_reason:'차단 사유', linked_order_id:'연결 주문 ID', created_at:'생성시각',
+  review_reason:'검토 사유', sync_status:'동기화 상태'
+});
+Object.assign(VALUE_LABELS, {
+  HOLDING:'보유 중', NEVER_BOUGHT:'미매수', WAIT_REENTRY:'재진입 대기',
+  COOLDOWN_AFTER_CLEANUP:'Cleanup 후 쿨다운', REVIEW_REQUIRED:'수동 검토 필요',
+  RISK_BLOCKED:'위험 차단', SYNC_REQUIRED:'동기화 필요', OPEN:'미청산',
+  CLOSED:'청산 완료', REQUESTED:'요청됨', PARTIAL:'부분체결', FILLED:'체결완료',
+  CANCELED:'취소됨', REJECTED:'거절됨', BUY:'매수', SELL:'매도',
+  PROFIT_TAKE:'본전/수익 매도', CLEANUP_SELL:'손실 정리 매도', UNKNOWN:'알 수 없음',
+  execution_id:'체결번호 기준', fallback:'보조 키 기준',
+  ui_manual_trading_disabled:'수동 주문 요청 비활성', confirm_text_required:'실거래 확인 문구 필요',
+  current_price_missing:'현재가 없음', open_buy_order_exists:'미체결 매수 주문 존재',
+  open_sell_order_exists:'해당 LOT 미체결 매도 주문 존재', quantity_below_one:'수량 1 미만',
+  quantity_exceeds_remaining:'잔여 수량 초과', closed_lot:'청산 완료 LOT', lot_not_found:'LOT 없음'
+});
 function labelFor(key) { return LABELS[key] || humanizeKey(key); }
 function humanizeKey(key) {
   const parts = String(key).split('_').map(p => ({
@@ -181,10 +223,23 @@ function table(rows, tableId='default', opts={}) {
   const keys = Object.keys(rows[0]);
   const state = sortState[tableId] || opts.defaultSort || null;
   const sorted = state ? sortRows(rows, state.key, state.dir) : [...rows];
-  return '<div class="sortHint">컬럼 헤더를 클릭하면 오름차순, 내림차순, 기본순으로 전환됩니다.</div><table data-table-id="'+esc(tableId)+'"><thead><tr>' +
+  const actionHeader = opts.actions ? '<th>작업<span class="key">actions</span></th>' : '';
+  const actionCells = (row) => opts.actions ? `<td>${rowActions(tableId, row)}</td>` : '';
+  return '<div class="sortHint">컬럼 헤더를 클릭하면 오름차순, 내림차순, 기본순으로 전환합니다. 표 안쪽 가로 스크롤은 화면 중간에서도 바로 사용할 수 있습니다.</div><div class="tableWrap"><table data-table-id="'+esc(tableId)+'"><thead><tr>' +
+    actionHeader +
     keys.map(k => `<th onclick="sortTable('${esc(tableId)}','${esc(k)}')">${headerLabel(k)}${state && state.key === k ? (state.dir === 'asc' ? ' ▲' : ' ▼') : ''}</th>`).join('') +
     '</tr></thead><tbody>' +
-    sorted.map(r => '<tr>' + keys.map(k => `<td class="${cellClass(k, r[k])}">${displayCell(k, r[k])}</td>`).join('') + '</tr>').join('') + '</tbody></table>';
+    sorted.map(r => '<tr>' + actionCells(r) + keys.map(k => `<td class="${cellClass(k, r[k])}">${displayCell(k, r[k])}</td>`).join('') + '</tr>').join('') + '</tbody></table></div>';
+}
+function rowActions(tableId, row) {
+  if (tableId === 'stocks') {
+    return `<div class="rowActions"><button onclick="openStockLots('${esc(row.code)}')">LOT 보기</button><button onclick="openManualBuy('${esc(row.code)}')">수동 매수</button></div>`;
+  }
+  if (tableId === 'lots' || tableId === 'stockLots') {
+    const disabled = Number(row.remaining_quantity || 0) <= 0 || String(row.status || '') === 'CLOSED' ? 'disabled' : '';
+    return `<div class="rowActions"><button ${disabled} onclick="openManualSell('${esc(row.code)}','${esc(row.lot_id)}',${Number(row.remaining_quantity || 0)})">수동 매도</button></div>`;
+  }
+  return '';
 }
 function sortTable(tableId, key) {
   const current = sortState[tableId];
@@ -251,7 +306,7 @@ async function loadStocks() {
   currentView = 'stocks';
   const rows = await api('/api/stocks');
   if (!sortState.stocks) sortState.stocks = {key:'position_state', dir:'asc'};
-  document.getElementById('content').innerHTML = '<h2>종목</h2><input id="stockFilter" placeholder="종목코드/종목명/상태 검색" oninput="renderStockTable()" value="'+esc(window.stockFilterValue || '')+'"><div class="manualBox"><strong>수동 매수 요청</strong><p class="muted">현재는 안전상 비활성입니다. 향후 UI는 요청만 생성하고, 실제 주문은 Bot Core가 runtime pause/risk/open order guard를 거쳐 처리해야 합니다.</p><button disabled>수동 매수 요청 비활성</button></div><div id="stockTable"></div>';
+  document.getElementById('content').innerHTML = '<h2>종목</h2><input id="stockFilter" placeholder="종목코드/종목명/상태 검색" oninput="renderStockTable()" value="'+esc(window.stockFilterValue || '')+'"><div class="manualBox"><strong>종목별 LOT 확인 / 수동 요청</strong><p class="muted">LOT 보기로 종목별 보유 LOT과 LOT별 수익률을 확인할 수 있습니다. 수동 매수/매도 버튼은 manual_order_requests 큐에 요청만 만들며 UI가 KIS 주문 API를 직접 호출하지 않습니다.</p></div><div id="stockTable"></div><div id="stockLotPanel"></div>';
   window.stockRows = rows;
   renderStockTable();
 }
@@ -259,13 +314,31 @@ function renderStockTable() {
   window.stockFilterValue = document.getElementById('stockFilter')?.value || '';
   const q = window.stockFilterValue.toLowerCase();
   const rows = (window.stockRows || []).filter(r => !q || JSON.stringify(r).toLowerCase().includes(q));
-  document.getElementById('stockTable').innerHTML = table(rows, 'stocks');
+  document.getElementById('stockTable').innerHTML = table(rows, 'stocks', {actions:true});
+}
+async function openStockLots(code) {
+  const detail = await api('/api/stocks/' + encodeURIComponent(code));
+  const lots = detail.lots || [];
+  const stock = detail.stock || {};
+  document.getElementById('stockLotPanel').innerHTML = `<div class="detailPanel"><h3>${esc(stock.name || '')} ${esc(code)} 보유 LOT</h3><p class="muted">종목별 LOT 수익률, 잔여 수량, cleanup/stale 상태를 확인하고 OPEN LOT은 수동 매도 요청 화면으로 보낼 수 있습니다.</p>${table(lots, 'stockLots', {actions:true})}</div>`;
+}
+async function openManualBuy(code) {
+  await loadManualOrders();
+  document.getElementById('manualBuyCode').value = code;
+  document.getElementById('manualBuyAmount').focus();
+}
+async function openManualSell(code, lotId, remainingQty) {
+  await loadManualOrders();
+  document.getElementById('manualSellCode').value = code;
+  document.getElementById('manualSellLot').value = lotId;
+  document.getElementById('manualSellQty').value = remainingQty || '';
+  document.getElementById('manualSellQty').focus();
 }
 async function loadLots() {
   currentView = 'lots';
   const rows = await api('/api/lots');
   if (!sortState.lots) sortState.lots = {key:'unrealized_pnl_rate', dir:'asc'};
-  document.getElementById('content').innerHTML = '<h2>LOT</h2><div class="manualBox"><strong>LOT별 수동 매도 요청</strong><p class="muted">현재는 안전상 비활성입니다. CLOSED LOT, open SELL order, RISK_BLOCKED, SYNC_REQUIRED, runtime sell pause 상태에서는 요청 생성도 차단되어야 합니다.</p><button disabled>수동 매도 요청 비활성</button></div>' + table(rows, 'lots');
+  document.getElementById('content').innerHTML = '<h2>LOT</h2><div class="manualBox"><strong>LOT별 수동 매도 요청</strong><p class="muted">OPEN LOT 행의 수동 매도 버튼으로 LOT ID와 잔여 수량을 자동 입력할 수 있습니다. CLOSED LOT, open SELL order, RISK_BLOCKED, SYNC_REQUIRED, runtime sell pause 상태에서는 요청 생성도 차단됩니다.</p></div>' + table(rows, 'lots', {actions:true});
 }
 async function loadOrders() {
   currentView = 'orders';
@@ -611,3 +684,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
