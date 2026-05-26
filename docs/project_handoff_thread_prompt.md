@@ -1,11 +1,11 @@
 # 새 ChatGPT / Codex thread 시작용 프롬프트
 
 > Authoritative source: `docs/project_handoff_full.md` is the latest full baseline. `docs/project_handoff_thread_prompt.md` is for starting a new chat, and `docs/project_handoff_summary.md` is the short summary. `local_ui.md`, `strategy_lot_sizing.md`, `new_season_reset.md`, and `expansion_100_config.md` are detailed references. If a reference doc conflicts with the full handoff, use `project_handoff_full.md` as the source of truth.  
-> Last updated: 2026-05-26 / Baseline tests: `143 passed` / Baseline config profile: `expansion_100_safe`. Re-check config, DB, logs, and KIS account state at runtime.
+> Last updated: 2026-05-26 / Baseline tests: `147 passed` / Baseline config profile: `expansion_100_safe`. Re-check config, DB, logs, and KIS account state at runtime.
 
 
 Last updated: 2026-05-26  
-기준 테스트 결과: `143 passed`  
+기준 테스트 결과: `147 passed`  
 기준 config profile: `expansion_100_safe`  
 관련 문서: [전체 인수인계](project_handoff_full.md), [요약본](project_handoff_summary.md), [로컬 UI](local_ui.md), [LOT sizing](strategy_lot_sizing.md), [새 시즌 reset](new_season_reset.md), [100종목 config](expansion_100_config.md)
 
@@ -36,7 +36,7 @@ Last updated: 2026-05-26
 - `cleanup_enabled=false`
 - `ui_manual_trading_enabled=false`
 - `enable_execution_raw_log=true`
-- 최신 테스트: `143 passed`
+- 최신 테스트: `147 passed`
 - 현재 DB에는 OPEN LOT이 남아 있는 상태로 이해해야 하며, 이 경우 DB reset 차단은 정상이다.
 
 ## 핵심 전략

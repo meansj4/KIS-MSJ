@@ -1,7 +1,7 @@
 # KIS LOT Bot Local UI and Control API
 
 > Authoritative source: `docs/project_handoff_full.md` is the latest full baseline. `docs/project_handoff_thread_prompt.md` is for starting a new chat, and `docs/project_handoff_summary.md` is the short summary. `local_ui.md`, `strategy_lot_sizing.md`, `new_season_reset.md`, and `expansion_100_config.md` are detailed references. If a reference doc conflicts with the full handoff, use `project_handoff_full.md` as the source of truth.  
-> Last updated: 2026-05-26 / Baseline tests: `143 passed` / Baseline config profile: `expansion_100_safe`. Re-check config, DB, logs, and KIS account state at runtime.
+> Last updated: 2026-05-26 / Baseline tests: `147 passed` / Baseline config profile: `expansion_100_safe`. Re-check config, DB, logs, and KIS account state at runtime.
 
 
 ## REVIEW_REQUIRED 처리 가이드
@@ -634,6 +634,13 @@ UI에서 확인해야 할 핵심 항목:
 7. DB 초기화는 `RESET 확인` 문구가 있어야 실행됩니다.
 
 중간에 막히면 버튼은 KIS 주문 API를 호출하지 않고, “KIS 잔고 snapshot 경로 필요”, “전량매도 체결/reconciliation 필요”, “RESET 확인 문구 필요”처럼 다음 행동을 안내합니다.
+
+전량매도 예정표 미리보기와 실제 request 생성 가능 여부는 다릅니다.
+
+- 예정표 미리보기/plan 생성: `generated_at`이 없거나 `sellable_quantity`가 없으면 warning을 표시하면서 plan을 보여줄 수 있습니다.
+- 실제 전량매도 request 생성: 최신 `generated_at`과 실제 `sellable_quantity`가 포함된 snapshot이 필요합니다.
+- `generated_at` 누락, 파싱 실패, snapshot age 초과, `sellable_quantity` 누락, 매도가능수량 부족은 request 생성 버튼을 차단합니다.
+- UI에는 `전량매도 예정표 미리보기 가능`, `전량매도 요청 생성 불가`, `요청 생성 차단 사유`, `미리보기 경고`, `strict 검증 오류`가 구분되어 표시됩니다.
 
 새 시즌 탭은 기본 화면에서 내부 처리 flag를 최소화합니다. `request_creation_possible`, `block_reason`, hash 같은 진단값은 `고급 작업 / 내부 진단 열기` 안에 접어 두고, 평소에는 “막힌 이유”와 “다음에 할 일”만 먼저 보이게 합니다.
 

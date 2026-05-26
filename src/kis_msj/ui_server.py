@@ -659,6 +659,17 @@ async function loadNewSeason() {
   const msg = s.guidance || {};
   const blockedGuide = s.block_reason_ko || (s.reset_block_reasons_ko || [])[0] || msg.reason || '';
   const needsBalance = (s.open_lot_count || 0) > 0;
+  const snapshotWarnings = Array.isArray(s.snapshot_warnings) ? s.snapshot_warnings : [];
+  const snapshotErrors = Array.isArray(s.snapshot_errors) ? s.snapshot_errors : [];
+  const snapshotStatus = s.current_plan_exists ? `<div class="manualBox">
+    <h3>KIS 잔고 snapshot 검증</h3>
+    <p><strong>전량매도 예정표 미리보기</strong>: ${s.current_plan_exists ? '가능' : '없음'}</p>
+    <p><strong>전량매도 요청 생성</strong>: ${s.request_creation_allowed ? '가능' : '불가'}</p>
+    ${s.request_creation_block_reason ? `<p class="bad"><strong>요청 생성 차단 사유</strong>: ${esc(s.request_creation_block_reason_ko || s.request_creation_block_reason)} <span class="key">${esc(s.request_creation_block_reason)}</span></p>` : ''}
+    ${snapshotWarnings.length ? `<p class="warn"><strong>미리보기 경고</strong>: ${esc(snapshotWarnings.join(', '))}</p>` : ''}
+    ${snapshotErrors.length ? `<p class="bad"><strong>strict 검증 오류</strong>: ${esc(snapshotErrors.join(', '))}</p>` : ''}
+    <p class="muted">미리보기에서는 generated_at 누락이나 sellable_quantity 누락을 경고로 보여줄 수 있지만, 실제 manual SELL request 생성에는 최신 generated_at과 실제 sellable_quantity가 필요합니다.</p>
+  </div>` : '';
   const inputHelp = needsBalance ? `<div class="controlCard">
       <h3>필요한 입력</h3>
       <label>KIS 잔고 snapshot JSON 경로<span class="key">kis_balance_json_path</span></label>
@@ -685,6 +696,7 @@ async function loadNewSeason() {
     <div class="metric"><strong>현재 예정표<span class="key">plan_status</span></strong>${displayCell('plan_status', s.plan_status || '없음')}</div>
   </div>
   ${inputHelp}
+  ${snapshotStatus}
   <details class="manualBox"><summary>고급 작업 / 내부 진단 열기</summary>
     <p><button onclick="newSeasonArchive(false)">백업 dry-run</button> <button onclick="newSeasonArchive(true)">백업 생성</button></p>
     <p><input id="planMaxAge" type="number" value="${esc(window.planMaxAge || 60)}" min="1" style="width:90px"> 분 유효
