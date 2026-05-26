@@ -680,6 +680,28 @@ class StateStore:
                 return []
         return [_normalize_row(dict(row)) for row in rows]
 
+    def claim_manual_order_request(self, request_id: str) -> dict[str, object] | None:
+        """Atomically claim one REQUESTED manual request for processing.
+
+        This prevents duplicate order submission when loops wake up quickly or
+        when more than one bot process accidentally observes the same queue.
+        """
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE manual_order_requests
+                SET status = 'PROCESSING', updated_at = CURRENT_TIMESTAMP
+                WHERE request_id = ?
+                  AND status = 'REQUESTED'
+                  AND COALESCE(linked_order_id, '') = ''
+                """,
+                (request_id,),
+            )
+            if cursor.rowcount != 1:
+                return None
+            row = connection.execute("SELECT * FROM manual_order_requests WHERE request_id = ?", (request_id,)).fetchone()
+        return _normalize_row(dict(row)) if row is not None else None
+
     def update_manual_order_request(self, request_id: str, *, status: str, block_reason: str = "", linked_order_id: str = "") -> None:
         with self._connect() as connection:
             connection.execute(

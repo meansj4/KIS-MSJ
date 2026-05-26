@@ -1,7 +1,7 @@
 # KIS LOT Bot Local UI and Control API
 
 > Authoritative source: `docs/project_handoff_full.md` is the latest full baseline. `docs/project_handoff_thread_prompt.md` is for starting a new chat, and `docs/project_handoff_summary.md` is the short summary. `local_ui.md`, `strategy_lot_sizing.md`, `new_season_reset.md`, and `expansion_100_config.md` are detailed references. If a reference doc conflicts with the full handoff, use `project_handoff_full.md` as the source of truth.  
-> Last updated: 2026-05-26 / Baseline tests: `147 passed` / Baseline config profile: `expansion_100_safe`. Re-check config, DB, logs, and KIS account state at runtime.
+> Last updated: 2026-05-26 / Baseline tests: `150 passed` / Baseline config profile: `expansion_100_safe`. Re-check config, DB, logs, and KIS account state at runtime.
 
 
 ## REVIEW_REQUIRED 처리 가이드
@@ -593,7 +593,9 @@ Runtime Control 화면에는 봇 루프 제어 버튼이 있습니다.
 
 ## Config 배열형 설정 편집
 
-Config 탭에서 `price_lot_bands`, `add_buy_lot_bands`, `target_profit_lot_bands`, `exposure_buy_bands`, `exposure_sell_bands`처럼 배열/구간 형태인 값은 기본적으로 JSON textarea가 아니라 표 형태 편집기로 표시합니다.
+Config 탭에서 현재 기본 로직에 쓰는 `price_lot_bands`, `add_buy_lot_bands`, `target_profit_lot_bands` 같은 배열/구간 형태 값은 기본적으로 JSON textarea가 아니라 표 형태 편집기로 표시합니다.
+
+현재 일반 Strategy 설정 화면은 최종 기본 로직인 `cycle_locked_by_entry_price` 중심으로 표시합니다. `initial_buy_amount`, `auto_buy_limit`, `absolute_max_investment`, `exposure_buy_bands`, `exposure_sell_bands`, `reentry_drop_rate`는 기존 DB/config 호환 또는 legacy mode 해석용으로 남아 있을 수 있지만 일반 UI Config에서는 숨깁니다. 운영자가 조정해야 하는 현재 기준 항목은 `price_lot_bands`, `add_buy_lot_bands`, `target_profit_lot_bands`, `max_lots_per_symbol_default`, normal/trailing reentry, cleanup, stale/review 설정입니다.
 
 - 각 행은 하나의 가격 구간, LOT 구간, 노출 구간을 뜻합니다.
 - `행 추가`와 `행 삭제`로 구간을 조정할 수 있습니다.
@@ -640,6 +642,7 @@ UI에서 확인해야 할 핵심 항목:
 - 예정표 미리보기/plan 생성: `generated_at`이 없거나 `sellable_quantity`가 없으면 warning을 표시하면서 plan을 보여줄 수 있습니다.
 - 실제 전량매도 request 생성: 최신 `generated_at`과 실제 `sellable_quantity`가 포함된 snapshot이 필요합니다.
 - `generated_at` 누락, 파싱 실패, snapshot age 초과, `sellable_quantity` 누락, 매도가능수량 부족은 request 생성 버튼을 차단합니다.
+- New Season 화면의 `snapshot 검증` 버튼은 plan을 만들기 전에 JSON 경로를 검증합니다. UI는 `전량매도 예정표 미리보기 가능 여부`와 `전량매도 요청 생성 가능 여부`를 분리해서 보여주며, DB OPEN LOT 수량과 snapshot 보유수량이 맞는지도 같이 보여줍니다.
 - UI에는 `전량매도 예정표 미리보기 가능`, `전량매도 요청 생성 불가`, `요청 생성 차단 사유`, `미리보기 경고`, `strict 검증 오류`가 구분되어 표시됩니다.
 
 새 시즌 탭은 기본 화면에서 내부 처리 flag를 최소화합니다. `request_creation_possible`, `block_reason`, hash 같은 진단값은 `고급 작업 / 내부 진단 열기` 안에 접어 두고, 평소에는 “막힌 이유”와 “다음에 할 일”만 먼저 보이게 합니다.

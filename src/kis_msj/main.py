@@ -126,6 +126,11 @@ class AutoTrader:
     def process_manual_order_requests(self, snapshot: AccountSnapshot, account_risk) -> None:
         for manual in self.store.manual_order_requests("REQUESTED"):
             request_id = str(manual["request_id"])
+            claimed = self.store.claim_manual_order_request(request_id)
+            if claimed is None:
+                self.logger.info("manual_order_request_claim_skipped request_id=%s reason=already_claimed_or_linked", request_id)
+                continue
+            manual = claimed
             code = str(manual["code"]).zfill(6)
             side = OrderSide(str(manual["side"]))
             position = self.position_manager.get(code)
@@ -163,6 +168,7 @@ class AutoTrader:
                     continue
                 interrupt = self.runtime_interrupt_reason(f"before_manual_submit_{request_id}")
                 if interrupt:
+                    self.store.update_manual_order_request(request_id, status="BLOCKED", block_reason=interrupt)
                     return
                 order_request = self.order_manager.build_request(position, action, current_price)
                 if order_request is None:

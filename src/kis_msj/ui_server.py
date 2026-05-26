@@ -674,6 +674,8 @@ async function loadNewSeason() {
       <h3>필요한 입력</h3>
       <label>KIS 잔고 snapshot JSON 경로<span class="key">kis_balance_json_path</span></label>
       <input id="kisBalancePath" placeholder="예: exports/kis_balance_20260526.json" value="${esc(window.kisBalancePath || '')}">
+      <p><button onclick="newSeasonValidateSnapshot()">snapshot 검증</button></p>
+      <div id="snapshotValidationResult"></div>
       <label>전량매도 예정표 경로<span class="key">liquidation_plan_path</span></label>
       <input id="liquidationPlanPath" placeholder="자동 생성 후 채워집니다" value="${esc(window.liquidationPlanPath || s.plan_path || '')}">
       <label>전량매도 요청 확인 문구<span class="key">confirm</span></label>
@@ -789,6 +791,23 @@ async function newSeasonPlan(execute) {
   if (r.result && r.result.plan_path) window.liquidationPlanPath = r.result.plan_path;
   await loadNewSeason();
   if (r.result && r.result.plan_path) document.getElementById('liquidationPlanPath').value = r.result.plan_path;
+}
+async function newSeasonValidateSnapshot() {
+  rememberNewSeasonInputs();
+  const target = document.getElementById('snapshotValidationResult');
+  if (target) target.innerHTML = '검증 중...';
+  const r = await api('/api/new-season/validate-snapshot', {method:'POST', body:JSON.stringify({kis_balance_json_path: window.kisBalancePath, max_age_minutes: Number(window.planMaxAge || 60)})});
+  const guide = r.guide || {};
+  if (target) target.innerHTML = `<div class="manualBox">
+    <p><strong>전량매도 예정표 미리보기</strong>: ${r.snapshot_valid_for_preview ? '가능' : '불가'}</p>
+    <p><strong>전량매도 요청 생성</strong>: ${r.snapshot_valid_for_request ? '가능' : '불가'}</p>
+    <p><strong>생성시각</strong>: ${displayCell('snapshot_generated_at', r.snapshot_generated_at || '-')} / <strong>나이</strong>: ${displayCell('snapshot_age_minutes', r.snapshot_age_minutes)}</p>
+    ${(r.snapshot_warnings || []).length ? `<p class="warn"><strong>경고</strong>: ${esc((r.snapshot_warnings || []).join(', '))}</p>` : ''}
+    ${(r.snapshot_errors || []).length ? `<p class="bad"><strong>오류</strong>: ${esc((r.snapshot_errors || []).join(', '))}</p>` : ''}
+    ${r.request_creation_block_reason ? `<p class="bad"><strong>요청 생성 차단</strong>: ${esc(guide.title || r.request_creation_block_reason)} <span class="key">${esc(r.request_creation_block_reason)}</span></p>` : ''}
+    <p><strong>다음 행동</strong>: ${esc(guide.next_action || '')}</p>
+    <p class="muted">매칭 ${esc(r.matched_positions_count || 0)}개 / 불일치 ${esc(r.mismatched_positions_count || 0)}개 / snapshot 누락 ${esc((r.missing_in_snapshot_codes || []).join(', ') || '-')} / snapshot 초과 ${esc((r.extra_in_snapshot_codes || []).join(', ') || '-')}</p>
+  </div>`;
 }
 async function newSeasonRequests(execute) {
   rememberNewSeasonInputs();
@@ -941,8 +960,6 @@ const STRUCTURED_JSON_TEMPLATES = {
   'strategy.price_lot_bands': {keys:['min_price','max_price','lot_unit_amount','max_symbol_amount','max_lots','enabled','note'], row:{min_price:0,max_price:0,lot_unit_amount:0,max_symbol_amount:0,enabled:true,note:''}},
   'strategy.add_buy_lot_bands': {keys:['min_lots','max_lots','drop_rate','add_lot_count'], row:{min_lots:1,max_lots:1,drop_rate:0.04,add_lot_count:1}},
   'strategy.target_profit_lot_bands': {keys:['min_lots','max_lots','target_profit_rate'], row:{min_lots:1,max_lots:1,target_profit_rate:0.06}},
-  'strategy.exposure_buy_bands': {keys:['min_exposure','max_exposure','drop_pct','amount'], row:{min_exposure:0,max_exposure:0,drop_pct:0,amount:0}},
-  'strategy.exposure_sell_bands': {keys:['min_exposure','max_exposure','target_profit_pct'], row:{min_exposure:0,max_exposure:0,target_profit_pct:0}}
 };
 function structuredJsonKeys(path, rows) {
   const template = STRUCTURED_JSON_TEMPLATES[path];
@@ -1186,6 +1203,9 @@ class UIHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/new-season/liquidation-plan":
                 self._send_json(self.service.new_season_create_plan(data.get("kis_balance_json_path", ""), bool(data.get("execute", False)), int(data.get("max_age_minutes") or 60)))
+                return
+            if parsed.path == "/api/new-season/validate-snapshot":
+                self._send_json(self.service.new_season_validate_snapshot(data.get("kis_balance_json_path", ""), int(data.get("max_age_minutes") or 60)))
                 return
             if parsed.path == "/api/new-season/liquidation-requests":
                 self._send_json(self.service.new_season_create_liquidation_requests(data.get("plan_path", ""), data.get("kis_balance_json_path", ""), data.get("confirm", ""), bool(data.get("execute", False))))

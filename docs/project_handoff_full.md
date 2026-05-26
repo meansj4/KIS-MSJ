@@ -1,7 +1,7 @@
 # KIS LOT 자동거래 봇 전체 인수인계 문서
 
 > Authoritative source: `docs/project_handoff_full.md` is the latest full baseline. `docs/project_handoff_thread_prompt.md` is for starting a new chat, and `docs/project_handoff_summary.md` is the short summary. `local_ui.md`, `strategy_lot_sizing.md`, `new_season_reset.md`, and `expansion_100_config.md` are detailed references. If a reference doc conflicts with the full handoff, use `project_handoff_full.md` as the source of truth.  
-> Last updated: 2026-05-26 / Baseline tests: `147 passed` / Baseline config profile: `expansion_100_safe`. Re-check config, DB, logs, and KIS account state at runtime.
+> Last updated: 2026-05-26 / Baseline tests: `150 passed` / Baseline config profile: `expansion_100_safe`. Re-check config, DB, logs, and KIS account state at runtime.
 
 
 관련 문서:
@@ -15,10 +15,10 @@
 - [100종목 확장 config](expansion_100_config.md)
 - [전체 프로젝트 감사/정리 보고서](project_audit_cleanup_report.md)
 
-최신 전체 소스/문서 감사 결과는 [docs/project_audit_cleanup_report.md](project_audit_cleanup_report.md)를 참고한다.
+최신 전체 소스/문서 감사 결과는 [docs/project_audit_cleanup_report.md](project_audit_cleanup_report.md)를 참고한다. 2026-05-27 추가 보강 기준으로 일반 UI Config에서는 legacy exposure/initial amount 항목을 숨겼고, manual order request는 원자적 claim 후 처리하며, New Season 화면에는 KIS balance snapshot validator가 추가되었다.
 
 Last updated: 2026-05-26  
-기준 테스트 결과: `147 passed` (`.\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest_tmp_final_logic_check`)  
+기준 테스트 결과: `150 passed` (`.\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest_tmp_final_logic_check`)  
 기준 config profile: `expansion_100_safe`  
 주의: 실제 운영값은 실행 시점의 `config/lot_auto_trader.json`, SQLite DB, logs, KIS 계좌 상태를 다시 확인해야 한다.
 
@@ -39,7 +39,7 @@ Last updated: 2026-05-26
 | `strategy.cleanup_enabled` | false |
 | `ui_manual_trading_enabled` | false |
 | `order.enable_execution_raw_log` | true |
-| 최신 테스트 결과 | `147 passed`, pytest cache warning 1개는 기능 실패 아님 |
+| 최신 테스트 결과 | `150 passed`, pytest cache warning 1개는 기능 실패 아님 |
 | 현재 OPEN LOT 수 | 19개로 확인됨 |
 | 현재 reset 가능 여부 | 불가. OPEN LOT이 남아 있으므로 차단되는 것이 정상 |
 | 현재 liquidation plan 존재 여부 | 실행 시점 `exports/liquidation_plan_*.json` 및 UI `New Season` 탭에서 재확인 필요 |
@@ -761,7 +761,7 @@ Config 저장 UX는 backup, validation, diff, atomic write, round-trip verify, c
 
 ## 23. 테스트 현황
 
-최신 확인 기준 전체 테스트는 다음 명령에서 `147 passed`였다. pytest cache warning 1개는 basetemp/cache write 관련이며 기능 실패가 아니다.
+최신 확인 기준 전체 테스트는 다음 명령에서 `150 passed`였다. pytest cache warning 1개는 basetemp/cache write 관련이며 기능 실패가 아니다.
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest_tmp_final_logic_check
@@ -885,7 +885,7 @@ Config 저장 UX는 backup, validation, diff, atomic write, round-trip verify, c
 | --- | --- |
 | 목적 | 전체 회귀 테스트 |
 | 명령 | `.\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest_tmp_final_logic_check` |
-| 기대 결과 | 최신 기준 `147 passed`. warning 1개는 pytest cache 관련이면 기능 실패 아님 |
+| 기대 결과 | 최신 기준 `150 passed`. warning 1개는 pytest cache 관련이면 기능 실패 아님 |
 | 실패 시 | 실패 테스트 이름과 관련 파일을 먼저 확인. 실거래 주문으로 확인하려 하지 말 것 |
 
 ### 28-4. 새 시즌 상태 확인
@@ -1047,6 +1047,7 @@ raw execution mapping과의 차이:
 | `POST /api/positions/{code}/review/acknowledge` | 사용자 확인 기록 | 아니오 | review ack 필드만 |
 | `GET /api/new-season/status` | 새 시즌 wizard 상태 | 아니오 | 아니오 |
 | `POST /api/new-season/archive` | archive dry-run/실행 | 아니오 | DB 내용 변경 없음 |
+| `POST /api/new-season/validate-snapshot` | KIS balance snapshot JSON 검증 | 아니오 | 아니오 |
 | `POST /api/new-season/liquidation-plan` | liquidation plan 생성 | 아니오 | DB 내용 변경 없음 |
 | `POST /api/new-season/liquidation-requests` | manual SELL request 생성 | 아니오 | manual_order_requests만 |
 | `POST /api/new-season/reset-db` | DB reset dry-run/실행 | 아니오 | execute+confirm+guard 통과 시 DB 초기화 |
@@ -1391,6 +1392,6 @@ DB 초기화 버튼이 비활성인 대표 원인:
 | 중복/구버전 문서 | `docs` 폴더의 주요 문서 7개를 확인했으며 같은 목적의 구버전/중복 문서는 발견하지 못했다. |
 | 문서 링크 | 주요 문서 상단의 상대 링크가 실제 파일명과 일치함을 확인했다. |
 | Runbook 명령어 | 저장소 루트 `C:\MSJ\KIS-MSJ`, 필요 시 `$env:PYTHONPATH='src'`, dry-run/execute 구분, confirm text 명시. |
-| 테스트 최신성 | `147 passed`, pytest cache warning 1개는 기능 실패 아님. 실행 시점에는 다시 확인 필요. |
+| 테스트 최신성 | `150 passed`, pytest cache warning 1개는 기능 실패 아님. 실행 시점에는 다시 확인 필요. |
 
 문서 작성 범위에서는 실거래 주문, KIS 주문 API, DB reset을 실행하지 않았다.

@@ -1,7 +1,22 @@
 # KIS LOT Bot Project Audit and Cleanup Report
 
 > Authoritative source: `docs/project_handoff_full.md` is the latest full baseline. This report records the whole-project audit/cleanup pass performed after the handoff docs. If this report conflicts with `project_handoff_full.md`, re-check code first and then update the full handoff.  
-> Last updated: 2026-05-27 / Baseline tests before this audit: `147 passed` with one pytest cache warning / Baseline config profile: `expansion_100_safe`.
+> Last updated: 2026-05-27 / Latest tests after this audit: `150 passed` with one pytest cache warning / Baseline config profile: `expansion_100_safe`.
+
+## 0. 2026-05-27 추가 보강 요약
+
+이번 추가 보강에서는 deprecated inventory에 그치지 않고, 리스크 없이 줄일 수 있는 legacy 노출면과 운영 리스크를 실제로 정리했다.
+
+| 항목 | 조치 |
+| --- | --- |
+| General UI Config legacy surface | `initial_buy_amount`, `auto_buy_limit`, `absolute_max_investment`, `exposure_buy_bands`, `exposure_sell_bands`, `reentry_drop_rate` were removed from the general Config schema/metadata/form-table surface. Underlying config/model fields remain only for DB/config compatibility and fallback paths. |
+| legacy 설명 | UI 설명을 `cycle_locked_by_entry_price` 기준으로 정리하고 legacy 항목은 호환용으로만 표시 |
+| manual request 중복 소비 | `StateStore.claim_manual_order_request()` 추가. `REQUESTED`이고 `linked_order_id`가 비어 있는 row만 원자적으로 `PROCESSING` claim한 뒤 처리 |
+| manual request runtime interrupt | claim 후 submit 직전 runtime interrupt가 발생하면 request를 `BLOCKED`로 전환해 PROCESSING stuck과 중복 주문을 방지 |
+| KIS snapshot validator UI | `/api/new-season/validate-snapshot` 추가. UI에서 snapshot 경로를 즉시 검증하고 preview 가능/request 가능을 분리 표시 |
+| 새 시즌 내부 flag | `request_creation_possible` 등 내부값은 기본 노출 대신 고급 진단값으로 접음 |
+
+삭제하지 않은 legacy 필드는 “일반 UI/문서 전면”에서는 숨기고, DB 호환/fallback 범위에만 남긴다.
 
 ## 1. 감사 범위
 
@@ -56,12 +71,23 @@
 | `positions` | `exit_anchor_price` | 기존 DB row/fallback/log 호환 | 실제 reentry는 `normal_exit_anchor_price`, `trailing_exit_anchor_price` 사용 |
 | `src/kis_msj/ui_server.py` | `loadExecution()` | raw execution mapping 내부 진단용 | 일반 nav 탭은 제거된 상태 |
 
+일반 UI Config에서 숨긴 항목:
+
+- `strategy.initial_buy_amount`
+- `strategy.auto_buy_limit`
+- `strategy.absolute_max_investment`
+- `strategy.exposure_buy_bands`
+- `strategy.exposure_sell_bands`
+- `strategy.reentry_drop_rate`
+
+이 값들은 JSON raw view나 기존 config/DB 호환에는 남아 있을 수 있지만, 일반 운용자가 조정해야 하는 현재 기본 전략 파라미터로는 노출하지 않는다.
+
 ## 5. 문서 수정 항목
 
 | 파일 | 수정/확인 내용 |
 | --- | --- |
 | `docs/project_handoff_full.md` | 이 감사 보고서 링크 추가 |
-| `docs/project_handoff_full.md`, `summary`, `thread_prompt`, `new_season_reset.md`, `local_ui.md` | `147 passed`, strict KIS snapshot policy, manual request 설명 최신화 확인 |
+| `docs/project_handoff_full.md`, `summary`, `thread_prompt`, `new_season_reset.md`, `local_ui.md` | `150 passed`, strict KIS snapshot policy, manual request 설명 최신화 확인 |
 | `docs/new_season_reset.md` | pending order/manual request status, generated_at/sellable_quantity strict policy 최신화 확인 |
 | `docs/local_ui.md` | KIS 직접 주문 API 없음과 manual request 생성 API는 있음의 구분 확인 |
 
@@ -77,6 +103,59 @@
 | `src/kis_msj/ui_service.py` | `CONFIG_METADATA`, `DETAILED_CONFIG_DESCRIPTIONS` | legacy exposure/auto limit 설명이 현재 LOT sizing과 혼동 가능 | 레거시/호환용으로 명확히 수정 |
 | `src/kis_msj/ui_service.py` | `_new_season_wizard_steps()` | 백업 단계가 “UI 실행 버튼 없음”이라고 표시 | UI 버튼/CLI 모두 안내하도록 수정 |
 | `src/kis_msj/ui_server.py` | New Season 화면 | 내부 flag가 기본 화면에 노출 | `details` 안의 고급 진단값으로 접음 |
+| `src/kis_msj/ui_server.py`, `ui_service.py` | KIS snapshot 검증 | plan 생성 전 snapshot 오류를 이해하기 어려움 | snapshot 검증 API/버튼 추가. preview 가능/request 가능, generated_at age, sellable 누락, DB/KIS 수량 mismatch를 분리 표시 |
+
+## 6-1. manual_order_requests 중복 소비 방지 보강
+
+| 점검 항목 | 결과 |
+| --- | --- |
+| REQUESTED 중복 처리 | `claim_manual_order_request()`가 `WHERE request_id=? AND status='REQUESTED' AND linked_order_id=''` 조건으로 원자적 claim |
+| claim 후 상태 | claim 성공 시 `PROCESSING` |
+| 이미 claim/linked된 request | claim 실패, 처리 skip |
+| submit 성공 | `SUBMITTED` + `linked_order_id` 저장 |
+| fill 발생 | fill insert 성공 후 기존 `position_manager.apply_fill()` 경로로 반영, 이후 request `FILLED` |
+| block/fail | `BLOCKED` 또는 `FAILED`로 명확히 전환 |
+| bot 재시작/복수 프로세스 | 같은 DB row를 동시에 보더라도 claim은 하나만 성공. 단, 운영 전제는 여전히 단일 Bot Core 프로세스 권장 |
+
+남은 취약점:
+
+- `PROCESSING` 상태에서 프로세스가 비정상 종료되면 자동 retry하지 않고 reset guard에 걸린다. 중복 주문 방지 관점에서는 안전하지만, 운영자가 상태를 보고 수동 처리해야 한다.
+- 재시도 정책은 아직 없다. 필요하면 `retry_count`, `claimed_at`, `max_retry`를 추가한다.
+
+## 6-2. KIS balance snapshot validator UI 보강
+
+추가 API:
+
+- `POST /api/new-season/validate-snapshot`
+
+응답 핵심 필드:
+
+- `snapshot_valid_for_preview`
+- `snapshot_valid_for_request`
+- `snapshot_warnings`
+- `snapshot_errors`
+- `snapshot_generated_at`
+- `snapshot_age_minutes`
+- `missing_required_fields`
+- `matched_positions_count`
+- `mismatched_positions_count`
+- `missing_in_snapshot_codes`
+- `extra_in_snapshot_codes`
+- `request_creation_allowed`
+- `request_creation_block_reason`
+- `guide`
+
+UI 표시:
+
+- “전량매도 예정표 미리보기 가능/불가”
+- “전량매도 요청 생성 가능/불가”
+- generated_at과 snapshot age
+- sellable_quantity 누락, stale, mismatch 같은 오류와 다음 행동
+
+중요 정책:
+
+- preview에서 warning이어도 request 생성은 차단될 수 있다.
+- 실제 request 생성에는 최신 `generated_at`과 실제 `sellable_quantity`가 필수다.
 
 ## 7. 테스트 수정 항목
 
@@ -85,7 +164,7 @@
 | 테스트 | 판단 |
 | --- | --- |
 | `test_legacy_mode_keeps_exposure_based_target_profit_behavior` | legacy mode 보존 검증으로 유지 필요 |
-| `test_ui_service.py`의 `strategy.exposure_buy_bands` metadata 확인 | 레거시 항목이 UI에 호환용으로 남아 있는지 확인하는 의미가 있어 유지 가능 |
+| `test_ui_service.py` legacy metadata check | Updated to assert legacy keys are absent from the general Config schema. |
 | snapshot strict validation 테스트 | 최신 정책 검증으로 유지 필요 |
 
 권장 후속:
@@ -110,9 +189,9 @@
 | 주문/체결 동기화 | 중간 | open order 기준 reconciliation, startup recent reconciliation, unmatched ignore | 실제 KIS raw 체결 row 변화/누락 가능성 | 첫 실체결 후 raw mapping 재확인 |
 | fill dedupe | 낮음~중간 | execution_id 우선, fallback key, duplicate count | KIS가 execution_id 없이 체결시각 품질이 낮으면 fallback 한계 | execution_id 실제 제공 여부 지속 확인 |
 | partial fill | 중간 | PARTIAL order status, remaining_quantity 기준 LOT 반영 | 장시간 PARTIAL/order timeout 운영 판단 필요 | open order UI 모니터링 강화 |
-| manual order 중복 소비 | 중간 | manual request status, pending status reset guard, Bot Core 소비 경로 | Bot loop 중복 처리 경쟁 가능성은 구현 세부 계속 관찰 필요 | request status transition 로그 확인 |
+| manual order 중복 소비 | 낮음~중간 | 원자적 `REQUESTED -> PROCESSING` claim, linked_order_id 재처리 차단, pending status reset guard | PROCESSING 중 프로세스 비정상 종료 시 자동 retry 없음 | 단일 Bot Core 프로세스 운영, 필요 시 retry_count/claimed_at 추가 |
 | DB reset/archive/liquidation | 높음 | confirm text, pending order/request/open lot/sync guard, KIS snapshot strict validation | snapshot 파일을 운영자가 잘못 만들 수 있음 | snapshot 생성 도구 또는 import UI 추가 검토 |
-| KIS snapshot stale/mismatch | 높음 | generated_at/sellable strict mode, max age, DB hash, plan freshness guard | 자동 snapshot 생성이 없어 수동 오류 가능 | snapshot validator UI 개선 |
+| KIS snapshot stale/mismatch | 중간~높음 | generated_at/sellable strict mode, max age, DB hash, plan freshness guard, UI validator | 자동 snapshot 생성이 없어 수동 오류 가능 | snapshot 생성 도구 또는 파일 import UX 추가 검토 |
 | UI 버튼 오조작 | 중간 | live warning, confirm, disabled guide, no direct KIS order API | 많은 버튼이 있어 초보자 혼동 가능 | wizard UX 지속 단순화 |
 | config 저장/검증 | 중간 | backup, atomic save, validation, history | 모든 config 의미를 schema가 완벽히 검증하지는 않음 | schema validation 확대 |
 | runtime pause 반영 | 중간 | runtime_control.json, main loop guard | 긴 작업 중 즉시 interrupt 한계 가능 | loop 내 체크포인트 확대 검토 |
@@ -154,7 +233,92 @@
 
 | 명령 | 결과 |
 | --- | --- |
-| `.\\.venv\\Scripts\\python.exe -m pytest -q --basetemp .pytest_tmp_audit_cleanup_check` | `147 passed`, pytest cache warning 1개 |
-| `.\\.venv\\Scripts\\python.exe -m pytest -q --basetemp .pytest_tmp_final_logic_check` | `147 passed`, pytest cache warning 1개 |
+| `.\\.venv\\Scripts\\python.exe -m pytest -q --basetemp .pytest_tmp_audit_cleanup_check` | `150 passed`, pytest cache warning 1개 |
+| `.\\.venv\\Scripts\\python.exe -m pytest -q --basetemp .pytest_tmp_final_logic_check` | `150 passed`, pytest cache warning 1개 |
 
 warning은 `.pytest_cache` cache write 관련 `PytestCacheWarning`이며 기능 실패는 아니다.
+
+## 13. 2026-05-27 Final Addendum
+
+This addendum records the final cleanup/hardening pass after the initial audit.
+
+### Actual cleanup completed
+
+- Removed legacy Strategy keys from the general UI Config metadata/form-table surface:
+  - `strategy.initial_buy_amount`
+  - `strategy.auto_buy_limit`
+  - `strategy.absolute_max_investment`
+  - `strategy.exposure_buy_bands`
+  - `strategy.exposure_sell_bands`
+  - `strategy.reentry_drop_rate`
+- Kept the underlying config/model/storage fields only for DB compatibility, historical row parsing, fallback, and explicit legacy-mode tests.
+- Updated UI tests so these legacy keys are asserted absent from the general Config schema.
+- Updated `docs/local_ui.md` so current table-style config editing is described around `price_lot_bands`, `add_buy_lot_bands`, and `target_profit_lot_bands`, not legacy exposure bands.
+
+### Manual order duplicate-consumption hardening
+
+- Added `StateStore.claim_manual_order_request(request_id)`.
+- The claim uses a conditional DB update from `REQUESTED` to `PROCESSING` only when `linked_order_id` is empty.
+- `AutoTrader.process_manual_order_requests()` now processes only successfully claimed rows.
+- Already claimed, linked, or non-REQUESTED rows are skipped.
+- If runtime interrupt occurs after claim but before submit, the request is moved to `BLOCKED` to avoid a stuck PROCESSING row.
+- Remaining operational assumption: run a single Bot Core process. The claim reduces duplicate risk if two consumers race, but there is still no automated retry policy for a request left in PROCESSING after an unexpected process crash.
+
+### KIS balance snapshot validator UI/API
+
+- Added `POST /api/new-season/validate-snapshot`.
+- Added New Season UI button `snapshot 검증`.
+- Validator returns:
+  - `snapshot_valid_for_preview`
+  - `snapshot_valid_for_request`
+  - `snapshot_warnings`
+  - `snapshot_errors`
+  - `snapshot_generated_at`
+  - `snapshot_age_minutes`
+  - `missing_required_fields`
+  - `matched_positions_count`
+  - `mismatched_positions_count`
+  - `missing_in_snapshot_codes`
+  - `extra_in_snapshot_codes`
+  - `request_creation_allowed`
+  - `request_creation_block_reason`
+- Preview and request creation remain intentionally different:
+  - Preview may show warnings and fallback values.
+  - Request creation requires strict validation, including fresh `generated_at` and real `sellable_quantity`.
+
+### Final keyword inventory summary
+
+| Keyword | Final status |
+| --- | --- |
+| `initial_buy_amount` | Removed from general UI Config metadata. Still present in live config/model/legacy fallback and tests. |
+| `add_buy_amount` | No active current-flow usage found. |
+| `auto_buy_limit` | Removed from general UI Config metadata. Still present in DB/model/non-cycle fallback and review compatibility. |
+| `absolute_max_investment` | Removed from general UI Config metadata. Still present in DB/model/non-cycle fallback. |
+| `exposure_buy_bands` / `exposure_sell_bands` | Removed from general UI Config metadata/form-table surface. Still present in config/model/legacy mode validation. |
+| `legacy_exposure_bands` | Kept for explicit backward-compatible mode and tests. |
+| `target_profit_pct` / `base_target_profit_rate` | Kept for historical LOT rows and display/log compatibility. Actual SELL logic uses current OPEN LOT count based target bands. |
+| `exit_anchor_price` | Kept as DB compatibility/fallback/log field. Actual reentry uses `normal_exit_anchor_price` and `trailing_exit_anchor_price` first. |
+| `reentry_drop_rate` | Removed from general UI Config metadata. Kept only as legacy config compatibility. |
+| `loadExecution` | Kept as internal raw execution diagnostic helper/API; no normal nav tab. |
+| `request_creation_possible` | Kept as API/internal diagnostic value; folded under advanced diagnostics in the UI. |
+| `dry-run` | Still intentionally present in CLI/UI/docs as the safe preview mode. |
+
+### Final risk update
+
+| Risk | Updated grade | Notes |
+| --- | --- | --- |
+| manual order duplicate consumption | Low to Medium | Atomic claim added. Residual risk is PROCESSING crash recovery/retry policy. |
+| KIS snapshot stale/mismatch | Medium | Validator UI/API added. Residual risk is operator-created snapshot quality because automatic KIS balance snapshot generation is not implemented. |
+| legacy UI confusion | Low | General Config UI no longer exposes major legacy strategy keys. |
+
+### Final tests
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest_tmp_legacy_removal_check
+.\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest_tmp_manual_snapshot_check
+.\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest_tmp_final_logic_check
+```
+
+Result: all three commands completed with `150 passed` and one pytest cache warning. The warning is a `.pytest_cache` write warning, not a functional failure.
+
+No real trade, KIS order API call, or DB reset was executed during this audit/cleanup pass.

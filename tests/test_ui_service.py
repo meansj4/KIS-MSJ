@@ -166,7 +166,9 @@ def test_config_schema_metadata_and_danger_flags(tmp_path):
     schema = service.config_schema()
     by_key = {item["key"]: item for item in schema["metadata"]}
     for key in (
-        "strategy.initial_buy_amount",
+        "strategy.price_lot_bands",
+        "strategy.add_buy_lot_bands",
+        "strategy.target_profit_lot_bands",
         "strategy.pnl_minus_threshold",
         "strategy.cleanup_profit_offset_ratio",
         "risk.max_total_open_lots",
@@ -180,12 +182,17 @@ def test_config_schema_metadata_and_danger_flags(tmp_path):
         assert by_key[key]["unit"]
     assert by_key["strategy.pnl_minus_threshold"]["display_format"] == "decimal_percent"
     assert by_key["strategy.pnl_minus_threshold"]["config_format"] == "decimal_rate"
-    assert by_key["strategy.exposure_buy_bands"]["config_format"] == "json"
+    assert by_key["strategy.price_lot_bands"]["config_format"] == "json"
+    assert "strategy.initial_buy_amount" not in by_key
+    assert "strategy.auto_buy_limit" not in by_key
+    assert "strategy.absolute_max_investment" not in by_key
+    assert "strategy.exposure_buy_bands" not in by_key
+    assert "strategy.exposure_sell_bands" not in by_key
     assert "strategy.reentry_drop_rate" not in by_key
     assert "normal_exit_anchor_price" in by_key["strategy.normal_reentry_drop_rate"]["description_ko"]
     assert "cycle_sell_vwap_price" in by_key["strategy.normal_reentry_drop_rate"]["description_ko"]
     assert "trailing_exit_anchor_price" in by_key["strategy.trailing_activation_gain"]["description_ko"]
-    assert "reference_buy_price" in by_key["strategy.exposure_buy_bands"]["description_ko"]
+    assert "LOT 금액" in by_key["strategy.price_lot_bands"]["description_ko"]
     assert "manual_order_requests" in by_key["ui_manual_trading_enabled"]["description_ko"]
     assert "몇 번 확인" in by_key["order.price_sample_count"]["description_ko"]
     assert "각 읽기 사이" in by_key["order.price_sample_interval_seconds"]["description_ko"]
@@ -515,6 +522,60 @@ def test_bot_core_consumes_manual_request_through_order_manager_paper_path(tmp_p
     assert request["linked_order_id"]
     assert trader.store.load_lots()
     assert trader.store.load_positions()["005930"].quantity > 0
+
+
+def test_manual_request_claim_is_atomic_and_blocks_reprocessing(tmp_path):
+    store = StateStore(tmp_path / "state.sqlite3")
+    store.create_manual_order_request(
+        {
+            "request_id": "MANUAL-CLAIM",
+            "source": "local_ui_manual",
+            "requested_by": "test",
+            "requested_at": datetime.now().isoformat(timespec="seconds"),
+            "code": "005930",
+            "side": "BUY",
+            "amount": 30000,
+            "quantity": 0,
+            "preview_json": "{}",
+            "runtime_snapshot_json": "{}",
+            "live_trading": False,
+            "confirm_text_verified": True,
+            "status": "REQUESTED",
+        }
+    )
+
+    first = store.claim_manual_order_request("MANUAL-CLAIM")
+    second = store.claim_manual_order_request("MANUAL-CLAIM")
+
+    assert first is not None
+    assert first["status"] == "PROCESSING"
+    assert second is None
+    assert store.manual_order_requests()[0]["status"] == "PROCESSING"
+
+
+def test_manual_request_with_linked_order_is_not_claimed_again(tmp_path):
+    store = StateStore(tmp_path / "state.sqlite3")
+    store.create_manual_order_request(
+        {
+            "request_id": "MANUAL-LINKED",
+            "source": "local_ui_manual",
+            "requested_by": "test",
+            "requested_at": datetime.now().isoformat(timespec="seconds"),
+            "code": "005930",
+            "side": "BUY",
+            "amount": 30000,
+            "quantity": 0,
+            "preview_json": "{}",
+            "runtime_snapshot_json": "{}",
+            "live_trading": False,
+            "confirm_text_verified": True,
+            "status": "REQUESTED",
+            "linked_order_id": "ORDER-1",
+        }
+    )
+
+    assert store.claim_manual_order_request("MANUAL-LINKED") is None
+    assert store.manual_order_requests()[0]["status"] == "REQUESTED"
 
 
 def test_manual_buy_blocks_when_lot_sizing_bucket_changes_after_preview(tmp_path):
@@ -869,6 +930,49 @@ def test_new_season_ui_actions_are_guarded_and_do_not_call_order_api(tmp_path, m
     assert reset["result"]["reason"] == "reset_blocked_by_open_order_or_sync_mismatch"
     with sqlite3.connect(db_path) as connection:
         assert connection.execute("SELECT remaining_quantity FROM lots WHERE lot_id = 'LOT-UI-PLAN'").fetchone()[0] == 1
+
+
+def test_new_season_snapshot_validator_distinguishes_preview_and_request(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config_path, db_path, _ = _write_config(tmp_path)
+    store = StateStore(db_path)
+    store.save_lot(
+        LotState(
+            "LOT-SNAPSHOT",
+            "005930",
+            "2026-05-01T09:05:00",
+            buy_price=10000,
+            buy_quantity=1,
+            buy_amount=10000,
+            remaining_quantity=1,
+            target_profit_pct=6.0,
+            target_sell_price=10600,
+        )
+    )
+    missing_sellable = tmp_path / "missing_sellable.json"
+    missing_sellable.write_text(
+        json.dumps({"generated_at": datetime.now().isoformat(), "positions": [{"code": "005930", "holding_quantity": 1}]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    valid_snapshot = tmp_path / "valid_snapshot.json"
+    valid_snapshot.write_text(
+        json.dumps({"generated_at": datetime.now().isoformat(), "positions": [{"code": "005930", "holding_quantity": 1, "sellable_quantity": 1}]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    service = UIService(config_path, tmp_path / "runtime.json")
+
+    warning = service.new_season_validate_snapshot(str(missing_sellable))
+    valid = service.new_season_validate_snapshot(str(valid_snapshot))
+
+    assert warning["snapshot_valid_for_preview"] is True
+    assert warning["snapshot_valid_for_request"] is False
+    assert "snapshot_sellable_quantity_fallback_warning" in warning["snapshot_warnings"]
+    assert "liquidation_kis_sellable_quantity_missing" in warning["snapshot_errors"]
+    assert warning["request_creation_allowed"] is False
+    assert valid["snapshot_valid_for_preview"] is True
+    assert valid["snapshot_valid_for_request"] is True
+    assert valid["matched_positions_count"] == 1
+    assert valid["request_creation_allowed"] is True
 
 
 def test_bot_loop_interrupts_promptly_for_runtime_pause(tmp_path):

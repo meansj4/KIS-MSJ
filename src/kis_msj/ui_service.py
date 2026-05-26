@@ -61,14 +61,10 @@ PLAN_STATUS_GUIDE: dict[str, str] = {
 
 
 CONFIG_METADATA: tuple[dict[str, Any], ...] = (
-    {"section": "Strategy", "key": "strategy.initial_buy_amount", "label_ko": "최초 매수 금액", "description_ko": "NEVER_BOUGHT 상태의 신규 종목을 처음 매수할 때 사용하는 금액입니다.", "type": "number", "unit": "원", "display_format": "integer", "config_format": "integer", "warning_level": "normal", "requires_restart": True},
-    {"section": "Strategy", "key": "strategy.auto_buy_limit", "label_ko": "종목별 자동매수 한도", "description_ko": "이 금액을 넘으면 자동 추가매수를 제한하고 REVIEW_REQUIRED 후보가 됩니다.", "type": "number", "unit": "원", "display_format": "integer", "config_format": "integer", "warning_level": "warning", "requires_restart": True},
-    {"section": "Strategy", "key": "strategy.absolute_max_investment", "label_ko": "종목별 절대 최대 투입금", "description_ko": "종목별 투입금의 절대 상한입니다.", "type": "number", "unit": "원", "display_format": "integer", "config_format": "integer", "warning_level": "warning", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.review_loss_pct", "label_ko": "검토 필요 손실률", "description_ko": "종목 손실이 이 수준에 도달하면 REVIEW_REQUIRED 후보가 됩니다.", "type": "number", "unit": "%", "display_format": "percent_value", "config_format": "percent_value", "warning_level": "warning", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.max_open_lots_before_review", "label_ko": "검토 전 최대 OPEN LOT 수", "description_ko": "OPEN LOT이 많아진 종목을 재검토 대상으로 보기 위한 기준입니다.", "type": "number", "unit": "개", "display_format": "integer", "config_format": "integer", "warning_level": "warning", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.pnl_minus_threshold", "label_ko": "MINUS 모드 기준", "description_ko": "포지션 손익률이 이 값 이하이면 MINUS 모드입니다. UI는 %로 표시하지만 config에는 소수로 저장됩니다.", "type": "number", "unit": "%", "display_format": "decimal_percent", "config_format": "decimal_rate", "warning_level": "normal", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.pnl_plus_threshold", "label_ko": "PLUS 모드 기준", "description_ko": "포지션 손익률이 이 값 이상이면 PLUS 모드입니다. UI는 %로 표시하지만 config에는 소수로 저장됩니다.", "type": "number", "unit": "%", "display_format": "decimal_percent", "config_format": "decimal_rate", "warning_level": "normal", "requires_restart": True},
-    {"section": "Strategy", "key": "strategy.reentry_drop_rate", "label_ko": "기존 재진입 하락률", "description_ko": "호환용 설정입니다. normal_reentry_drop_rate를 우선 확인하세요.", "type": "number", "unit": "%", "display_format": "decimal_percent", "config_format": "decimal_rate", "warning_level": "normal", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.normal_reentry_drop_rate", "label_ko": "NORMAL_REENTRY 하락률", "description_ko": "normal_exit_anchor_price 대비 이 비율 이상 하락하면 재진입 후보가 됩니다.", "type": "number", "unit": "%", "display_format": "decimal_percent", "config_format": "decimal_rate", "warning_level": "normal", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.trailing_activation_gain", "label_ko": "TRAILING 활성화 상승률", "description_ko": "trailing_exit_anchor_price 대비 이 비율 이상 오른 뒤에만 trailing 재진입을 검토합니다.", "type": "number", "unit": "%", "display_format": "decimal_percent", "config_format": "decimal_rate", "warning_level": "normal", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.trailing_reentry_drop_rate", "label_ko": "TRAILING 고점 대비 하락률", "description_ko": "post_exit_high_price 대비 이 비율 이상 조정받으면 trailing 재진입 후보가 됩니다.", "type": "number", "unit": "%", "display_format": "decimal_percent", "config_format": "decimal_rate", "warning_level": "normal", "requires_restart": True},
@@ -88,8 +84,6 @@ CONFIG_METADATA: tuple[dict[str, Any], ...] = (
     {"section": "Strategy", "key": "strategy.stale_lot_price_gap_rate", "label_ko": "STALE LOT 가격 하락 기준", "description_ko": "매수가 대비 이 비율 이상 낮아진 LOT을 stale 후보로 봅니다.", "type": "number", "unit": "%", "display_format": "decimal_percent", "config_format": "decimal_rate", "warning_level": "warning", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.review_symbol_loss_rate", "label_ko": "REVIEW_REQUIRED 종목 손실률", "description_ko": "종목 전체 손실률이 이 수준 이하면 REVIEW_REQUIRED 후보가 됩니다.", "type": "number", "unit": "%", "display_format": "decimal_percent", "config_format": "decimal_rate", "warning_level": "danger", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.stale_lot_review_age_weeks", "label_ko": "STALE 장기 지속 검토 주수", "description_ko": "stale LOT이 이 주수 이상 오래되면 REVIEW_REQUIRED 후보가 됩니다.", "type": "number", "unit": "주", "display_format": "integer", "config_format": "integer", "warning_level": "warning", "requires_restart": True},
-    {"section": "Strategy", "key": "strategy.exposure_buy_bands", "label_ko": "레거시 누적투입금별 추가매수 구간", "description_ko": "legacy_exposure_bands 모드 호환용입니다. 현재 cycle_locked_by_entry_price 모드에서는 add_buy_lot_bands를 우선 사용합니다.", "type": "json", "unit": "bands", "display_format": "json", "config_format": "json", "warning_level": "warning", "requires_restart": True},
-    {"section": "Strategy", "key": "strategy.exposure_sell_bands", "label_ko": "레거시 누적투입금별 매도 목표수익률 구간", "description_ko": "legacy_exposure_bands 모드 호환용입니다. 현재 cycle_locked_by_entry_price 모드에서는 target_profit_lot_bands를 우선 사용합니다.", "type": "json", "unit": "bands", "display_format": "json", "config_format": "json", "warning_level": "warning", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.high_exposure_partial_sell_pct", "label_ko": "고투입 구간 부분매도 비율", "description_ko": "고투입 구간에서 포지션 축소 목적의 부분매도 비율입니다. config 값은 이미 %입니다.", "type": "number", "unit": "%", "display_format": "percent_value", "config_format": "percent_value", "warning_level": "warning", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.estimated_fee_tax_pct", "label_ko": "예상 수수료/세금", "description_ko": "손익 추정에 사용하는 예상 비용률입니다. config 값은 이미 %입니다.", "type": "number", "unit": "%", "display_format": "percent_value", "config_format": "percent_value", "warning_level": "normal", "requires_restart": True},
     {"section": "Risk", "key": "risk.market_risk_mode", "label_ko": "시장 리스크 모드", "description_ko": "true이면 시장 위험 상태로 보고 신규 주문을 제한합니다.", "type": "boolean", "unit": "bool", "display_format": "boolean", "config_format": "boolean", "warning_level": "danger", "requires_restart": True, "danger_confirm_required": True},
@@ -141,13 +135,17 @@ CONFIG_METADATA: tuple[dict[str, Any], ...] = (
 )
 
 
-HIDDEN_CONFIG_KEYS = {"strategy.reentry_drop_rate"}
+HIDDEN_CONFIG_KEYS = {
+    "strategy.reentry_drop_rate",
+    "strategy.initial_buy_amount",
+    "strategy.auto_buy_limit",
+    "strategy.absolute_max_investment",
+    "strategy.exposure_buy_bands",
+    "strategy.exposure_sell_bands",
+}
 
 
 DETAILED_CONFIG_DESCRIPTIONS: dict[str, str] = {
-    "strategy.initial_buy_amount": "한 번도 매수한 적 없는 NEVER_BOUGHT 종목에 처음 진입할 때 사용하는 1회 매수 예산입니다. 현재가가 이 금액보다 비싸서 1주도 살 수 없으면 initial_buy는 실행되지 않습니다. NORMAL_REENTRY/TRAILING_REENTRY로 다시 들어갈 때도 기본적으로 이 금액 1회분만 사용합니다.",
-    "strategy.auto_buy_limit": "레거시 금액 기준 자동매수 한도입니다. 현재 cycle_locked_by_entry_price 모드에서는 position에 고정된 max_symbol_amount와 max_lots_per_symbol을 우선 사용하며, 이 값은 기존 DB/config 호환과 legacy_exposure_bands 모드에 남겨둡니다.",
-    "strategy.absolute_max_investment": "레거시 종목별 절대 투입 상한입니다. 현재 cycle_locked_by_entry_price 모드에서는 price_lot_bands에서 결정한 max_symbol_amount와 전역 리스크 제한을 우선 사용하며, 이 값은 기존 DB/config 호환용으로 유지합니다.",
     "strategy.review_loss_pct": "종목 전체 손실률을 사람이 보기 시작해야 하는 기준입니다. 예를 들어 -20이면 해당 종목의 전체 평가손익률이 -20% 근처가 될 때 REVIEW_REQUIRED 후보가 됩니다. REVIEW_REQUIRED에서는 신규 BUY는 막고, 수익권 LOT의 PROFIT_TAKE SELL만 허용하는 보수 정책을 씁니다.",
     "strategy.max_open_lots_before_review": "한 종목에 OPEN LOT이 너무 많이 쌓이면 전략이 복잡해지고 수동 확인이 필요합니다. 이 값은 그런 종목을 REVIEW_REQUIRED 후보로 표시하기 위한 LOT 개수 기준입니다. LOT을 강제로 팔지는 않고, 추가 BUY를 보수적으로 막는 데 사용됩니다.",
     "strategy.pnl_minus_threshold": "보유 중 추가매수 기준가격을 정할 때 쓰는 포지션 손익 모드 기준입니다. 포지션 손익률이 이 값 이하이면 MINUS 모드가 되고, reference_buy_price는 OPEN LOT의 VWAP과 median 중 낮은 값으로 잡아 더 보수적으로 추가매수합니다. UI에는 %로 보이지만 config에는 -0.01처럼 소수로 저장됩니다.",
@@ -171,8 +169,6 @@ DETAILED_CONFIG_DESCRIPTIONS: dict[str, str] = {
     "strategy.stale_lot_price_gap_rate": "매수가 대비 현재가가 얼마나 낮아져야 STALE LOT 후보가 되는지 정합니다. 예: -10%이면 현재가가 buy_price의 90% 이하일 때 stale 조건 중 하나를 만족합니다.",
     "strategy.review_symbol_loss_rate": "종목 전체 평가손실률이 이 기준 이하이면 REVIEW_REQUIRED 후보가 됩니다. REVIEW_REQUIRED는 더 사지 말고 사람이 확인하라는 상태이며, PROFIT_TAKE SELL은 허용하지만 CLEANUP_SELL은 기본적으로 차단합니다.",
     "strategy.stale_lot_review_age_weeks": "STALE LOT이 너무 오래 지속되면 자동 로직만으로 계속 끌고 가기 어렵습니다. 이 주수 이상 오래된 stale LOT은 REVIEW_REQUIRED 후보가 됩니다.",
-    "strategy.exposure_buy_bands": "레거시 누적투입금 구간별 추가매수 규칙입니다. 현재 기본 lot_sizing_mode=cycle_locked_by_entry_price에서는 add_buy_lot_bands가 실제 추가매수 간격을 정하고, reference_buy_price는 OPEN LOT VWAP/median 대표값으로 계산됩니다. 이 값은 기존 설정/테스트/legacy_exposure_bands 모드 호환을 위해 유지합니다.",
-    "strategy.exposure_sell_bands": "레거시 누적투입금 구간별 기본 매도 목표수익률입니다. 현재 기본 lot_sizing_mode=cycle_locked_by_entry_price에서는 target_profit_lot_bands가 현재 OPEN LOT 수 기준으로 모든 OPEN LOT의 동적 목표수익률을 정합니다. 이 값은 기존 설정/legacy_exposure_bands 모드 호환을 위해 유지합니다.",
     "strategy.high_exposure_partial_sell_pct": "고투입 구간에서 전체 포지션을 줄이기 위해 부분 매도를 할 때 사용할 비율입니다. 포지션 축소 목적의 보수 장치이며, LOT 단위 매도 원칙과 체결 기준 DB 반영 원칙은 그대로 유지됩니다.",
     "strategy.estimated_fee_tax_pct": "UI 미리보기와 손익 추정에서 사용하는 예상 수수료/세금 비율입니다. 실제 KIS 정산값과 완전히 같지는 않을 수 있지만, PROFIT_TAKE/CLEANUP 판단에서 net 추정치를 볼 때 보수적으로 참고합니다.",
     "risk.market_risk_mode": "시장 전체가 위험하다고 판단될 때 켜는 수동 안전 플래그입니다. true이면 신규 BUY를 보수적으로 제한합니다. 급락장, 시스템 이상, 사람이 잠시 자동매매를 줄이고 싶을 때 쓰는 전역 위험 모드입니다.",
@@ -488,6 +484,63 @@ class UIService:
         )
         self._append_audit_log("new_season_liquidation_plan_requested", {"execute": execute, "kis_balance_json_path": str(balance_path or ""), "result": {key: result.get(key) for key in ("plan_path", "status", "item_count", "source")}})
         return {"created": execute, "order_api_called": False, "db_reset_executed": False, "result": result}
+
+    def new_season_validate_snapshot(self, kis_balance_json_path: str = "", max_age_minutes: int = 60) -> dict[str, Any]:
+        module = _prepare_new_season_module()
+        if not kis_balance_json_path:
+            return _snapshot_validation_response("liquidation_kis_balance_fetch_required")
+        path = Path(kis_balance_json_path)
+        try:
+            preview = module.validate_kis_balance_snapshot(path, mode="preview", max_age_minutes=max_age_minutes)
+            strict = module.validate_kis_balance_snapshot(path, mode="create_request", max_age_minutes=max_age_minutes)
+        except Exception as error:  # noqa: BLE001
+            response = _snapshot_validation_response("liquidation_kis_balance_fetch_failed")
+            response["message"] = f"{type(error).__name__}: {error}"
+            return response
+        db_snapshot = module.db_open_lot_snapshot(Path(self.config.storage_path))
+        db_qty: dict[str, int] = {}
+        for row in db_snapshot.get("rows", []):
+            code = str(row.get("code", "")).zfill(6)
+            db_qty[code] = db_qty.get(code, 0) + int(row.get("remaining_quantity", 0) or 0)
+        balances = preview.get("balances", {})
+        matched = 0
+        mismatched: list[dict[str, Any]] = []
+        missing: list[str] = []
+        for code, quantity in sorted(db_qty.items()):
+            kis_quantity = int((balances.get(code) or {}).get("holding_quantity", 0))
+            if code not in balances:
+                missing.append(code)
+            elif kis_quantity == quantity:
+                matched += 1
+            else:
+                mismatched.append({"code": code, "db_open_lot_quantity": quantity, "kis_holding_quantity": kis_quantity})
+        extra = sorted(code for code, item in balances.items() if code not in db_qty and int(item.get("holding_quantity", 0) or 0) > 0)
+        errors = list(strict.get("errors", []))
+        if missing or extra or mismatched:
+            errors.append("liquidation_kis_balance_mismatch")
+        block_reason = errors[0] if errors else ""
+        missing_fields = []
+        if "liquidation_kis_balance_snapshot_missing_generated_at" in errors:
+            missing_fields.append("generated_at")
+        if "liquidation_kis_sellable_quantity_missing" in errors:
+            missing_fields.append("sellable_quantity")
+        return {
+            "snapshot_valid_for_preview": bool(preview.get("valid")),
+            "snapshot_valid_for_request": bool(strict.get("valid")) and not (missing or extra or mismatched),
+            "snapshot_warnings": list(preview.get("warnings", [])),
+            "snapshot_errors": errors,
+            "snapshot_generated_at": preview.get("generated_at", ""),
+            "snapshot_age_minutes": preview.get("age_minutes"),
+            "missing_required_fields": missing_fields,
+            "matched_positions_count": matched,
+            "mismatched_positions_count": len(mismatched),
+            "mismatched_positions": mismatched,
+            "missing_in_snapshot_codes": missing,
+            "extra_in_snapshot_codes": extra,
+            "request_creation_allowed": not block_reason,
+            "request_creation_block_reason": block_reason,
+            "guide": _reason_guide(block_reason) if block_reason else {"title": "전량매도 요청 생성 가능", "description": "snapshot이 request 생성 조건을 만족합니다.", "next_action": "전량매도 예정표를 생성하거나 요청 생성 단계로 진행하세요."},
+        }
 
     def new_season_create_liquidation_requests(self, plan_path: str = "", kis_balance_json_path: str = "", confirm: str = "", execute: bool = False) -> dict[str, Any]:
         module = _prepare_new_season_module()
@@ -1520,6 +1573,24 @@ def _prepare_new_season_module():
 
 def _reason_guide(reason: str) -> dict[str, str]:
     return NEW_SEASON_REASON_GUIDE.get(reason, {"title": reason or "진행 가능", "description": reason, "next_action": "상태를 다시 확인하세요."})
+
+
+def _snapshot_validation_response(reason: str) -> dict[str, Any]:
+    return {
+        "snapshot_valid_for_preview": False,
+        "snapshot_valid_for_request": False,
+        "snapshot_warnings": [],
+        "snapshot_errors": [reason],
+        "snapshot_age_minutes": None,
+        "missing_required_fields": ["path"] if reason == "liquidation_kis_balance_fetch_required" else [],
+        "matched_positions_count": 0,
+        "mismatched_positions_count": 0,
+        "missing_in_snapshot_codes": [],
+        "extra_in_snapshot_codes": [],
+        "request_creation_allowed": False,
+        "request_creation_block_reason": reason,
+        "guide": _reason_guide(reason),
+    }
 
 
 def _parse_key_values(body: str) -> dict[str, str]:
