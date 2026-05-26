@@ -37,9 +37,17 @@ INDEX_HTML = r"""<!doctype html>
     .metric strong { display: block; font-size: 12px; color: #59636e; }
     .tableWrap { overflow: auto; max-height: 68vh; border: 1px solid #e2e7ec; border-radius: 8px; background: white; margin: 10px 0 16px; }
     .tableWrap table { min-width: max-content; }
+    .readableWrap { overflow: visible; max-height: none; border: 1px solid #e2e7ec; border-radius: 8px; background: white; margin: 8px 0 10px; }
+    .readableWrap table { width: 100%; min-width: 0; table-layout: auto; }
+    .readableWrap th, .readableWrap td { white-space: normal; overflow-wrap: anywhere; }
+    .field .readableWrap { max-height: 320px; overflow-y: auto; }
     table { border-collapse: collapse; width: 100%; font-size: 13px; }
     th, td { border-bottom: 1px solid #e6ebf0; padding: 7px; text-align: left; white-space: nowrap; vertical-align: top; }
-    th { background: #e8eef5; position: sticky; top: 0; z-index: 1; cursor: pointer; user-select: none; font-weight: 800; }
+    th { background: #e8eef5; position: sticky; top: 0; z-index: 1; cursor: pointer; user-select: none; font-weight: 800; min-width: 72px; max-width: 720px; }
+    th.resizableTh { position: sticky; overflow: hidden; padding-right: 14px; }
+    .colResizeHandle { position: absolute; top: 0; right: 0; bottom: 0; width: 9px; cursor: col-resize; z-index: 3; }
+    .colResizeHandle::after { content: ""; position: absolute; top: 20%; bottom: 20%; right: 3px; width: 2px; background: transparent; }
+    .colResizeHandle:hover::after, body.resizing-table .colResizeHandle::after { background: #1f6feb; }
     th:hover { background: #e5ebf1; }
     tr:hover td { background: #f8fbff; }
     .num { text-align: right; font-variant-numeric: tabular-nums; }
@@ -58,7 +66,7 @@ INDEX_HTML = r"""<!doctype html>
     .manualBox { border: 1px dashed #b8c2cc; border-radius: 8px; padding: 12px; background: #fbfcfe; margin: 10px 0; }
     .warn { color: #a15c00; font-weight: 700; }
     .bad { color: #b42318; font-weight: 700; }
-    .field { display: grid; grid-template-columns: minmax(180px, 260px) 1fr minmax(80px, 120px); gap: 10px; align-items: start; border-bottom: 1px solid #e6ebf0; padding: 10px 0; }
+    .field { display: grid; grid-template-columns: minmax(150px, var(--config-label-width, 230px)) 8px minmax(260px, 1fr) 8px minmax(190px, var(--config-current-width, 320px)); gap: 10px; align-items: stretch; border-bottom: 1px solid #e6ebf0; padding: 12px 0; }
     .field label { font-weight: 700; }
     .field small { display: block; color: #59636e; margin-top: 4px; line-height: 1.35; }
     .field input, .field textarea, .field select { width: 100%; box-sizing: border-box; }
@@ -67,6 +75,11 @@ INDEX_HTML = r"""<!doctype html>
     .critical, .dangerText { color: #b42318; font-weight: 700; }
     .changed { background: #fff7db; }
     .configActions { position: sticky; bottom: 0; background: white; border-top: 1px solid #d7dde3; padding: 10px 0; }
+    .configLayoutControls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; background: #fbfcfe; border: 1px solid #e2e7ec; border-radius: 8px; padding: 10px; margin: 8px 0 12px; }
+    .configResizeHandle { cursor: col-resize; min-width: 8px; align-self: stretch; position: relative; border-radius: 5px; }
+    .configResizeHandle::before { content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 2px; background: #d7dde3; }
+    .configResizeHandle:hover::before, body.resizing-config .configResizeHandle::before { background: #1f6feb; width: 3px; }
+    body.resizing-config, body.resizing-table { cursor: col-resize; user-select: none; }
     .sortHint { color: #59636e; font-size: 12px; margin: 4px 0 10px; }
     .rowActions { display: flex; gap: 6px; align-items: center; }
     .rowActions button { padding: 5px 8px; font-size: 12px; }
@@ -79,6 +92,11 @@ INDEX_HTML = r"""<!doctype html>
     pre { background: #0b1020; color: #d6e2ff; padding: 12px; border-radius: 6px; overflow: auto; max-height: 420px; }
     input, textarea, select { padding: 7px; border: 1px solid #b8c2cc; border-radius: 6px; }
     textarea { width: 100%; min-height: 240px; font-family: ui-monospace, Consolas, monospace; }
+    @media (max-width: 980px) {
+      .field { grid-template-columns: 1fr; }
+      .field > div { min-width: 0; }
+      .configResizeHandle { display: none; }
+    }
   </style>
 </head>
 <body>
@@ -269,17 +287,114 @@ const columnPrefs = {};
 let configOriginal = null;
 let configDraft = null;
 let configSchema = null;
+let tableColumnWidths = (() => {
+  try { return JSON.parse(localStorage.getItem('kisTableColumnWidths') || '{}'); } catch (err) { return {}; }
+})();
+let tableResizeState = null;
+let configLayout = (() => {
+  try { return JSON.parse(localStorage.getItem('kisConfigLayout') || '{}'); } catch (err) { return {}; }
+})();
+let configResizeState = null;
+function clampNumber(value, minValue, maxValue) {
+  return Math.max(minValue, Math.min(maxValue, Number(value)));
+}
+function normalizedConfigLayout() {
+  return {
+    label: clampNumber(configLayout.label || 230, 150, 460),
+    current: clampNumber(configLayout.current || 320, 190, 720)
+  };
+}
+function saveConfigLayout() {
+  localStorage.setItem('kisConfigLayout', JSON.stringify(normalizedConfigLayout()));
+}
+function applyConfigLayout() {
+  configLayout = normalizedConfigLayout();
+  document.documentElement.style.setProperty('--config-label-width', configLayout.label + 'px');
+  document.documentElement.style.setProperty('--config-current-width', configLayout.current + 'px');
+}
+function startConfigColumnResize(event, target) {
+  event.preventDefault();
+  const layout = normalizedConfigLayout();
+  configResizeState = {target, startX: event.clientX, startLabel: layout.label, startCurrent: layout.current};
+  document.body.classList.add('resizing-config');
+  window.addEventListener('mousemove', onConfigColumnResize);
+  window.addEventListener('mouseup', stopConfigColumnResize, {once:true});
+}
+function onConfigColumnResize(event) {
+  if (!configResizeState) return;
+  const dx = event.clientX - configResizeState.startX;
+  if (configResizeState.target === 'label') {
+    configLayout.label = clampNumber(configResizeState.startLabel + dx, 150, 460);
+  } else if (configResizeState.target === 'current') {
+    configLayout.current = clampNumber(configResizeState.startCurrent - dx, 190, 720);
+  }
+  applyConfigLayout();
+  saveConfigLayout();
+}
+function stopConfigColumnResize() {
+  window.removeEventListener('mousemove', onConfigColumnResize);
+  document.body.classList.remove('resizing-config');
+  configResizeState = null;
+}
+function resetConfigLayout() {
+  configLayout = {label:230, current:320};
+  applyConfigLayout();
+  saveConfigLayout();
+  renderConfig(window.configSection);
+}
+applyConfigLayout();
+function tableColumnWidth(tableId, key) {
+  const width = tableColumnWidths[tableId] && tableColumnWidths[tableId][key];
+  return width ? clampNumber(width, 72, 720) : null;
+}
+function tableColumnStyle(tableId, key) {
+  const width = tableColumnWidth(tableId, key);
+  return width ? `width:${width}px;min-width:${width}px;max-width:${width}px;` : '';
+}
+function saveTableColumnWidths() {
+  localStorage.setItem('kisTableColumnWidths', JSON.stringify(tableColumnWidths));
+}
+function startTableColumnResize(event, tableId, key) {
+  event.preventDefault();
+  event.stopPropagation();
+  const th = event.target.closest('th');
+  tableResizeState = {tableId, key, startX: event.clientX, startWidth: th ? th.offsetWidth : (tableColumnWidth(tableId, key) || 120)};
+  document.body.classList.add('resizing-table');
+  window.addEventListener('mousemove', onTableColumnResize);
+  window.addEventListener('mouseup', stopTableColumnResize, {once:true});
+}
+function onTableColumnResize(event) {
+  if (!tableResizeState) return;
+  const width = clampNumber(tableResizeState.startWidth + (event.clientX - tableResizeState.startX), 72, 720);
+  const {tableId, key} = tableResizeState;
+  if (!tableColumnWidths[tableId]) tableColumnWidths[tableId] = {};
+  tableColumnWidths[tableId][key] = width;
+  saveTableColumnWidths();
+  document.querySelectorAll(`[data-table-id="${tableId}"] [data-col-key="${key}"]`).forEach(el => {
+    el.style.width = width + 'px';
+    el.style.minWidth = width + 'px';
+    el.style.maxWidth = width + 'px';
+  });
+}
+function stopTableColumnResize() {
+  window.removeEventListener('mousemove', onTableColumnResize);
+  document.body.classList.remove('resizing-table');
+  tableResizeState = null;
+}
 function table(rows, tableId='default', opts={}) {
   if (!rows || !rows.length) return '<p>No data</p>';
   const keys = Object.keys(rows[0]);
   const visibleKeys = visibleColumns(tableId, keys);
   const state = sortState[tableId] || opts.defaultSort || null;
   const sorted = state ? sortRows(rows, state.key, state.dir) : [...rows];
-  const actionHeader = opts.actions ? '<th>작업<span class="key">actions</span></th>' : '';
+  const actionHeader = opts.actions ? `<th class="resizableTh" data-col-key="__actions" style="${tableColumnStyle(tableId, '__actions')}">작업<span class="key">actions</span><span class="colResizeHandle" title="컬럼 폭 조절" onmousedown="startTableColumnResize(event, '${esc(tableId)}', '__actions')"></span></th>` : '';
   const actionCells = (row) => opts.actions ? `<td>${rowActions(tableId, row)}</td>` : '';
-  return columnControls(tableId, keys, visibleKeys) + '<div class="sortHint">컬럼 헤더를 클릭하면 정렬됩니다. 기본은 핵심 컬럼만 표시하며, 컬럼 선택에서 숨긴 정보를 다시 볼 수 있습니다.</div><div class="tableWrap"><table data-table-id="'+esc(tableId)+'"><thead><tr>' +
+  const tableKeys = opts.actions ? ['__actions', ...visibleKeys] : visibleKeys;
+  const colgroup = '<colgroup>' + tableKeys.map(k => `<col data-col-key="${esc(k)}" style="${tableColumnStyle(tableId, k)}">`).join('') + '</colgroup>';
+  return columnControls(tableId, keys, visibleKeys) + '<div class="sortHint">컬럼 헤더를 클릭하면 정렬됩니다. 헤더 오른쪽 경계를 드래그하면 컬럼 폭을 조절할 수 있습니다.</div><div class="tableWrap"><table data-table-id="'+esc(tableId)+'">' +
+    colgroup + '<thead><tr>' +
     actionHeader +
-    visibleKeys.map(k => `<th onclick="sortTable('${esc(tableId)}','${esc(k)}')">${headerLabel(k)}${state && state.key === k ? (state.dir === 'asc' ? ' ▲' : ' ▼') : ''}</th>`).join('') +
+    visibleKeys.map(k => `<th class="resizableTh" data-col-key="${esc(k)}" style="${tableColumnStyle(tableId, k)}" onclick="sortTable('${esc(tableId)}','${esc(k)}')">${headerLabel(k)}${state && state.key === k ? (state.dir === 'asc' ? ' ▲' : ' ▼') : ''}<span class="colResizeHandle" title="컬럼 폭 조절" onmousedown="startTableColumnResize(event, '${esc(tableId)}', '${esc(k)}')"></span></th>`).join('') +
     '</tr></thead><tbody>' +
     sorted.map(r => '<tr>' + actionCells(r) + visibleKeys.map(k => `<td class="${cellClass(k, r[k])}">${displayCell(k, r[k])}</td>`).join('') + '</tr>').join('') + '</tbody></table></div>';
 }
@@ -779,13 +894,19 @@ async function loadConfig() {
 }
 function renderConfig(sectionName) {
   if (!configSchema || !configDraft) return;
+  applyConfigLayout();
   const sections = Object.keys(configSchema.sections);
   const selected = sectionName || window.configSection || sections[0];
   window.configSection = selected;
   const nav = '<div class="sectionNav">' + sections.map(s => `<button class="${s===selected?'primary':''}" onclick="renderConfig('${esc(s)}')">${esc(s)}</button>`).join('') + '</div>';
+  const layoutControls = `<div class="configLayoutControls">
+    <strong>컬럼 폭 조절</strong>
+    <span class="muted">항목명과 현재값 사이의 세로선을 마우스로 드래그하면 폭을 조절할 수 있습니다. 조절값은 이 브라우저에 저장됩니다.</span>
+    <button onclick="resetConfigLayout()">기본값</button>
+  </div>`;
   const fields = (configSchema.sections[selected] || []).map(renderConfigField).join('');
   const raw = `<details><summary>고급 / 원본 JSON 보기</summary><p class="warn">원본 JSON 직접 편집도 같은 validation, diff, backup, atomic save를 거칩니다.</p><textarea id="rawConfig" oninput="rawConfigChanged()">${esc(JSON.stringify(configDraft, null, 2))}</textarea></details>`;
-  document.getElementById('content').innerHTML = `<h2>Config</h2>${nav}<div>${fields}</div>${raw}<div class="configActions"><button onclick="previewConfigChanges()">변경사항 확인</button> <button class="primary" onclick="saveConfigForm()">백업 후 저장</button> <button onclick="loadConfig()">되돌리기</button><div id="cfgResult"></div></div>`;
+  document.getElementById('content').innerHTML = `<h2>Config</h2>${nav}${layoutControls}<div>${fields}</div>${raw}<div class="configActions"><button onclick="previewConfigChanges()">변경사항 확인</button> <button class="primary" onclick="saveConfigForm()">백업 후 저장</button> <button onclick="loadConfig()">되돌리기</button><div id="cfgResult"></div></div>`;
 }
 function renderConfigField(meta) {
   const current = getPath(configDraft, meta.key);
@@ -797,7 +918,7 @@ function renderConfigField(meta) {
   else if (meta.type === 'json' && Array.isArray(current)) input = renderStructuredJsonEditor(meta, current);
   else if (meta.type === 'json') input = `<textarea onchange="configInputChanged('${esc(meta.key)}', this.value, 'json')">${esc(JSON.stringify(current, null, 2))}</textarea>`;
   else input = `<input type="${meta.type === 'time' ? 'time' : 'text'}" value="${esc(toDisplay(current, meta))}" onchange="configInputChanged('${esc(meta.key)}', this.value, '${esc(meta.config_format)}')">`;
-  return `<div class="field ${changed ? 'changed' : ''}"><div><label>${esc(meta.label_ko)}</label><small>${esc(meta.key)}</small></div><div>${input}<small>${esc(meta.description_ko || '')}${danger}<br>단위: ${esc(meta.unit || '')} / 저장 형식: ${esc(meta.config_format || '')} / 재시작 필요: ${meta.requires_restart ? '예' : '아니오'}</small></div><div><small>현재값</small>${renderConfigOriginalValue(original, meta)}</div></div>`;
+  return `<div class="field ${changed ? 'changed' : ''}"><div><label>${esc(meta.label_ko)}</label><small>${esc(meta.key)}</small></div><div class="configResizeHandle" title="항목명 폭 조절" onmousedown="startConfigColumnResize(event, 'label')"></div><div>${input}<small>${esc(meta.description_ko || '')}${danger}<br>단위: ${esc(meta.unit || '')} / 저장 형식: ${esc(meta.config_format || '')} / 재시작 필요: ${meta.requires_restart ? '예' : '아니오'}</small></div><div class="configResizeHandle" title="현재값 폭 조절" onmousedown="startConfigColumnResize(event, 'current')"></div><div><small>현재값</small>${renderConfigOriginalValue(original, meta)}</div></div>`;
 }
 function renderConfigOriginalValue(value, meta) {
   if (meta.type === 'json') return renderReadableObject(value, {raw:true});

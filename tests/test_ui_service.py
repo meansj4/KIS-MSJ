@@ -205,6 +205,19 @@ def test_config_form_and_table_sorting_scripts_are_present():
     assert "function renderReadableObject" in INDEX_HTML
     assert "function renderResult" in INDEX_HTML
     assert "function formatNumber" in INDEX_HTML
+    assert "readableWrap" in INDEX_HTML
+    assert "--config-current-width" in INDEX_HTML
+    assert "kisTableColumnWidths" in INDEX_HTML
+    assert "startTableColumnResize" in INDEX_HTML
+    assert "tableColumnStyle" in INDEX_HTML
+    assert "colResizeHandle" in INDEX_HTML
+    assert "configLayoutControls" in INDEX_HTML
+    assert "configResizeHandle" in INDEX_HTML
+    assert "startConfigColumnResize" in INDEX_HTML
+    assert "col-resize" in INDEX_HTML
+    assert "resetConfigLayout" in INDEX_HTML
+    assert "kisConfigLayout" in INDEX_HTML
+    assert "resizing-table" in INDEX_HTML
     assert "function addStructuredJsonRow" in INDEX_HTML
     assert "function removeStructuredJsonRow" in INDEX_HTML
     assert "decimal_rate" in INDEX_HTML
