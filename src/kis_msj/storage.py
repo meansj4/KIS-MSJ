@@ -347,6 +347,27 @@ class StateStore:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS market_data_collection_runs (
+                    run_id TEXT PRIMARY KEY,
+                    started_at TEXT NOT NULL,
+                    ended_at TEXT NOT NULL,
+                    mode TEXT NOT NULL,
+                    symbols_requested INTEGER NOT NULL DEFAULT 0,
+                    symbols_succeeded INTEGER NOT NULL DEFAULT 0,
+                    symbols_failed INTEGER NOT NULL DEFAULT 0,
+                    rows_inserted INTEGER NOT NULL DEFAULT 0,
+                    rows_updated INTEGER NOT NULL DEFAULT 0,
+                    error_count INTEGER NOT NULL DEFAULT 0,
+                    dry_run INTEGER NOT NULL DEFAULT 1,
+                    config_hash TEXT NOT NULL DEFAULT '',
+                    experiment_run_id TEXT NOT NULL DEFAULT '',
+                    log_path TEXT NOT NULL DEFAULT '',
+                    result_json TEXT NOT NULL DEFAULT '{}'
+                )
+                """
+            )
 
     def _backup_before_migration_if_needed(self, connection: sqlite3.Connection) -> None:
         if self._migration_backup_done or not self._db_existed_before_init:
@@ -606,8 +627,15 @@ class StateStore:
         with self._connect() as connection:
             connection.execute("UPDATE decisions SET price_snapshot_id = ? WHERE id = ?", (snapshot_id, decision_id))
 
-    def upsert_daily_price(self, row: dict[str, object]) -> None:
+    def upsert_daily_price(self, row: dict[str, object]) -> str:
         with self._connect() as connection:
+            code = str(row.get("code") or "").zfill(6)
+            price_date = str(row.get("date") or datetime.now().date().isoformat())
+            source = str(row.get("source") or "")
+            existing = connection.execute(
+                "SELECT 1 FROM daily_prices WHERE code = ? AND date = ? AND source = ? LIMIT 1",
+                (code, price_date, source),
+            ).fetchone()
             connection.execute(
                 """
                 INSERT INTO daily_prices (
@@ -624,16 +652,47 @@ class StateStore:
                     collected_at=excluded.collected_at
                 """,
                 (
-                    str(row.get("code") or "").zfill(6),
-                    str(row.get("date") or datetime.now().date().isoformat()),
+                    code,
+                    price_date,
                     int(float(row.get("open") or 0)),
                     int(float(row.get("high") or 0)),
                     int(float(row.get("low") or 0)),
                     int(float(row.get("close") or 0)),
                     int(float(row.get("volume") or 0)),
                     int(float(row.get("trading_value") or 0)),
-                    str(row.get("source") or ""),
+                    source,
                     str(row.get("collected_at") or datetime.now().isoformat(timespec="seconds")),
+                ),
+            )
+        return "updated" if existing is not None else "inserted"
+
+    def record_market_data_collection_run(self, result: dict[str, object]) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO market_data_collection_runs (
+                    run_id, started_at, ended_at, mode, symbols_requested, symbols_succeeded,
+                    symbols_failed, rows_inserted, rows_updated, error_count, dry_run,
+                    config_hash, experiment_run_id, log_path, result_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(result.get("collection_run_id") or ""),
+                    str(result.get("started_at") or ""),
+                    str(result.get("ended_at") or ""),
+                    str(result.get("mode") or ""),
+                    int(result.get("symbols_requested") or 0),
+                    int(result.get("symbols_succeeded") or 0),
+                    int(result.get("symbols_failed") or 0),
+                    int(result.get("rows_inserted") or 0),
+                    int(result.get("rows_updated") or 0),
+                    int(result.get("error_count") or 0),
+                    int(bool(result.get("dry_run", True))),
+                    str(result.get("config_hash") or self.active_config_hash),
+                    str(result.get("experiment_run_id") or self.active_run_id),
+                    str(result.get("log_path") or ""),
+                    json.dumps(result, ensure_ascii=False, sort_keys=True),
                 ),
             )
 

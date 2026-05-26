@@ -27,6 +27,7 @@ TABLES = (
     "price_snapshots",
     "daily_prices",
     "liquidity_snapshots",
+    "market_data_collection_runs",
 )
 SENSITIVE_KEYS = ("account", "acct", "cano", "acnt", "appkey", "appsecret", "token", "authorization", "auth")
 

@@ -367,19 +367,30 @@ class UIService:
         price_snapshots = self._table("price_snapshots")
         daily_prices = self._table("daily_prices")
         liquidity_snapshots = self._table("liquidity_snapshots")
+        collection_runs = self._table("market_data_collection_runs")
         closed_lots = [lot for lot in lots if str(lot.get("status") or "") == "CLOSED" or int(lot.get("remaining_quantity") or 0) <= 0]
         open_lots = [lot for lot in lots if str(lot.get("status") or "") != "CLOSED" and int(lot.get("remaining_quantity") or 0) > 0]
         dates = {str(fill.get("filled_at") or "")[:10] for fill in fills if str(fill.get("filled_at") or "")}
         price_codes = {str(row.get("code") or "") for row in price_snapshots if row.get("code")}
         configured_codes = {stock.code for stock in self.config.stocks if stock.enabled and not stock.manual_only}
         latest_market_at = max((str(row.get("collected_at") or row.get("sampled_at") or "") for row in price_snapshots + daily_prices + liquidity_snapshots), default="")
+        latest_daily_date = max((str(row.get("date") or "") for row in daily_prices), default="")
+        daily_codes = {str(row.get("code") or "") for row in daily_prices if row.get("code")}
+        daily_dates = {str(row.get("date") or "") for row in daily_prices if row.get("date")}
+        latest_run = max(collection_runs, key=lambda row: str(row.get("ended_at") or row.get("started_at") or ""), default={})
         current_hash = config_hash(self.config)
         run_id = self.config.experiment.run_id or self.config.run_id or f"{self.config.risk.profile}_{current_hash}"
         experiment_name = self.config.experiment.experiment_name or self.config.experiment_name or self.config.risk.profile
-        what_if_level = "actual_trade_analysis"
+        readiness_level = 0
+        what_if_level = "Level 0: trade results only"
+        if price_snapshots:
+            readiness_level = 1
+            what_if_level = "Level 1: decision-time price context"
         if daily_prices:
-            what_if_level = "blocked_candidate_daily_followup_possible"
+            readiness_level = 2
+            what_if_level = "Level 2: daily follow-up possible"
         if price_snapshots and daily_prices:
+            readiness_level = 2
             what_if_level = "config_comparison_and_limited_what_if"
         return {
             "fill_count": len(fills),
@@ -397,11 +408,30 @@ class UIService:
             "daily_prices_count": len(daily_prices),
             "liquidity_snapshots_count": len(liquidity_snapshots),
             "symbols_with_price_data_count": len(price_codes),
+            "symbols_with_daily_prices_count": len(daily_codes),
             "market_data_missing_symbols_count": len(configured_codes - price_codes),
             "latest_market_data_collected_at": latest_market_at,
+            "latest_daily_price_date": latest_daily_date,
+            "days_with_market_data_count": len(daily_dates),
+            "market_data_collection_run_count": len(collection_runs),
+            "latest_market_data_collection_run_id": latest_run.get("run_id", ""),
+            "latest_market_data_collection_mode": latest_run.get("mode", ""),
+            "latest_market_data_collection_errors": latest_run.get("error_count", 0),
+            "tuning_readiness_level": readiness_level,
             "what_if_analysis_level": what_if_level,
             "analysis_export_ready": bool(fills or decisions),
         }
+
+    def collect_market_data(self, *, execute: bool = False, symbols_from_config: bool = True, snapshot: bool = True, daily: bool = True) -> dict[str, Any]:
+        from scripts.collect_market_data import collect_market_data
+
+        return collect_market_data(
+            self.config_path,
+            symbols_from_config=symbols_from_config,
+            snapshot=snapshot,
+            daily=daily,
+            execute=execute,
+        )
 
     def new_season_status(self) -> dict[str, Any]:
         positions = self.positions()

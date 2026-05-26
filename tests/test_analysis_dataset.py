@@ -237,6 +237,19 @@ def test_collect_market_data_dry_run_does_not_mutate_db(tmp_path):
     assert db_path.read_bytes() == before
     assert result["kis_order_api_called"] is False
 
+    historical = collect_market_data(
+        config_path,
+        codes=("005930",),
+        snapshot=True,
+        daily=True,
+        days=60,
+        execute=False,
+        sleep_seconds=0,
+        fetcher=_fake_quote,
+    )
+    assert historical["daily_history_supported"] is False
+    assert historical["warnings"]
+
 
 def test_collect_market_data_execute_stores_snapshot_and_daily_upsert(tmp_path):
     db_path = tmp_path / "state.sqlite3"
@@ -257,9 +270,17 @@ def test_collect_market_data_execute_stores_snapshot_and_daily_upsert(tmp_path):
         price_count = connection.execute("SELECT COUNT(*) FROM price_snapshots").fetchone()[0]
         daily_count = connection.execute("SELECT COUNT(*) FROM daily_prices").fetchone()[0]
         daily = connection.execute("SELECT close, volume, trading_value FROM daily_prices").fetchone()
+        runs = connection.execute("SELECT mode, symbols_requested, symbols_succeeded, rows_inserted, rows_updated, error_count, dry_run FROM market_data_collection_runs").fetchall()
     assert price_count == 2
     assert daily_count == 1
     assert tuple(daily) == (70100, 123456, 987654321)
+    assert len(runs) == 2
+    assert runs[-1][0] == "snapshot_daily"
+    assert runs[-1][1] == 1
+    assert runs[-1][2] == 1
+    assert runs[-1][4] == 1
+    assert runs[-1][5] == 0
+    assert runs[-1][6] == 0
 
 
 def test_export_analysis_dataset_includes_market_data_counts(tmp_path):
@@ -283,6 +304,7 @@ def test_export_analysis_dataset_includes_market_data_counts(tmp_path):
 
     assert (tmp_path / "analysis" / "price_snapshots.csv").exists()
     assert (tmp_path / "analysis" / "daily_prices.csv").exists()
+    assert (tmp_path / "analysis" / "market_data_collection_runs.csv").exists()
     summary = json.loads((tmp_path / "analysis" / "summary.json").read_text(encoding="utf-8"))
     assert summary["price_snapshots_count"] == 1
     assert summary["daily_prices_count"] == 1

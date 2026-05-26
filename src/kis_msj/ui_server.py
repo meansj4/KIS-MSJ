@@ -1120,6 +1120,35 @@ async function saveConfigForm() {
   configOriginal = await api('/api/config');
   configDraft = JSON.parse(JSON.stringify(configOriginal));
 }
+async function collectMarketDataFromDashboard(execute) {
+  const resultId = 'marketDataCollectResult';
+  const target = document.getElementById(resultId);
+  if (target) target.innerHTML = '<span class="muted">Collecting read-only market data...</span>';
+  const payload = {execute, symbols_from_config:true, snapshot:true, daily:true};
+  const result = await api('/api/market-data/collect', {method:'POST', body:JSON.stringify(payload)});
+  renderResult(resultId, result);
+  if (execute) await loadDashboard();
+}
+function attachMarketDataControls() {
+  const content = document.getElementById('content');
+  if (!content || document.getElementById('marketDataCollectPanel')) return;
+  const panel = document.createElement('div');
+  panel.id = 'marketDataCollectPanel';
+  panel.className = 'manualBox';
+  panel.innerHTML = `
+    <strong>Market data collection</strong>
+    <p class="muted">Read-only quote collection for analysis. This does not call KIS order APIs and does not reset DB.</p>
+    <button onclick="collectMarketDataFromDashboard(false)">Dry-run market data collection</button>
+    <button class="primary" onclick="collectMarketDataFromDashboard(true)">Save market data now</button>
+    <div id="marketDataCollectResult" style="margin-top:8px"></div>
+  `;
+  content.insertBefore(panel, content.children[2] || null);
+}
+const originalLoadDashboard = loadDashboard;
+loadDashboard = async function() {
+  await originalLoadDashboard();
+  attachMarketDataControls();
+};
 refreshBanner().then(loadDashboard);
 </script>
 </body>
@@ -1267,6 +1296,16 @@ class UIHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/new-season/reset-db":
                 self._send_json(self.service.new_season_reset_db(data.get("confirm", ""), bool(data.get("execute", False))))
+                return
+            if parsed.path == "/api/market-data/collect":
+                self._send_json(
+                    self.service.collect_market_data(
+                        execute=bool(data.get("execute")),
+                        symbols_from_config=bool(data.get("symbols_from_config", True)),
+                        snapshot=bool(data.get("snapshot", True)),
+                        daily=bool(data.get("daily", True)),
+                    )
+                )
                 return
             if parsed.path.startswith("/api/positions/") and parsed.path.endswith("/review/recheck"):
                 code = parsed.path.split("/")[3].zfill(6)

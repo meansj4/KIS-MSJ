@@ -37,14 +37,29 @@ def collect_market_data(
     selected_codes = _selected_codes(config, codes, symbols_from_config)
     active_hash = config_hash(config)
     run_id = config.experiment.run_id or config.run_id or f"{config.risk.profile}_{active_hash}"
+    started_at = datetime.now().isoformat(timespec="seconds")
+    mode = "snapshot_daily" if snapshot and daily else ("snapshot" if snapshot else ("daily" if daily else "none"))
     fetch = fetcher or (lambda code: fetch_current_quote(code, korean_name=_name_for_code(config, code)))
     result: dict[str, Any] = {
+        "collection_run_id": f"market_data_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}",
+        "started_at": started_at,
+        "ended_at": "",
+        "mode": mode,
         "execute": execute,
         "dry_run": not execute,
         "kis_order_api_called": False,
         "db_reset": False,
+        "config_hash": active_hash,
+        "experiment_run_id": run_id,
+        "log_path": "",
         "requested_days": days,
         "daily_history_supported": False,
+        "symbols_requested": len(selected_codes),
+        "symbols_succeeded": 0,
+        "symbols_failed": 0,
+        "rows_inserted": 0,
+        "rows_updated": 0,
+        "error_count": 0,
         "warnings": [],
         "stored_price_snapshots": 0,
         "stored_daily_prices": 0,
@@ -65,18 +80,29 @@ def collect_market_data(
                 if snapshot:
                     store.record_price_snapshot(normalized["price_snapshot"])
                     result["stored_price_snapshots"] = int(result["stored_price_snapshots"]) + 1
+                    result["rows_inserted"] = int(result["rows_inserted"]) + 1
                 if daily:
-                    store.upsert_daily_price(normalized["daily_price"])
+                    upsert_result = store.upsert_daily_price(normalized["daily_price"])
                     result["stored_daily_prices"] = int(result["stored_daily_prices"]) + 1
+                    if upsert_result == "updated":
+                        result["rows_updated"] = int(result["rows_updated"]) + 1
+                    else:
+                        result["rows_inserted"] = int(result["rows_inserted"]) + 1
             else:
                 if snapshot:
                     result["stored_price_snapshots"] = int(result["stored_price_snapshots"]) + 1
                 if daily:
                     result["stored_daily_prices"] = int(result["stored_daily_prices"]) + 1
+            result["symbols_succeeded"] = int(result["symbols_succeeded"]) + 1
         except Exception as error:  # noqa: BLE001
             result["errors"].append({"code": code, "error": type(error).__name__, "message": str(error)})
+            result["symbols_failed"] = int(result["symbols_failed"]) + 1
+            result["error_count"] = int(result["error_count"]) + 1
         if index + 1 < len(selected_codes) and sleep_seconds > 0:
             time.sleep(sleep_seconds)
+    result["ended_at"] = datetime.now().isoformat(timespec="seconds")
+    if execute and store is not None:
+        store.record_market_data_collection_run(result)
     return result
 
 

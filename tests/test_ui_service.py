@@ -138,6 +138,60 @@ def test_ui_status_masks_and_shows_core_tables(tmp_path):
     assert "appsecret=secret" not in log_text
 
 
+def test_analysis_status_reports_market_data_readiness(tmp_path):
+    config_path, db_path, _ = _write_config(tmp_path)
+    store = StateStore(db_path)
+    store.record_price_snapshot(
+        {
+            "code": "005930",
+            "sampled_at": "2026-05-27T09:00:00",
+            "current_price": 70000,
+            "source": "test",
+            "missing_fields": [],
+        }
+    )
+    store.upsert_daily_price(
+        {
+            "code": "005930",
+            "date": "2026-05-27",
+            "open": 69000,
+            "high": 71000,
+            "low": 68000,
+            "close": 70000,
+            "volume": 100,
+            "trading_value": 7000000,
+            "source": "test",
+            "collected_at": "2026-05-27T16:10:00",
+        }
+    )
+    store.record_market_data_collection_run(
+        {
+            "collection_run_id": "market_data_test",
+            "started_at": "2026-05-27T16:10:00",
+            "ended_at": "2026-05-27T16:11:00",
+            "mode": "snapshot_daily",
+            "symbols_requested": 1,
+            "symbols_succeeded": 1,
+            "symbols_failed": 0,
+            "rows_inserted": 2,
+            "rows_updated": 0,
+            "error_count": 0,
+            "dry_run": False,
+        }
+    )
+    service = UIService(config_path, tmp_path / "runtime.json")
+
+    analysis = service.status()["analysis_status"]
+
+    assert analysis["price_snapshots_count"] == 1
+    assert analysis["daily_prices_count"] == 1
+    assert analysis["symbols_with_daily_prices_count"] == 1
+    assert analysis["latest_daily_price_date"] == "2026-05-27"
+    assert analysis["days_with_market_data_count"] == 1
+    assert analysis["latest_market_data_collection_run_id"] == "market_data_test"
+    assert analysis["tuning_readiness_level"] == 2
+
+
 def test_config_validation_backup_atomic_save_and_stock_patch(tmp_path):
     config_path, _, _ = _write_config(tmp_path)
     service = UIService(config_path, tmp_path / "runtime.json")
@@ -394,6 +448,12 @@ def test_http_api_status_config_runtime_and_no_order_endpoint(tmp_path):
         reload_requested = json.loads(connection.getresponse().read().decode("utf-8"))
         assert reload_requested["config_reload_requested"] is True
         assert reload_requested["config_reload_requested_at"]
+
+        with patch("scripts.collect_market_data.collect_market_data", return_value={"execute": False, "kis_order_api_called": False, "db_reset": False, "stored_price_snapshots": 0}):
+            connection.request("POST", "/api/market-data/collect", body=json.dumps({"execute": False}), headers={"content-type": "application/json"})
+            market_data = json.loads(connection.getresponse().read().decode("utf-8"))
+        assert market_data["kis_order_api_called"] is False
+        assert market_data["db_reset"] is False
 
         connection.request("GET", "/api/place-order")
         missing = connection.getresponse()
