@@ -73,14 +73,30 @@ class AutoTrader:
         self.store.save_lots(self.lot_manager.lots.values())
         return snapshot
 
-    def run_once(self) -> None:
+    def run_once(self) -> str:
         self.upstream_watcher.tick()
+        interrupt = self.runtime_interrupt_reason("after_upstream_tick")
+        if interrupt:
+            return interrupt
         self.reconcile_recent_executions_on_startup()
+        interrupt = self.runtime_interrupt_reason("after_startup_reconciliation")
+        if interrupt:
+            return interrupt
         self.reconcile_open_orders()
+        interrupt = self.runtime_interrupt_reason("after_open_order_reconciliation")
+        if interrupt:
+            return interrupt
         snapshot = self.startup_sync()
         account_risk = self.risk_manager.account_buy_allowed(snapshot, self.position_manager.positions)
         self.process_manual_order_requests(snapshot, account_risk)
         for stock in self.config.stocks:
+            interrupt = self.runtime_interrupt_reason(f"before_symbol_{stock.code}")
+            if interrupt:
+                return interrupt
+            self.process_manual_order_requests(snapshot, account_risk)
+            interrupt = self.runtime_interrupt_reason(f"after_manual_requests_{stock.code}")
+            if interrupt:
+                return interrupt
             if not stock.enabled:
                 continue
             position = self.position_manager.get(stock.code, stock.name)
@@ -89,8 +105,22 @@ class AutoTrader:
                 position.position_state = PositionLifecycle.RISK_BLOCKED.value
                 position.auto_buy_enabled = False
             self.evaluate(position, snapshot, account_risk)
+            interrupt = self.runtime_interrupt_reason(f"after_symbol_{stock.code}")
+            if interrupt:
+                return interrupt
         self.store.save_positions(self.position_manager.positions.values())
         self.store.save_lots(self.lot_manager.lots.values())
+        return ""
+
+    def runtime_interrupt_reason(self, stage: str) -> str:
+        runtime = load_runtime_control()
+        if runtime.config_reload_requested:
+            self.logger.info("loop_interrupted stage=%s reason=config_reload_requested", stage)
+            return "config_reload_requested"
+        if runtime.bot_paused:
+            self.logger.info("loop_interrupted stage=%s reason=bot_paused", stage)
+            return "bot_paused"
+        return ""
 
     def process_manual_order_requests(self, snapshot: AccountSnapshot, account_risk) -> None:
         for manual in self.store.manual_order_requests("REQUESTED"):
@@ -125,6 +155,9 @@ class AutoTrader:
                     self.store.update_manual_order_request(request_id, status="BLOCKED", block_reason=final_block_reason)
                     self.logger.warning("manual_order_request_blocked request_id=%s code=%s side=%s reason=%s", request_id, code, side.value, final_block_reason)
                     continue
+                interrupt = self.runtime_interrupt_reason(f"before_manual_submit_{request_id}")
+                if interrupt:
+                    return
                 order_request = self.order_manager.build_request(position, action, current_price)
                 if order_request is None:
                     self.store.update_manual_order_request(request_id, status="BLOCKED", block_reason="quantity_below_one")
@@ -254,6 +287,10 @@ class AutoTrader:
             return
         if final_block_reason:
             self.log_pre_request_block(position, final_block_reason)
+            return
+        interrupt = self.runtime_interrupt_reason(f"before_auto_submit_{position.code}")
+        if interrupt:
+            self.log_pre_request_block(position, interrupt)
             return
         request = self.order_manager.build_request(position, action, current_price)
         if request is None:
@@ -562,15 +599,36 @@ def main(argv: Sequence[str] | None = None) -> int:
             if runtime.bot_paused:
                 trader.logger.info("bot_loop_paused reason=%s", runtime.reason)
             else:
-                trader.run_once()
+                run_status = trader.run_once()
+                if run_status == "config_reload_requested":
+                    continue
         except Exception as error:  # noqa: BLE001
             trader.risk_manager.data_mismatch_detected = True
             trader.notifier.notify("auto-trader error", f"{type(error).__name__}: {error}")
         loop_count += 1
         if args.once or (config.max_loop_count is not None and loop_count >= config.max_loop_count):
             break
-        time.sleep(config.loop_interval_seconds)
+        responsive_sleep(trader, config.loop_interval_seconds)
     return 0
+
+
+def responsive_sleep(trader: AutoTrader, seconds: int) -> None:
+    """Sleep in short slices so runtime controls and manual requests wake the loop promptly."""
+    deadline = time.monotonic() + max(0, seconds)
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        runtime = load_runtime_control()
+        if runtime.config_reload_requested:
+            return
+        if runtime.bot_paused:
+            time.sleep(min(1.0, remaining))
+            continue
+        if trader.store.manual_order_requests("REQUESTED"):
+            trader.logger.info("loop_wakeup reason=manual_order_request")
+            return
+        time.sleep(min(1.0, remaining))
 
 
 if __name__ == "__main__":

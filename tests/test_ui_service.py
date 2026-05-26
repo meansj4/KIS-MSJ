@@ -4,6 +4,7 @@ import http.client
 import json
 from dataclasses import asdict
 from datetime import datetime
+from unittest.mock import patch
 
 from kis_msj.config import BotConfig, OrderConfig, StockConfig
 from kis_msj.main import AutoTrader
@@ -235,6 +236,8 @@ def test_config_form_and_table_sorting_scripts_are_present():
     assert "Start / 루프 재개" in INDEX_HTML
     assert "Reset / Config 다시 읽기" in INDEX_HTML
     assert "/api/runtime/reload-config" in INDEX_HTML
+    assert "manualBuyPrice" in INDEX_HTML
+    assert "manualSellPrice" in INDEX_HTML
     assert "Execution Check" not in INDEX_HTML
 
 
@@ -455,3 +458,17 @@ def test_bot_core_consumes_manual_request_through_order_manager_paper_path(tmp_p
     assert request["linked_order_id"]
     assert trader.store.load_lots()
     assert trader.store.load_positions()["005930"].quantity > 0
+
+
+def test_bot_loop_interrupts_promptly_for_runtime_pause(tmp_path):
+    config = BotConfig(
+        stocks=(StockConfig("005930", "Samsung"),),
+        order=OrderConfig(live_trading=False),
+        storage_path=str(tmp_path / "state.sqlite3"),
+        log_path=str(tmp_path / "bot.log"),
+    )
+    trader = AutoTrader(config, use_mock_client=True)
+
+    with patch("kis_msj.main.load_runtime_control", return_value=RuntimeControl(bot_paused=True, reason="test_pause")):
+        assert trader.run_once() == "bot_paused"
+    assert trader.store.open_order_count() == 0

@@ -466,6 +466,7 @@ async function loadManualOrders() {
       <input id="manualBuyCode" placeholder="종목코드 예: 005930">
       <input id="manualBuyAmount" placeholder="주문금액">
       <input id="manualBuyQty" placeholder="수량 선택 입력">
+      <input id="manualBuyPrice" placeholder="미리보기 현재가, 선택 입력">
       <input id="manualBuyConfirm" placeholder="live trading이면 '수동주문 확인' 입력">
       <p><button ${cfg.ui_manual_trading_enabled ? '' : 'disabled'} onclick="previewManual('BUY')">매수 미리보기</button>
       <button ${cfg.ui_manual_trading_enabled ? '' : 'disabled'} onclick="createManual('BUY')">요청 생성</button></p>
@@ -476,6 +477,7 @@ async function loadManualOrders() {
       <input id="manualSellCode" placeholder="종목코드">
       <input id="manualSellLot" placeholder="LOT ID">
       <input id="manualSellQty" placeholder="매도 수량, 비우면 전량">
+      <input id="manualSellPrice" placeholder="미리보기 현재가, 선택 입력">
       <input id="manualSellConfirm" placeholder="live trading이면 '수동주문 확인' 입력">
       <p><button ${cfg.ui_manual_trading_enabled ? '' : 'disabled'} onclick="previewManual('SELL')">매도 미리보기</button>
       <button ${cfg.ui_manual_trading_enabled ? '' : 'disabled'} onclick="createManual('SELL')">요청 생성</button></p>
@@ -491,6 +493,7 @@ function manualPayload(side) {
     code:document.getElementById('manualBuyCode').value,
     amount:Number(document.getElementById('manualBuyAmount').value || 0),
     quantity:Number(document.getElementById('manualBuyQty').value || 0),
+    current_price:Number(document.getElementById('manualBuyPrice')?.value || 0),
     confirm_text:document.getElementById('manualBuyConfirm').value,
     requested_by:'local_ui'
   };
@@ -499,6 +502,7 @@ function manualPayload(side) {
     code:document.getElementById('manualSellCode').value,
     lot_id:document.getElementById('manualSellLot').value,
     quantity:Number(document.getElementById('manualSellQty').value || 0),
+    current_price:Number(document.getElementById('manualSellPrice')?.value || 0),
     confirm_text:document.getElementById('manualSellConfirm').value,
     requested_by:'local_ui'
   };
@@ -512,8 +516,8 @@ async function createManual(side) {
   if (!preview.can_create) { document.getElementById('manualResult').textContent = JSON.stringify(preview, null, 2); return; }
   if (!confirm('manual order request를 생성합니다. 실제 주문은 Bot Core가 별도로 처리합니다. 계속할까요?')) return;
   const r = await api('/api/manual-orders', {method:'POST', body:JSON.stringify(manualPayload(side))});
-  document.getElementById('manualResult').textContent = JSON.stringify(r, null, 2);
   await loadManualOrders();
+  document.getElementById('manualResult').textContent = JSON.stringify(r, null, 2);
 }
 async function loadConfig() {
   currentView = 'config';

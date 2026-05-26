@@ -1,11 +1,14 @@
 {
+  "bot_paused": false,
+  "config_reload_requested": false,
+  "config_reload_requested_at": "",
   "all_orders_paused": false,
   "buy_paused": false,
   "sell_paused": false,
   "cleanup_paused": true,
   "reentry_paused": false,
-  "reason": "ui_pause_cleanup",
-  "updated_at": "2026-05-26T10:31:31",
+  "reason": "ui_start_loop",
+  "updated_at": "2026-05-26T11:51:53",
   "updated_by": "local_ui",
   "expires_at": ""
 }
