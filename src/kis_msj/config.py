@@ -56,6 +56,25 @@ class SellBand:
 
 
 @dataclass(frozen=True)
+class PriceLotBand:
+    min_price: int
+    max_price: int
+    lot_unit_amount: int
+    max_symbol_amount: int
+    enabled: bool = True
+    max_lots: int = 0
+    note: str = ""
+
+
+@dataclass(frozen=True)
+class AddBuyLotBand:
+    min_lots: int
+    max_lots: int
+    drop_rate: float
+    add_lot_count: int = 1
+
+
+@dataclass(frozen=True)
 class StrategyConfig:
     initial_buy_amount: int = 30_000
     auto_buy_limit: int = 300_000
@@ -84,6 +103,25 @@ class StrategyConfig:
     stale_lot_price_gap_rate: float = -0.10
     review_symbol_loss_rate: float = -0.20
     stale_lot_review_age_weeks: int = 20
+    lot_sizing_mode: str = "cycle_locked_by_entry_price"
+    price_lot_bands: tuple[PriceLotBand, ...] = (
+        PriceLotBand(0, 300, 0, 0, False, note="초저가주는 자동매수 제외 또는 paper 전용"),
+        PriceLotBand(301, 1_000, 3_000, 30_000, True),
+        PriceLotBand(1_001, 10_000, 10_000, 100_000, True),
+        PriceLotBand(10_001, 30_000, 30_000, 300_000, True),
+        PriceLotBand(30_001, 100_000, 100_000, 1_000_000, True),
+        PriceLotBand(100_001, 300_000, 300_000, 3_000_000, True),
+        PriceLotBand(300_001, 1_000_000, 1_000_000, 3_000_000, True, max_lots=3, note="고가주는 3 LOT까지만"),
+        PriceLotBand(1_000_001, 3_000_000, 0, 0, False, note="초고가주는 자동매수 제외, manual only"),
+    )
+    add_buy_lot_bands: tuple[AddBuyLotBand, ...] = (
+        AddBuyLotBand(1, 2, 0.04, 1),
+        AddBuyLotBand(3, 4, 0.06, 1),
+        AddBuyLotBand(5, 6, 0.08, 1),
+        AddBuyLotBand(7, 8, 0.10, 1),
+        AddBuyLotBand(9, 10, 0.12, 1),
+    )
+    max_lots_per_symbol_default: int = 10
     exposure_buy_bands: tuple[BuyBand, ...] = (
         BuyBand(1, 60_000, 4.0, 30_000),
         BuyBand(60_001, 120_000, 5.0, 30_000),
@@ -206,6 +244,8 @@ def _strategy(raw: dict[str, Any], base: StrategyConfig) -> StrategyConfig:
     data = {**asdict(base), **raw}
     data["exposure_buy_bands"] = tuple(BuyBand(**item) for item in raw.get("exposure_buy_bands", asdict(base)["exposure_buy_bands"]))
     data["exposure_sell_bands"] = tuple(SellBand(**item) for item in raw.get("exposure_sell_bands", asdict(base)["exposure_sell_bands"]))
+    data["price_lot_bands"] = tuple(PriceLotBand(**item) for item in raw.get("price_lot_bands", asdict(base)["price_lot_bands"]))
+    data["add_buy_lot_bands"] = tuple(AddBuyLotBand(**item) for item in raw.get("add_buy_lot_bands", asdict(base)["add_buy_lot_bands"]))
     return StrategyConfig(**data)
 
 

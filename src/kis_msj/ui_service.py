@@ -182,6 +182,59 @@ DETAILED_CONFIG_DESCRIPTIONS: dict[str, str] = {
 }
 
 
+def _lot_sizing_config_metadata() -> list[dict[str, Any]]:
+    return [
+        {
+            "section": "Strategy",
+            "key": "strategy.lot_sizing_mode",
+            "label_ko": "LOT 금액 결정 방식",
+            "description_ko": "cycle_locked_by_entry_price이면 새 보유 사이클의 최초 진입 가격으로 1 LOT 금액과 종목당 최대금액을 정하고, OPEN LOT이 남아 있는 동안에는 현재가가 다른 가격대로 이동해도 이 기준을 다시 계산하지 않습니다.",
+            "type": "text",
+            "unit": "mode",
+            "display_format": "text",
+            "config_format": "text",
+            "warning_level": "warning",
+            "requires_restart": True,
+        },
+        {
+            "section": "Strategy",
+            "key": "strategy.price_lot_bands",
+            "label_ko": "가격대별 1 LOT 금액",
+            "description_ko": "새 사이클 최초 진입 또는 재진입 시 현재가가 어느 가격대에 있는지 보고 1 LOT 금액, 종목당 최대금액, 최대 LOT 수를 결정합니다. enabled=false 구간은 자동매수와 수동 BUY 요청 모두 차단됩니다.",
+            "type": "json",
+            "unit": "bands",
+            "display_format": "json",
+            "config_format": "json",
+            "warning_level": "warning",
+            "requires_restart": True,
+        },
+        {
+            "section": "Strategy",
+            "key": "strategy.add_buy_lot_bands",
+            "label_ko": "LOT 수 기준 추가매수 구간",
+            "description_ko": "cycle locked LOT sizing 모드에서 누적투입금 절대금액 대신 현재 OPEN LOT 수를 기준으로 추가매수 하락률과 추가 LOT 개수를 결정합니다.",
+            "type": "json",
+            "unit": "bands",
+            "display_format": "json",
+            "config_format": "json",
+            "warning_level": "warning",
+            "requires_restart": True,
+        },
+        {
+            "section": "Strategy",
+            "key": "strategy.max_lots_per_symbol_default",
+            "label_ko": "종목당 기본 최대 LOT 수",
+            "description_ko": "가격대별 band에 max_lots가 따로 없을 때 적용하는 기본 최대 OPEN LOT 수입니다. 이 수에 도달하면 BUY는 max_lots_per_symbol_reached로 차단되고 SELL은 계속 허용됩니다.",
+            "type": "number",
+            "unit": "개",
+            "display_format": "integer",
+            "config_format": "integer",
+            "warning_level": "warning",
+            "requires_restart": True,
+        },
+    ]
+
+
 class UIService:
     def __init__(self, config_path: str | Path = DEFAULT_CONFIG_PATH, runtime_path: str | Path = DEFAULT_RUNTIME_CONTROL_PATH) -> None:
         self.config_path = Path(config_path)
@@ -196,6 +249,7 @@ class UIService:
 
     def config_schema(self) -> dict[str, Any]:
         sections: dict[str, list[dict[str, Any]]] = {}
+        lot_sizing_metadata = _lot_sizing_config_metadata()
         for item in CONFIG_METADATA:
             if item["key"] in HIDDEN_CONFIG_KEYS:
                 continue
@@ -204,6 +258,9 @@ class UIService:
                 enriched["description_ko"] = DETAILED_CONFIG_DESCRIPTIONS[enriched["key"]]
             sections.setdefault(str(enriched["section"]), []).append(enriched)
         metadata = [dict(item) for item in CONFIG_METADATA if item["key"] not in HIDDEN_CONFIG_KEYS]
+        for item in lot_sizing_metadata:
+            sections.setdefault(str(item["section"]), []).append(dict(item))
+            metadata.append(dict(item))
         for item in metadata:
             if item["key"] in DETAILED_CONFIG_DESCRIPTIONS:
                 item["description_ko"] = DETAILED_CONFIG_DESCRIPTIONS[item["key"]]
@@ -404,6 +461,12 @@ class UIService:
         lots = {row["lot_id"]: row for row in self.lots()}
         lot = lots.get(lot_id, {})
         current_price = int(payload.get("current_price") or position.get("current_price") or lot.get("current_price") or 0)
+        open_lots_for_code = [
+            row for row in lots.values()
+            if str(row.get("code") or "").zfill(6) == code and int(row.get("remaining_quantity") or 0) > 0 and str(row.get("status") or "") != "CLOSED"
+        ]
+        fallback_entry_price = int(open_lots_for_code[0].get("buy_price") or 0) if open_lots_for_code else current_price
+        sizing_preview = self._manual_buy_lot_sizing_preview(position, current_price, len(open_lots_for_code), fallback_entry_price)
         runtime = self.runtime_status()
         block_reasons: list[str] = []
         if not config.ui_manual_trading_enabled:
@@ -427,10 +490,17 @@ class UIService:
                 quantity = amount // current_price
             if amount <= 0 and quantity > 0 and current_price > 0:
                 amount = quantity * current_price
+            if amount <= 0 and sizing_preview["lot_unit_amount"] > 0:
+                amount = int(sizing_preview["lot_unit_amount"])
+                if quantity <= 0 and current_price > 0:
+                    quantity = amount // current_price
             if quantity <= 0:
                 block_reasons.append("quantity_below_one")
             if amount <= 0:
                 block_reasons.append("amount_missing")
+            sizing_block = self._lot_sizing_block_reason(position, current_price, sizing_preview, amount, len(open_lots_for_code))
+            if sizing_block:
+                block_reasons.append(sizing_block)
         if side == OrderSide.SELL.value:
             if runtime.get("sell_paused"):
                 block_reasons.append("runtime_sell_paused")
@@ -471,6 +541,15 @@ class UIService:
             "amount": amount,
             "lot_id": lot_id,
             "current_price": current_price,
+            "price_lot_band": sizing_preview["lot_sizing_bucket"],
+            "entry_price_for_lot_sizing": sizing_preview["entry_price_for_lot_sizing"],
+            "lot_unit_amount": sizing_preview["lot_unit_amount"],
+            "max_symbol_amount": sizing_preview["max_symbol_amount"],
+            "max_lots_per_symbol": sizing_preview["max_lots_per_symbol"],
+            "current_open_lot_count": len(open_lots_for_code),
+            "lot_sizing_locked": sizing_preview["lot_sizing_locked"],
+            "lot_sizing_mode": sizing_preview["lot_sizing_mode"],
+            "remaining_buy_capacity_amount": max(0, int(sizing_preview["max_symbol_amount"]) - int(position.get("cumulative_invested_amount") or 0)) if sizing_preview["max_symbol_amount"] else 0,
             "estimated_order_amount": amount,
             "estimated_realized_pnl": estimated_pnl,
             "estimated_realized_pnl_rate": estimated_pnl_rate,
@@ -501,6 +580,7 @@ class UIService:
             "side": preview["side"],
             "amount": preview["amount"],
             "quantity": preview["quantity"],
+            "current_price": preview["current_price"],
             "lot_id": preview["lot_id"],
             "order_type": "LIMIT_POLICY",
             "preview_json": json.dumps(preview, ensure_ascii=False),
@@ -514,6 +594,76 @@ class UIService:
         StateStore(self.config.storage_path).create_manual_order_request(request)
         self._append_audit_log("manual_order_request_created", request)
         return {"created": True, "request_id": request_id, "preview": preview}
+
+    def _manual_buy_lot_sizing_preview(self, position: dict[str, Any], current_price: int, open_lot_count: int, fallback_entry_price: int = 0) -> dict[str, Any]:
+        strategy = self.config.strategy
+        if strategy.lot_sizing_mode != "cycle_locked_by_entry_price":
+            return {
+                "enabled": True,
+                "entry_price_for_lot_sizing": 0,
+                "lot_unit_amount": strategy.initial_buy_amount,
+                "max_symbol_amount": strategy.auto_buy_limit,
+                "max_lots_per_symbol": strategy.max_open_lots_before_review,
+                "lot_sizing_bucket": "legacy_exposure_bands",
+                "lot_sizing_mode": strategy.lot_sizing_mode,
+                "lot_sizing_locked": False,
+            }
+        locked_lot_unit = int(position.get("lot_unit_amount") or 0)
+        locked_max_amount = int(position.get("max_symbol_amount") or 0)
+        if open_lot_count > 0 and locked_lot_unit > 0 and locked_max_amount > 0:
+            return {
+                "enabled": True,
+                "entry_price_for_lot_sizing": int(position.get("entry_price_for_lot_sizing") or 0),
+                "lot_unit_amount": locked_lot_unit,
+                "max_symbol_amount": locked_max_amount,
+                "max_lots_per_symbol": int(position.get("max_lots_per_symbol") or strategy.max_lots_per_symbol_default),
+                "lot_sizing_bucket": str(position.get("lot_sizing_bucket") or ""),
+                "lot_sizing_mode": str(position.get("lot_sizing_mode") or strategy.lot_sizing_mode),
+                "lot_sizing_locked": True,
+            }
+        band_price = fallback_entry_price if open_lot_count > 0 and fallback_entry_price > 0 else current_price
+        for band in strategy.price_lot_bands:
+            if band.min_price <= band_price <= band.max_price:
+                return {
+                    "enabled": band.enabled,
+                    "entry_price_for_lot_sizing": band_price,
+                    "lot_unit_amount": band.lot_unit_amount,
+                    "max_symbol_amount": band.max_symbol_amount,
+                    "max_lots_per_symbol": band.max_lots or strategy.max_lots_per_symbol_default,
+                    "lot_sizing_bucket": f"{band.min_price}-{band.max_price}",
+                    "lot_sizing_mode": strategy.lot_sizing_mode,
+                    "lot_sizing_locked": False,
+                }
+        return {
+            "enabled": False,
+            "entry_price_for_lot_sizing": current_price,
+            "lot_unit_amount": 0,
+            "max_symbol_amount": 0,
+            "max_lots_per_symbol": 0,
+            "lot_sizing_bucket": "",
+            "lot_sizing_mode": strategy.lot_sizing_mode,
+            "lot_sizing_locked": False,
+        }
+
+    def _lot_sizing_block_reason(self, position: dict[str, Any], current_price: int, sizing: dict[str, Any], amount: int, open_lot_count: int) -> str:
+        if self.config.strategy.lot_sizing_mode != "cycle_locked_by_entry_price":
+            return ""
+        if not sizing.get("lot_sizing_bucket"):
+            return "price_out_of_lot_sizing_range"
+        if not sizing.get("enabled"):
+            return "lot_sizing_band_disabled"
+        lot_unit = int(sizing.get("lot_unit_amount") or 0)
+        max_amount = int(sizing.get("max_symbol_amount") or 0)
+        max_lots = int(sizing.get("max_lots_per_symbol") or 0)
+        if lot_unit <= 0 or max_amount <= 0:
+            return "lot_sizing_band_disabled"
+        if current_price > lot_unit:
+            return "lot_unit_amount_below_price"
+        if max_lots and open_lot_count >= max_lots:
+            return "max_lots_per_symbol_reached"
+        if max_amount and int(position.get("cumulative_invested_amount") or 0) + (amount or lot_unit) > max_amount:
+            return "max_symbol_amount_reached"
+        return ""
 
     def parse_log_events(self, limit: int = 300) -> list[str]:
         log_path = Path(self.config.log_path)

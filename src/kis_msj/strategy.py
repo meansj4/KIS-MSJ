@@ -76,6 +76,16 @@ class StrategyContext:
     review_required_condition_met: bool = False
     review_reason: str = ""
     skip_reason: str = ""
+    entry_price_for_lot_sizing: int = 0
+    lot_unit_amount: int = 0
+    max_symbol_amount: int = 0
+    max_lots_per_symbol: int = 0
+    lot_sizing_bucket: str = ""
+    lot_sizing_locked: bool = False
+    lot_sizing_mode: str = ""
+    lot_sizing_skip_reason: str = ""
+    add_buy_lot_band: str = ""
+    current_open_lot_count: int = 0
 
 
 class LotGridStrategy:
@@ -112,19 +122,67 @@ class LotGridStrategy:
             return None
         if position.quantity <= 0 or not self.lot_manager.open_lots(position.code):
             if lifecycle == PositionLifecycle.NEVER_BOUGHT.value:
+                if self._lot_sizing_enabled():
+                    sizing = self.lot_sizing_for_new_cycle(current_price)
+                    block = self.lot_sizing_buy_block_reason(position, current_price, sizing, next_buy_amount=sizing.get("lot_unit_amount", 0), open_lot_count=0)
+                    if block:
+                        position.skip_reason = block
+                        return None
+                    return StrategyAction(OrderSide.BUY, int(sizing["lot_unit_amount"]), None, "initial_buy")
                 if current_price <= self.config.strategy.initial_buy_amount:
                     return StrategyAction(OrderSide.BUY, self.config.strategy.initial_buy_amount, None, "initial_buy")
                 return None
             if lifecycle == PositionLifecycle.WAIT_REENTRY.value:
                 normal, trailing = self.check_reentry_conditions(position, current_price)
                 if normal:
-                    return StrategyAction(OrderSide.BUY, self.config.strategy.initial_buy_amount, None, "reentry_buy", reentry_type=ReentryType.NORMAL_REENTRY.value)
+                    if self._lot_sizing_enabled():
+                        sizing = self.lot_sizing_for_new_cycle(current_price)
+                        block = self.lot_sizing_buy_block_reason(position, current_price, sizing, next_buy_amount=sizing.get("lot_unit_amount", 0), open_lot_count=0)
+                        if block:
+                            position.skip_reason = block
+                            return None
+                        amount = int(sizing["lot_unit_amount"])
+                    else:
+                        amount = self.config.strategy.initial_buy_amount
+                    return StrategyAction(OrderSide.BUY, amount, None, "reentry_buy", reentry_type=ReentryType.NORMAL_REENTRY.value)
                 if trailing:
-                    return StrategyAction(OrderSide.BUY, self.config.strategy.initial_buy_amount, None, "reentry_buy", reentry_type=ReentryType.TRAILING_REENTRY.value)
+                    if self._lot_sizing_enabled():
+                        sizing = self.lot_sizing_for_new_cycle(current_price)
+                        block = self.lot_sizing_buy_block_reason(position, current_price, sizing, next_buy_amount=sizing.get("lot_unit_amount", 0), open_lot_count=0)
+                        if block:
+                            position.skip_reason = block
+                            return None
+                        amount = int(sizing["lot_unit_amount"])
+                    else:
+                        amount = self.config.strategy.initial_buy_amount
+                    return StrategyAction(OrderSide.BUY, amount, None, "reentry_buy", reentry_type=ReentryType.TRAILING_REENTRY.value)
             return None
         return self._add_buy_action(position, current_price, snapshot)
 
     def _add_buy_action(self, position: PositionState, current_price: int, snapshot: AccountSnapshot) -> StrategyAction | None:
+        if self._lot_sizing_enabled():
+            self.ensure_lot_sizing(position, current_price)
+            open_lot_count = len(self.lot_manager.open_lots(position.code))
+            plan = self.add_buy_lot_plan(open_lot_count)
+            reference_price, _ = self._reference_buy_price(position)
+            if not reference_price or not plan:
+                return None
+            drop_rate, add_lot_count = plan
+            amount = position.lot_unit_amount * add_lot_count
+            block = self.lot_sizing_buy_block_reason(position, current_price, self.lot_sizing_from_position(position), next_buy_amount=amount, open_lot_count=open_lot_count)
+            if block:
+                position.skip_reason = block
+                if block in {"max_lots_per_symbol_reached", "max_symbol_amount_reached", "lot_sizing_missing"}:
+                    position.needs_review = True
+                    position.review_reason = block
+                return None
+            if snapshot.cash_available < amount:
+                position.skip_reason = "cash_not_enough"
+                return None
+            decline = (current_price - reference_price) / reference_price
+            if decline <= -drop_rate:
+                return StrategyAction(OrderSide.BUY, amount, None, f"add_buy_drop_{drop_rate * 100:g}%")
+            return None
         exposure = position.cumulative_invested_amount
         if exposure > self.config.strategy.auto_buy_limit:
             position.needs_review = True
@@ -246,6 +304,11 @@ class LotGridStrategy:
         buy_condition = False
         if reference_buy_price and buy_plan:
             buy_condition = current_price <= reference_buy_price * (1.0 - buy_plan[0] / 100.0)
+        sizing = self.lot_sizing_from_position(position)
+        if self._lot_sizing_enabled() and not sizing.get("lot_unit_amount") and self.lot_manager.open_lots(position.code):
+            sizing = self.ensure_lot_sizing(position, current_price)
+        open_lot_count = len(self.lot_manager.open_lots(position.code))
+        add_buy_lot_band = self.add_buy_lot_band_label(open_lot_count) if self._lot_sizing_enabled() else ""
         return StrategyContext(
             position_state=self._position_state(position),
             pnl_mode=self._pnl_mode(position),
@@ -294,6 +357,16 @@ class LotGridStrategy:
             review_required_condition_met=position.needs_review,
             review_reason=position.review_reason,
             skip_reason=self._skip_reason(position, current_price),
+            entry_price_for_lot_sizing=position.entry_price_for_lot_sizing,
+            lot_unit_amount=position.lot_unit_amount,
+            max_symbol_amount=position.max_symbol_amount,
+            max_lots_per_symbol=position.max_lots_per_symbol,
+            lot_sizing_bucket=position.lot_sizing_bucket,
+            lot_sizing_locked=bool(position.lot_unit_amount),
+            lot_sizing_mode=position.lot_sizing_mode,
+            lot_sizing_skip_reason=self.lot_sizing_buy_block_reason(position, current_price, sizing, next_buy_amount=position.lot_unit_amount or int(sizing.get("lot_unit_amount", 0)), open_lot_count=open_lot_count) if self._lot_sizing_enabled() else "",
+            add_buy_lot_band=add_buy_lot_band,
+            current_open_lot_count=open_lot_count,
         )
 
     def _position_state(self, position: PositionState) -> str:
@@ -402,6 +475,8 @@ class LotGridStrategy:
             return "cleanup_cooldown"
         if state == PositionLifecycle.WAIT_REENTRY.value and not any(self.check_reentry_conditions(position, current_price)):
             return "wait_reentry"
+        if self._lot_sizing_enabled() and state == PositionLifecycle.NEVER_BOUGHT.value:
+            return self.lot_sizing_buy_block_reason(position, current_price, self.lot_sizing_for_new_cycle(current_price), next_buy_amount=0, open_lot_count=0)
         if state == PositionLifecycle.NEVER_BOUGHT.value and current_price > self.config.strategy.initial_buy_amount:
             return "initial_buy_amount_below_price"
         return ""
@@ -428,6 +503,93 @@ class LotGridStrategy:
     def _net_pnl(self, lot: LotState, price: int, quantity: int) -> int:
         fee_tax = int(round(price * quantity * self.config.strategy.estimated_fee_tax_pct / 100.0))
         return (price - lot.buy_price) * quantity - fee_tax
+
+    def _lot_sizing_enabled(self) -> bool:
+        return self.config.strategy.lot_sizing_mode == "cycle_locked_by_entry_price"
+
+    def lot_sizing_for_new_cycle(self, current_price: int) -> dict[str, object]:
+        for band in self.config.strategy.price_lot_bands:
+            if band.min_price <= current_price <= band.max_price:
+                max_lots = band.max_lots or self.config.strategy.max_lots_per_symbol_default
+                return {
+                    "enabled": band.enabled,
+                    "entry_price_for_lot_sizing": current_price,
+                    "lot_unit_amount": band.lot_unit_amount,
+                    "max_symbol_amount": band.max_symbol_amount,
+                    "max_lots_per_symbol": max_lots,
+                    "lot_sizing_bucket": f"{band.min_price}-{band.max_price}",
+                    "lot_sizing_mode": self.config.strategy.lot_sizing_mode,
+                }
+        return {"enabled": False, "lot_sizing_bucket": "", "lot_unit_amount": 0, "max_symbol_amount": 0, "max_lots_per_symbol": 0}
+
+    def lot_sizing_from_position(self, position: PositionState) -> dict[str, object]:
+        return {
+            "enabled": bool(position.lot_unit_amount and position.max_symbol_amount),
+            "entry_price_for_lot_sizing": position.entry_price_for_lot_sizing,
+            "lot_unit_amount": position.lot_unit_amount,
+            "max_symbol_amount": position.max_symbol_amount,
+            "max_lots_per_symbol": position.max_lots_per_symbol,
+            "lot_sizing_bucket": position.lot_sizing_bucket,
+            "lot_sizing_mode": position.lot_sizing_mode,
+        }
+
+    def lock_lot_sizing(self, position: PositionState, sizing: dict[str, object]) -> None:
+        position.entry_price_for_lot_sizing = int(sizing.get("entry_price_for_lot_sizing") or 0)
+        position.lot_unit_amount = int(sizing.get("lot_unit_amount") or 0)
+        position.max_symbol_amount = int(sizing.get("max_symbol_amount") or 0)
+        position.max_lots_per_symbol = int(sizing.get("max_lots_per_symbol") or 0)
+        position.lot_sizing_bucket = str(sizing.get("lot_sizing_bucket") or "")
+        position.lot_sizing_mode = str(sizing.get("lot_sizing_mode") or self.config.strategy.lot_sizing_mode)
+        position.lot_sizing_locked_at = datetime.now().isoformat(timespec="seconds")
+
+    def ensure_lot_sizing(self, position: PositionState, current_price: int = 0) -> dict[str, object]:
+        if not self._lot_sizing_enabled():
+            return {}
+        if position.lot_unit_amount and position.max_symbol_amount:
+            return self.lot_sizing_from_position(position)
+        open_lots = self.lot_manager.open_lots(position.code)
+        if open_lots:
+            entry_price = open_lots[0].buy_price
+            sizing = self.lot_sizing_for_new_cycle(entry_price)
+            if sizing.get("enabled"):
+                self.lock_lot_sizing(position, sizing)
+                position.skip_reason = "lot_sizing_migrated"
+            return sizing
+        sizing = self.lot_sizing_for_new_cycle(current_price)
+        if sizing.get("enabled"):
+            self.lock_lot_sizing(position, sizing)
+        return sizing
+
+    def add_buy_lot_plan(self, open_lot_count: int) -> tuple[float, int] | None:
+        for band in self.config.strategy.add_buy_lot_bands:
+            if band.min_lots <= open_lot_count <= band.max_lots:
+                return band.drop_rate, band.add_lot_count
+        return None
+
+    def add_buy_lot_band_label(self, open_lot_count: int) -> str:
+        for band in self.config.strategy.add_buy_lot_bands:
+            if band.min_lots <= open_lot_count <= band.max_lots:
+                return f"{band.min_lots}-{band.max_lots}"
+        return ""
+
+    def lot_sizing_buy_block_reason(self, position: PositionState, current_price: int, sizing: dict[str, object], *, next_buy_amount: int, open_lot_count: int) -> str:
+        if not sizing or not sizing.get("lot_sizing_bucket"):
+            return "price_out_of_lot_sizing_range"
+        if not sizing.get("enabled"):
+            return "lot_sizing_band_disabled"
+        lot_unit = int(sizing.get("lot_unit_amount") or 0)
+        max_amount = int(sizing.get("max_symbol_amount") or 0)
+        max_lots = int(sizing.get("max_lots_per_symbol") or 0)
+        if lot_unit <= 0 or max_amount <= 0:
+            return "lot_sizing_band_disabled"
+        if current_price > lot_unit:
+            return "lot_unit_amount_below_price"
+        if max_lots and open_lot_count >= max_lots:
+            return "max_lots_per_symbol_reached"
+        amount = next_buy_amount or lot_unit
+        if max_amount and position.cumulative_invested_amount + amount > max_amount:
+            return "max_symbol_amount_reached"
+        return ""
 
 
 def _parse_time(value: str) -> datetime | None:

@@ -100,6 +100,13 @@ class StateStore:
             _ensure_column(connection, "positions", "trailing_reentry_count_date", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(connection, "positions", "review_reason", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(connection, "positions", "skip_reason", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "positions", "entry_price_for_lot_sizing", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "positions", "lot_unit_amount", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "positions", "max_symbol_amount", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "positions", "max_lots_per_symbol", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "positions", "lot_sizing_bucket", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "positions", "lot_sizing_locked_at", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "positions", "lot_sizing_mode", "TEXT NOT NULL DEFAULT ''")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS lots (
@@ -185,6 +192,7 @@ class StateStore:
                     requested_at TEXT NOT NULL,
                     code TEXT NOT NULL,
                     side TEXT NOT NULL,
+                    current_price INTEGER NOT NULL DEFAULT 0,
                     amount INTEGER NOT NULL DEFAULT 0,
                     quantity INTEGER NOT NULL DEFAULT 0,
                     lot_id TEXT NOT NULL DEFAULT '',
@@ -201,6 +209,7 @@ class StateStore:
                 )
                 """
             )
+            _ensure_column(connection, "manual_order_requests", "current_price", "INTEGER NOT NULL DEFAULT 0")
 
     def _backup_before_migration_if_needed(self, connection: sqlite3.Connection) -> None:
         if self._migration_backup_done or not self._db_existed_before_init:
@@ -236,11 +245,18 @@ class StateStore:
                 "trailing_reentry_count_date",
                 "review_reason",
                 "skip_reason",
+                "entry_price_for_lot_sizing",
+                "lot_unit_amount",
+                "max_symbol_amount",
+                "max_lots_per_symbol",
+                "lot_sizing_bucket",
+                "lot_sizing_locked_at",
+                "lot_sizing_mode",
             },
             "lots": {"cleanup_candidate", "age_weeks", "base_target_profit_rate", "effective_target_profit_rate", "last_sell_reason"},
             "fills": {"execution_id", "sell_reason", "reentry_type"},
             "orders": {"requested_at", "sell_reason", "reentry_type", "cleanup_flag"},
-            "manual_order_requests": {"request_id", "source", "requested_by", "requested_at", "code", "side", "amount", "quantity", "lot_id", "order_type", "preview_json", "runtime_snapshot_json", "live_trading", "confirm_text_verified", "status", "block_reason", "linked_order_id", "created_at", "updated_at"},
+            "manual_order_requests": {"request_id", "source", "requested_by", "requested_at", "code", "side", "current_price", "amount", "quantity", "lot_id", "order_type", "preview_json", "runtime_snapshot_json", "live_trading", "confirm_text_verified", "status", "block_reason", "linked_order_id", "created_at", "updated_at"},
         }
         missing = False
         for table, columns in expected_columns.items():
@@ -592,11 +608,11 @@ class StateStore:
             connection.execute(
                 """
                 INSERT INTO manual_order_requests (
-                    request_id, source, requested_by, requested_at, code, side, amount, quantity, lot_id,
+                    request_id, source, requested_by, requested_at, code, side, current_price, amount, quantity, lot_id,
                     order_type, preview_json, runtime_snapshot_json, live_trading, confirm_text_verified,
                     status, block_reason, linked_order_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     request["request_id"],
@@ -605,6 +621,7 @@ class StateStore:
                     request.get("requested_at", datetime.now().isoformat(timespec="seconds")),
                     request["code"],
                     request["side"],
+                    int(request.get("current_price") or 0),
                     int(request.get("amount") or 0),
                     int(request.get("quantity") or 0),
                     request.get("lot_id", ""),

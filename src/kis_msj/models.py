@@ -145,6 +145,13 @@ class PositionState:
     trailing_reentry_count_date: str = ""
     review_reason: str = ""
     skip_reason: str = ""
+    entry_price_for_lot_sizing: int = 0
+    lot_unit_amount: int = 0
+    max_symbol_amount: int = 0
+    max_lots_per_symbol: int = 0
+    lot_sizing_bucket: str = ""
+    lot_sizing_locked_at: str = ""
+    lot_sizing_mode: str = ""
 
 
 @dataclass

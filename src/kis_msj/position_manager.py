@@ -53,11 +53,12 @@ class PositionManager:
         position.add_buy_stage = _stage_for_exposure(exposure)
         stale_lots = self.lot_manager.stale_lots(code, current_price) if current_price else []
         review_reason = ""
-        if exposure > self.config.auto_buy_limit:
+        lot_sizing_mode = self.config.lot_sizing_mode == "cycle_locked_by_entry_price"
+        if not lot_sizing_mode and exposure > self.config.auto_buy_limit:
             review_reason = "auto_buy_limit_exceeded"
         elif position.profit_loss_pct <= self.config.review_symbol_loss_rate * 100.0:
             review_reason = "symbol_loss_review"
-        elif len(lots) > self.config.max_open_lots_before_review:
+        elif not lot_sizing_mode and len(lots) > self.config.max_open_lots_before_review:
             review_reason = "too_many_open_lots"
         elif any(lot.age_weeks >= self.config.stale_lot_review_age_weeks for lot in stale_lots):
             review_reason = "stale_lot_review_age"
@@ -124,6 +125,7 @@ class PositionManager:
             position.daily_buy_amount += lot.buy_amount
             position.position_state = PositionLifecycle.HOLDING.value
             if starts_new_cycle:
+                self._lock_lot_sizing_for_new_cycle(position, fill.price, fill.filled_at)
                 position.cycle_highest_sell_price = 0
                 position.cycle_last_sell_price = 0
                 position.cycle_sell_vwap_price = 0
@@ -198,6 +200,27 @@ class PositionManager:
         position.last_order_status = "FILLED"
         position.last_order_time = fill.filled_at.isoformat(timespec="seconds")
         return self.refresh_from_lots(fill.code, fill.price)
+
+    def _lock_lot_sizing_for_new_cycle(self, position: PositionState, entry_price: int, locked_at: datetime) -> None:
+        if self.config.lot_sizing_mode != "cycle_locked_by_entry_price":
+            return
+        for band in self.config.price_lot_bands:
+            if band.min_price <= entry_price <= band.max_price and band.enabled and band.lot_unit_amount > 0 and band.max_symbol_amount > 0:
+                position.entry_price_for_lot_sizing = entry_price
+                position.lot_unit_amount = band.lot_unit_amount
+                position.max_symbol_amount = band.max_symbol_amount
+                position.max_lots_per_symbol = band.max_lots or self.config.max_lots_per_symbol_default
+                position.lot_sizing_bucket = f"{band.min_price}-{band.max_price}"
+                position.lot_sizing_mode = self.config.lot_sizing_mode
+                position.lot_sizing_locked_at = locked_at.isoformat(timespec="seconds")
+                return
+        position.entry_price_for_lot_sizing = entry_price
+        position.lot_unit_amount = 0
+        position.max_symbol_amount = 0
+        position.max_lots_per_symbol = 0
+        position.lot_sizing_bucket = ""
+        position.lot_sizing_mode = self.config.lot_sizing_mode
+        position.lot_sizing_locked_at = locked_at.isoformat(timespec="seconds")
 
     def mark_order_requested(self, code: str, order_id: str, status: str) -> None:
         position = self.get(code)

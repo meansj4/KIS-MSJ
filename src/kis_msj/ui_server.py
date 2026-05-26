@@ -187,7 +187,13 @@ Object.assign(LABELS, {
   position_lots_reflected:'포지션/LOT 반영 여부', source:'출처', requested_by:'요청자',
   amount:'금액', live_trading:'실거래 여부', confirm_text_verified:'확인 문구 검증',
   block_reason:'차단 사유', linked_order_id:'연결 주문 ID', created_at:'생성시각',
-  review_reason:'검토 사유', sync_status:'동기화 상태'
+  review_reason:'검토 사유', sync_status:'동기화 상태',
+  entry_price_for_lot_sizing:'LOT 기준 진입가', lot_unit_amount:'현재 사이클 1 LOT 금액',
+  max_symbol_amount:'종목당 최대 금액', max_lots_per_symbol:'종목당 최대 LOT 수',
+  lot_sizing_bucket:'LOT 가격 구간', lot_sizing_locked_at:'LOT 기준 고정시각',
+  lot_sizing_mode:'LOT 금액 모드', lot_sizing_locked:'LOT 기준 고정 여부',
+  current_open_lot_count:'현재 OPEN LOT 수', remaining_buy_capacity_amount:'남은 매수 가능 금액',
+  price_lot_band:'가격대 LOT 구간'
 });
 Object.assign(VALUE_LABELS, {
   HOLDING:'보유 중', NEVER_BOUGHT:'미매수', WAIT_REENTRY:'재진입 대기',
@@ -241,7 +247,7 @@ function displayCell(key, value) {
 }
 const sortState = {};
 const DEFAULT_COLUMNS = {
-  stocks: ['code','name','enabled','position_state','current_price','open_lot_count','invested_amount','profit_loss_pct','risk_block_reasons','skip_reason','final_block_reason'],
+  stocks: ['code','name','enabled','position_state','current_price','open_lot_count','lot_unit_amount','max_symbol_amount','max_lots_per_symbol','lot_sizing_bucket','invested_amount','profit_loss_pct','risk_block_reasons','skip_reason','final_block_reason'],
   lots: ['lot_id','code','name','status','buy_price','remaining_quantity','current_price','unrealized_pnl','unrealized_pnl_rate','age_weeks','effective_target_profit_rate','sell_trigger_price','cleanup_candidate','stale_lot','last_sell_reason'],
   stockLots: ['lot_id','code','name','status','buy_price','remaining_quantity','current_price','unrealized_pnl','unrealized_pnl_rate','age_weeks','effective_target_profit_rate','sell_trigger_price','cleanup_candidate','stale_lot','last_sell_reason'],
   orders: ['order_id','code','name','side','status','quantity','limit_price','reason','requested_at','updated_at','lot_id','sell_reason','reentry_type'],

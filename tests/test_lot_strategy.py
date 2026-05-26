@@ -9,7 +9,7 @@ from kis_msj.strategy import LotGridStrategy
 
 
 def setup_strategy(strategy_config: StrategyConfig | None = None, daily_profit_loss: int = 0):
-    config = BotConfig(order=OrderConfig(price_sample_interval_seconds=0), strategy=strategy_config or StrategyConfig())
+    config = BotConfig(order=OrderConfig(price_sample_interval_seconds=0), strategy=strategy_config or StrategyConfig(lot_sizing_mode="legacy_exposure_bands"))
     lots = LotManager(config.strategy)
     positions = PositionManager(config.strategy, lots)
     strategy = LotGridStrategy(config, lots)
@@ -644,3 +644,105 @@ def test_risk_blocked_blocks_buy_and_sell_conservatively() -> None:
 
     assert action is None
     assert context.skip_reason == "risk_blocked_buy_sell_blocked"
+
+
+def test_lot_sizing_new_initial_buy_uses_price_band() -> None:
+    _, _, positions, strategy, risk, snapshot = setup_strategy(StrategyConfig())
+    position = positions.get("005930", "Test")
+
+    action = strategy.decide(position, 10100, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+
+    assert action is not None
+    assert action.amount == 30000
+
+    position_2 = positions.get("000660", "Test2")
+    action_2 = strategy.decide(position_2, 9000, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position_2))
+    assert action_2 is not None
+    assert action_2.amount == 10000
+
+
+def test_lot_sizing_disabled_bands_block_initial_buy() -> None:
+    _, _, positions, strategy, risk, snapshot = setup_strategy(StrategyConfig())
+    low = positions.get("000001", "Low")
+    high = positions.get("999999", "High")
+
+    assert strategy.decide(low, 250, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(low)) is None
+    assert low.skip_reason == "lot_sizing_band_disabled"
+    assert strategy.decide(high, 1_000_001, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(high)) is None
+    assert high.skip_reason == "lot_sizing_band_disabled"
+
+
+def test_lot_sizing_cycle_lock_keeps_original_lot_unit_after_price_moves() -> None:
+    _, _, positions, strategy, risk, snapshot = setup_strategy(StrategyConfig())
+    add_lot(positions, "005930", 10100, 3)
+    position = positions.refresh_from_lots("005930", 9500)
+
+    action = strategy.decide(position, 9500, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+
+    assert position.entry_price_for_lot_sizing == 10100
+    assert position.lot_unit_amount == 30000
+    assert position.max_symbol_amount == 300000
+    assert action is not None
+    assert action.amount == 30000
+
+
+def test_lot_sizing_reentry_starts_new_cycle_from_reentry_price() -> None:
+    _, _, positions, strategy, risk, snapshot = setup_strategy(StrategyConfig())
+    lot = add_lot(positions, "005930", 10100, 1)
+    positions.apply_fill(TradeFill("005930", "Test", OrderSide.SELL, 1, 10600, "SELL-1", datetime.now() - timedelta(minutes=70), lot.lot_id, sell_reason=SellReason.PROFIT_TAKE.value))
+    position = positions.refresh_from_lots("005930", 9000)
+
+    action = strategy.decide(position, 9000, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+
+    assert action is not None
+    assert action.side is OrderSide.BUY
+    assert action.amount == 10000
+
+
+def test_lot_sizing_lot_count_bands_and_max_lots_block() -> None:
+    _, _, positions, strategy, risk, snapshot = setup_strategy(StrategyConfig())
+    for _ in range(3):
+        add_lot(positions, "005930", 10100, 1)
+    position = positions.refresh_from_lots("005930", 9400)
+
+    action = strategy.decide(position, 9400, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+
+    assert action is not None
+    assert action.amount == 30000
+    assert "6%" in action.reason
+    assert strategy.context(position, 9400).add_buy_lot_band == "3-4"
+
+    for _ in range(7):
+        add_lot(positions, "005930", 10100, 1)
+    position = positions.refresh_from_lots("005930", 8700)
+    blocked = strategy.decide(position, 8700, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+
+    assert blocked is None
+    assert position.skip_reason == "max_lots_per_symbol_reached"
+
+
+def test_lot_sizing_high_price_band_max_lots_three_blocks_after_three_lots() -> None:
+    _, _, positions, strategy, risk, snapshot = setup_strategy(StrategyConfig())
+    for _ in range(3):
+        add_lot(positions, "005930", 400000, 1)
+    position = positions.refresh_from_lots("005930", 360000)
+
+    action = strategy.decide(position, 360000, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+
+    assert action is None
+    assert position.max_lots_per_symbol == 3
+    assert position.skip_reason == "max_lots_per_symbol_reached"
+
+
+def test_lot_sizing_migrates_existing_open_lot_without_quantity_change() -> None:
+    _, _, positions, strategy, _, _ = setup_strategy(StrategyConfig())
+    lot = add_lot(positions, "005930", 10100, 3)
+    position = positions.refresh_from_lots("005930", 9500)
+    position.lot_unit_amount = 0
+    position.max_symbol_amount = 0
+
+    sizing = strategy.ensure_lot_sizing(position, 9500)
+
+    assert sizing["lot_unit_amount"] == 30000
+    assert position.skip_reason == "lot_sizing_migrated"
+    assert lot.remaining_quantity == 3

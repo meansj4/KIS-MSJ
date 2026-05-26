@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 from datetime import datetime, time as day_time
@@ -150,6 +151,11 @@ class AutoTrader:
                     continue
                 position = self.position_manager.refresh_from_lots(code, current_price)
                 action = self.manual_action_from_request(manual, current_price)
+                sizing_block_reason = self.manual_lot_sizing_block_reason(manual, position, current_price, action)
+                if sizing_block_reason:
+                    self.store.update_manual_order_request(request_id, status="BLOCKED", block_reason=sizing_block_reason)
+                    self.logger.warning("manual_order_request_blocked request_id=%s code=%s side=%s reason=%s", request_id, code, side.value, sizing_block_reason)
+                    continue
                 final_block_reason = self.pre_request_block_reason(position, action)
                 if final_block_reason:
                     self.store.update_manual_order_request(request_id, status="BLOCKED", block_reason=final_block_reason)
@@ -195,6 +201,24 @@ class AutoTrader:
         side = OrderSide(str(manual["side"]))
         if side is OrderSide.BUY and not account_risk.allowed:
             return "|".join(account_risk.reasons) or "account_risk_blocked"
+        if side is OrderSide.BUY and self.config.strategy.lot_sizing_mode == "cycle_locked_by_entry_price":
+            requested_price = int(manual.get("current_price") or position.current_price or 0)
+            if requested_price <= 0:
+                requested_price = 0
+            if requested_price <= 0:
+                return ""
+            if self.lot_manager.open_lots(position.code):
+                sizing = self.strategy.ensure_lot_sizing(position, requested_price)
+                open_lot_count = len(self.lot_manager.open_lots(position.code))
+            else:
+                sizing = self.strategy.lot_sizing_for_new_cycle(requested_price)
+                open_lot_count = 0
+            amount = int(manual.get("amount") or 0)
+            quantity = int(manual.get("quantity") or 0)
+            next_amount = amount or (quantity * requested_price if quantity > 0 else int(sizing.get("lot_unit_amount") or 0))
+            sizing_block = self.strategy.lot_sizing_buy_block_reason(position, requested_price, sizing, next_buy_amount=next_amount, open_lot_count=open_lot_count)
+            if sizing_block:
+                return sizing_block
         if side is OrderSide.BUY and self.store.has_open_order(position.code, OrderSide.BUY):
             return "open_buy_order_exists"
         if side is OrderSide.SELL:
@@ -210,6 +234,44 @@ class AutoTrader:
                 return "open_sell_order_exists"
         return ""
 
+    def manual_lot_sizing_block_reason(self, manual: dict[str, object], position: PositionState, current_price: int, action: StrategyAction) -> str:
+        if action.side is not OrderSide.BUY or self.config.strategy.lot_sizing_mode != "cycle_locked_by_entry_price":
+            return ""
+        open_lots = self.lot_manager.open_lots(position.code)
+        if open_lots:
+            sizing = self.strategy.ensure_lot_sizing(position, current_price)
+            open_lot_count = len(open_lots)
+        else:
+            sizing = self.strategy.lot_sizing_for_new_cycle(current_price)
+            open_lot_count = 0
+        amount = int(action.amount or manual.get("amount") or 0)
+        quantity = int(manual.get("quantity") or 0)
+        next_amount = amount or (quantity * current_price if quantity > 0 else int(sizing.get("lot_unit_amount") or 0))
+        changed = self.manual_lot_sizing_changed_after_preview(manual, sizing)
+        if changed:
+            return changed
+        return self.strategy.lot_sizing_buy_block_reason(position, current_price, sizing, next_buy_amount=next_amount, open_lot_count=open_lot_count)
+
+    def manual_lot_sizing_changed_after_preview(self, manual: dict[str, object], actual_sizing: dict[str, object]) -> str:
+        preview_raw = str(manual.get("preview_json") or "")
+        if not preview_raw:
+            return ""
+        try:
+            preview = json.loads(preview_raw)
+        except json.JSONDecodeError:
+            return ""
+        preview_bucket = str(preview.get("price_lot_band") or preview.get("lot_sizing_bucket") or "")
+        if not preview_bucket:
+            return ""
+        actual_bucket = str(actual_sizing.get("lot_sizing_bucket") or "")
+        preview_lot_unit = int(preview.get("lot_unit_amount") or 0)
+        actual_lot_unit = int(actual_sizing.get("lot_unit_amount") or 0)
+        preview_max_amount = int(preview.get("max_symbol_amount") or 0)
+        actual_max_amount = int(actual_sizing.get("max_symbol_amount") or 0)
+        if preview_bucket != actual_bucket or preview_lot_unit != actual_lot_unit or preview_max_amount != actual_max_amount:
+            return "lot_sizing_changed_after_preview"
+        return ""
+
     def manual_action_from_request(self, manual: dict[str, object], current_price: int) -> StrategyAction:
         side = OrderSide(str(manual["side"]))
         if side is OrderSide.BUY:
@@ -217,6 +279,12 @@ class AutoTrader:
             quantity = int(manual.get("quantity") or 0)
             if amount <= 0 and quantity > 0:
                 amount = quantity * current_price
+            if amount <= 0 and self.config.strategy.lot_sizing_mode == "cycle_locked_by_entry_price":
+                if self.lot_manager.open_lots(str(manual["code"]).zfill(6)):
+                    sizing = self.strategy.ensure_lot_sizing(self.position_manager.get(str(manual["code"]).zfill(6)), current_price)
+                else:
+                    sizing = self.strategy.lot_sizing_for_new_cycle(current_price)
+                amount = int(sizing.get("lot_unit_amount") or 0)
             return StrategyAction(OrderSide.BUY, amount, None, "local_ui_manual")
         lot_id = str(manual.get("lot_id") or "")
         quantity = int(manual.get("quantity") or 0)
@@ -346,6 +414,16 @@ class AutoTrader:
             median_open_buy_price=context.median_open_buy_price,
             reference_buy_price=context.reference_buy_price,
             reference_buy_source=context.reference_buy_source,
+            entry_price_for_lot_sizing=context.entry_price_for_lot_sizing,
+            lot_unit_amount=context.lot_unit_amount,
+            max_symbol_amount=context.max_symbol_amount,
+            max_lots_per_symbol=context.max_lots_per_symbol,
+            lot_sizing_bucket=context.lot_sizing_bucket,
+            lot_sizing_locked=context.lot_sizing_locked,
+            lot_sizing_mode=context.lot_sizing_mode,
+            lot_sizing_skip_reason=context.lot_sizing_skip_reason,
+            add_buy_lot_band=context.add_buy_lot_band,
+            current_open_lot_count=context.current_open_lot_count,
             reference_sell_price=context.reference_sell_price,
             target_buy_drop_rate=f"{context.target_buy_drop_rate:.4f}",
             target_profit_rate=f"{context.target_profit_rate:.4f}",

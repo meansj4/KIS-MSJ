@@ -54,9 +54,10 @@ class RiskManager:
             reasons.append("needs_review")
         if not position.auto_buy_enabled:
             reasons.append("auto_buy_disabled")
-        if position.cumulative_invested_amount > position.auto_buy_limit:
+        lot_sizing_mode = self.config.strategy.lot_sizing_mode == "cycle_locked_by_entry_price"
+        if not lot_sizing_mode and position.cumulative_invested_amount > position.auto_buy_limit:
             reasons.append("auto_buy_limit_exceeded")
-        if position.cumulative_invested_amount >= position.absolute_max_investment:
+        if not lot_sizing_mode and position.cumulative_invested_amount >= position.absolute_max_investment:
             reasons.append("absolute_max_reached")
         if position.profit_loss_pct <= self.config.strategy.review_loss_pct:
             reasons.append("unrealized_loss_review")

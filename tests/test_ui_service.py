@@ -393,6 +393,24 @@ def test_manual_buy_request_created_when_enabled_and_confirmed(tmp_path):
     assert requests[0]["request_id"] == created["request_id"]
     assert requests[0]["status"] == "REQUESTED"
     assert requests[0]["confirm_text_verified"] is True
+    assert requests[0]["current_price"] == 10000
+
+
+def test_manual_buy_preview_reports_lot_sizing_and_blocks_disabled_band(tmp_path):
+    config_path, db_path, _ = _write_config(tmp_path, manual_enabled=True, live_trading=False)
+    store = StateStore(db_path)
+    store.save_position(PositionState("005930", "Samsung", current_price=10100))
+    service = UIService(config_path, tmp_path / "runtime.json")
+
+    preview = service.manual_order_preview({"side": "BUY", "code": "005930", "current_price": 10100})
+
+    assert preview["can_create"] is True
+    assert preview["lot_unit_amount"] == 30000
+    assert preview["max_symbol_amount"] == 300000
+    assert preview["price_lot_band"] == "10001-30000"
+
+    blocked = service.manual_order_preview({"side": "BUY", "code": "005930", "current_price": 250})
+    assert "lot_sizing_band_disabled" in blocked["block_reasons"]
 
 
 def test_manual_sell_preview_blocks_closed_and_excess_quantity(tmp_path):
@@ -416,6 +434,17 @@ def test_manual_sell_preview_blocks_closed_and_excess_quantity(tmp_path):
 class _StableSampler:
     def sample(self, code, name):
         return (Quote(code, 10000, datetime.now(), name),)
+
+    def stable(self, samples, limit):
+        return True, ""
+
+
+class _PriceSampler:
+    def __init__(self, price: int) -> None:
+        self.price = price
+
+    def sample(self, code, name):
+        return (Quote(code, self.price, datetime.now(), name),)
 
     def stable(self, samples, limit):
         return True, ""
@@ -458,6 +487,51 @@ def test_bot_core_consumes_manual_request_through_order_manager_paper_path(tmp_p
     assert request["linked_order_id"]
     assert trader.store.load_lots()
     assert trader.store.load_positions()["005930"].quantity > 0
+
+
+def test_manual_buy_blocks_when_lot_sizing_bucket_changes_after_preview(tmp_path):
+    db_path = tmp_path / "state.sqlite3"
+    log_path = tmp_path / "bot.log"
+    config = BotConfig(
+        stocks=(StockConfig("005930", "Samsung"),),
+        order=OrderConfig(live_trading=False),
+        storage_path=str(db_path),
+        log_path=str(log_path),
+        ui_manual_trading_enabled=True,
+    )
+    trader = AutoTrader(config, use_mock_client=True)
+    trader.price_sampler = _PriceSampler(9000)
+    trader.store.create_manual_order_request(
+        {
+            "request_id": "MANUAL-LOT-SIZING-CHANGED",
+            "source": "local_ui_manual",
+            "requested_by": "test",
+            "requested_at": datetime.now().isoformat(timespec="seconds"),
+            "code": "005930",
+            "side": "BUY",
+            "current_price": 10100,
+            "amount": 30000,
+            "quantity": 0,
+            "preview_json": json.dumps(
+                {
+                    "price_lot_band": "10001-30000",
+                    "lot_unit_amount": 30000,
+                    "max_symbol_amount": 300000,
+                }
+            ),
+            "runtime_snapshot_json": "{}",
+            "live_trading": False,
+            "confirm_text_verified": True,
+            "status": "REQUESTED",
+        }
+    )
+
+    trader.process_manual_order_requests(AccountSnapshot(10_000_000, 10_000_000, 0, 0), RiskDecision(True))
+
+    request = trader.store.manual_order_requests()[0]
+    assert request["status"] == "BLOCKED"
+    assert request["block_reason"] == "lot_sizing_changed_after_preview"
+    assert not trader.store.load_lots()
 
 
 def test_bot_loop_interrupts_promptly_for_runtime_pause(tmp_path):

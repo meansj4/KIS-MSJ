@@ -316,6 +316,102 @@
     "stale_lot_price_gap_rate": -0.1,
     "review_symbol_loss_rate": -0.2,
     "stale_lot_review_age_weeks": 20,
+    "lot_sizing_mode": "cycle_locked_by_entry_price",
+    "price_lot_bands": [
+      {
+        "min_price": 0,
+        "max_price": 300,
+        "lot_unit_amount": 0,
+        "max_symbol_amount": 0,
+        "enabled": false,
+        "note": "초저가주는 자동매수 제외 또는 paper 전용"
+      },
+      {
+        "min_price": 301,
+        "max_price": 1000,
+        "lot_unit_amount": 3000,
+        "max_symbol_amount": 30000,
+        "enabled": true
+      },
+      {
+        "min_price": 1001,
+        "max_price": 10000,
+        "lot_unit_amount": 10000,
+        "max_symbol_amount": 100000,
+        "enabled": true
+      },
+      {
+        "min_price": 10001,
+        "max_price": 30000,
+        "lot_unit_amount": 30000,
+        "max_symbol_amount": 300000,
+        "enabled": true
+      },
+      {
+        "min_price": 30001,
+        "max_price": 100000,
+        "lot_unit_amount": 100000,
+        "max_symbol_amount": 1000000,
+        "enabled": true
+      },
+      {
+        "min_price": 100001,
+        "max_price": 300000,
+        "lot_unit_amount": 300000,
+        "max_symbol_amount": 3000000,
+        "enabled": true
+      },
+      {
+        "min_price": 300001,
+        "max_price": 1000000,
+        "lot_unit_amount": 1000000,
+        "max_symbol_amount": 3000000,
+        "enabled": true,
+        "max_lots": 3,
+        "note": "고가주는 3 LOT까지만"
+      },
+      {
+        "min_price": 1000001,
+        "max_price": 3000000,
+        "lot_unit_amount": 0,
+        "max_symbol_amount": 0,
+        "enabled": false,
+        "note": "초고가주는 자동매수 제외, manual only"
+      }
+    ],
+    "add_buy_lot_bands": [
+      {
+        "min_lots": 1,
+        "max_lots": 2,
+        "drop_rate": 0.04,
+        "add_lot_count": 1
+      },
+      {
+        "min_lots": 3,
+        "max_lots": 4,
+        "drop_rate": 0.06,
+        "add_lot_count": 1
+      },
+      {
+        "min_lots": 5,
+        "max_lots": 6,
+        "drop_rate": 0.08,
+        "add_lot_count": 1
+      },
+      {
+        "min_lots": 7,
+        "max_lots": 8,
+        "drop_rate": 0.1,
+        "add_lot_count": 1
+      },
+      {
+        "min_lots": 9,
+        "max_lots": 10,
+        "drop_rate": 0.12,
+        "add_lot_count": 1
+      }
+    ],
+    "max_lots_per_symbol_default": 10,
     "exposure_buy_bands": [
       {
         "min_exposure": 1,
@@ -422,7 +518,7 @@
   },
   "storage_path": "C:\\MSJ\\KIS-MSJ\\data\\lot_auto_trader_real_test.sqlite3",
   "log_path": "C:\\MSJ\\KIS-MSJ\\logs\\lot_auto_trader.log",
-  "loop_interval_seconds": 15,
+  "loop_interval_seconds": 3,
   "max_loop_count": null,
   "ui_manual_trading_enabled": true
 }
