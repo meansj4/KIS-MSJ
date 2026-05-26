@@ -17,6 +17,13 @@ class StockConfig:
     code: str
     name: str = ""
     enabled: bool = True
+    market: str = "KOSPI"
+    sector: str = ""
+    note: str = ""
+    reason: str = ""
+    manual_only: bool = False
+    priority: int = 0
+    group: str = ""
     trading_halted: bool = False
     administrative_issue: bool = False
     investment_alert: bool = False
@@ -167,6 +174,9 @@ class RiskConfig:
     max_total_open_lots: int = 40
     max_total_invested_amount: int = 1_500_000
     max_new_buy_per_day: int = 5
+    max_new_buy_amount_per_day: int = 0
+    max_total_initial_buy_amount_per_day: int = 0
+    profile: str = "default"
 
 
 @dataclass(frozen=True)

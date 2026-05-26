@@ -68,6 +68,9 @@ CONFIG_METADATA: tuple[dict[str, Any], ...] = (
     {"section": "Risk", "key": "risk.max_total_open_lots", "label_ko": "최대 전체 OPEN LOT 수", "description_ko": "초과 시 모든 BUY를 차단합니다. SELL은 허용됩니다.", "type": "number", "unit": "개", "display_format": "integer", "config_format": "integer", "warning_level": "warning", "requires_restart": True},
     {"section": "Risk", "key": "risk.max_total_invested_amount", "label_ko": "최대 전체 투입금", "description_ko": "초과 시 모든 BUY를 차단합니다. SELL은 허용됩니다.", "type": "number", "unit": "원", "display_format": "integer", "config_format": "integer", "warning_level": "warning", "requires_restart": True},
     {"section": "Risk", "key": "risk.max_new_buy_per_day", "label_ko": "일일 신규 매수 주문 제한", "description_ko": "initial_buy 주문 수 기준입니다. 거절/취소도 주문 난사 방지 목적으로 포함됩니다.", "type": "number", "unit": "회", "display_format": "integer", "config_format": "integer", "warning_level": "warning", "requires_restart": True},
+    {"section": "Risk", "key": "risk.max_new_buy_amount_per_day", "label_ko": "일일 신규 매수 총액 제한", "description_ko": "하루 initial_buy 주문 금액 합계 제한입니다. 100종목 확장 운용에서 고가 LOT 종목이 몰릴 때 하루 투입액이 과도해지는 것을 막습니다.", "type": "number", "unit": "원", "display_format": "integer", "config_format": "integer", "warning_level": "warning", "requires_restart": True},
+    {"section": "Risk", "key": "risk.max_total_initial_buy_amount_per_day", "label_ko": "일일 최초 매수 총액 제한", "description_ko": "max_new_buy_amount_per_day와 같은 목적의 호환 필드입니다. 값이 있으면 initial_buy 하루 총액 제한으로 우선 사용됩니다.", "type": "number", "unit": "원", "display_format": "integer", "config_format": "integer", "warning_level": "warning", "requires_restart": True},
+    {"section": "Risk", "key": "risk.profile", "label_ko": "리스크 프로파일", "description_ko": "현재 운용 한도 묶음 이름입니다. 예: expansion_100_safe, expansion_100_medium, expansion_100_aggressive.", "type": "text", "unit": "profile", "display_format": "text", "config_format": "text", "warning_level": "normal", "requires_restart": True},
     {"section": "Order", "key": "order.live_trading", "label_ko": "실거래 모드", "description_ko": "true이면 실제 KIS 주문 API를 통해 주문이 나갈 수 있습니다.", "type": "boolean", "unit": "bool", "display_format": "boolean", "config_format": "boolean", "warning_level": "critical", "requires_restart": True, "danger_confirm_required": True},
     {"section": "Order", "key": "order.emergency_market_order", "label_ko": "비상 시장가 주문", "description_ko": "true이면 비상 상황에서 시장가 주문을 허용할 수 있어 매우 위험합니다.", "type": "boolean", "unit": "bool", "display_format": "boolean", "config_format": "boolean", "warning_level": "critical", "requires_restart": True, "danger_confirm_required": True},
     {"section": "Order", "key": "order.buy_limit_markup_pct", "label_ko": "매수 지정가 가산율", "description_ko": "BUY 주문을 낼 때 현재가 그대로 주문하지 않고, 체결 가능성을 높이기 위해 현재가보다 이 비율만큼 높은 지정가를 계산합니다. 예: 현재가 10,000원, 값 0.3이면 매수 지정가는 약 10,030원입니다. 시장가가 아니라 지정가 주문 정책입니다.", "type": "number", "unit": "%", "display_format": "percent_value", "config_format": "percent_value", "warning_level": "normal", "requires_restart": True},
@@ -358,6 +361,12 @@ class UIService:
             "total_invested_amount": sum(int(lot.get("remaining_quantity", 0)) * int(lot.get("buy_price", 0)) for lot in open_lots),
             "max_new_buy_per_day": config.risk.max_new_buy_per_day,
             "new_buy_count_today": sum(1 for order in orders if order.get("side") == "BUY" and order.get("reason") == "initial_buy" and str(order.get("requested_at", "")).startswith(today)),
+            "max_new_buy_amount_per_day": config.risk.max_new_buy_amount_per_day,
+            "max_total_initial_buy_amount_per_day": config.risk.max_total_initial_buy_amount_per_day,
+            "new_buy_amount_today": sum(int(order.get("quantity") or 0) * int(order.get("limit_price") or 0) for order in orders if order.get("side") == "BUY" and order.get("reason") == "initial_buy" and str(order.get("requested_at", "")).startswith(today)),
+            "risk_profile": config.risk.profile,
+            "candidate_stock_count": len(config.stocks),
+            "enabled_stock_count": sum(1 for stock in config.stocks if stock.enabled),
             "today_fill_count": sum(1 for fill in fills if str(fill.get("filled_at", "")).startswith(today)),
         }
 
@@ -890,7 +899,7 @@ class UIService:
             errors.append("loss limits must be <= 0")
         if risk.max_consecutive_api_errors < 1:
             errors.append("max_consecutive_api_errors must be >= 1")
-        if min(risk.min_cash_available, risk.max_active_symbols, risk.max_total_open_lots, risk.max_total_invested_amount, risk.max_new_buy_per_day) < 0:
+        if min(risk.min_cash_available, risk.max_active_symbols, risk.max_total_open_lots, risk.max_total_invested_amount, risk.max_new_buy_per_day, risk.max_new_buy_amount_per_day, risk.max_total_initial_buy_amount_per_day) < 0:
             errors.append("risk limits must be >= 0")
         if order.price_sample_count < 1 or order.price_sample_interval_seconds <= 0 or order.limit_order_timeout_seconds <= 0:
             errors.append("order timing/sample values are invalid")

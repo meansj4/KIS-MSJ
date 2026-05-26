@@ -586,3 +586,18 @@ Runtime Control 화면에는 봇 루프 제어 버튼이 있습니다.
 4. live trading이면 `수동주문 확인` 문구를 입력해야 요청 생성이 가능합니다.
 5. 요청이 생성되면 DB의 `manual_order_requests`에 기록되고, 실행 중인 봇 루프가 다음 루프에서 소비합니다.
 6. 실거래 주문 없이 흐름만 테스트하려면 `order.live_trading=false` 또는 mock/paper 경로에서 먼저 확인합니다.
+ 
+## 새 시즌 / 100종목 확장 운용
+
+새 시즌을 시작할 때는 `scripts/prepare_new_season.py`를 사용합니다. 이 스크립트는 기본값이 dry-run이고 KIS 주문 API를 호출하지 않습니다.
+
+- 상세 절차: `docs/new_season_reset.md`
+- 100종목 확장 config 설명: `docs/expansion_100_config.md`
+
+UI에서 확인해야 할 핵심 항목:
+
+- Dashboard: 현재 `risk.profile`, 후보 종목 수, enabled 종목 수, 전체 투입 한도, 오늘 신규 매수 수/금액
+- Config: `price_lot_bands`, `add_buy_lot_bands`, `target_profit_lot_bands`, `risk.max_new_buy_amount_per_day`
+- Reset/New Season 작업 전: open order, SYNC_REQUIRED, lot mismatch, 미처리 manual order request 여부
+
+초기 확장 운용 권장값은 `expansion_100_safe`입니다. 이 프로파일은 총 투입 한도 2천만 원, 하루 신규 initial buy 10종목, 하루 신규 initial buy 주문금액 200만 원, 전체 OPEN LOT 300개를 기본으로 합니다.

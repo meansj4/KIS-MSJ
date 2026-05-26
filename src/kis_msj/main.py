@@ -591,6 +591,9 @@ class AutoTrader:
                 return "max_active_symbols_reached"
             if self.store.count_today_initial_buy_orders() >= risk.max_new_buy_per_day:
                 return "max_new_buy_per_day_reached"
+            day_amount_limit = risk.max_total_initial_buy_amount_per_day or risk.max_new_buy_amount_per_day
+            if day_amount_limit and self.store.sum_today_initial_buy_order_amount() + action.amount > day_amount_limit:
+                return "max_new_buy_amount_per_day_reached"
         return ""
 
     def active_symbol_codes(self) -> set[str]:

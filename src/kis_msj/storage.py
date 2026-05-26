@@ -526,6 +526,21 @@ class StateStore:
             ).fetchone()
         return int(row["count"] or 0)
 
+    def sum_today_initial_buy_order_amount(self) -> int:
+        today = datetime.now().date().isoformat()
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT COALESCE(SUM(quantity * limit_price), 0) AS amount
+                FROM orders
+                WHERE side = ?
+                  AND reason = 'initial_buy'
+                  AND substr(requested_at, 1, 10) = ?
+                """,
+                (OrderSide.BUY.value, today),
+            ).fetchone()
+        return int(row["amount"] or 0)
+
     def filled_quantity_for_order(self, order_id: str) -> int:
         with self._connect() as connection:
             row = connection.execute(
