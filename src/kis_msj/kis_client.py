@@ -87,23 +87,11 @@ class KisClient:
         return Quote(code, int(row["current_price"]), datetime.now(), name)
 
     def account_snapshot(self) -> AccountSnapshot:
-        self._require_account()
-        params = {
-            "CANO": self.account_number,
-            "ACNT_PRDT_CD": self.account_product_code,
-            "AFHR_FLPR_YN": "N",
-            "OFL_YN": "",
-            "INQR_DVSN": "02",
-            "UNPR_DVSN": "01",
-            "FUND_STTL_ICLD_YN": "N",
-            "FNCG_AMT_AUTO_RDPT_YN": "N",
-            "PRCS_DVSN": "01",
-            "CTX_AREA_FK100": "",
-            "CTX_AREA_NK100": "",
-        }
-        response = self._request("GET", BALANCE_PATH, params=params, tr_id="VTTC8434R" if self.is_demo else "TTTC8434R")
-        rows = response.get("output1") or []
-        summary = (response.get("output2") or [{}])[0]
+        pages = self._balance_pages()
+        rows = [row for page in pages for row in page.get("output1") or []]
+        summary = next(((page.get("output2") or [{}])[0] for page in pages if page.get("output2")), {})
+        if len(pages) > 1:
+            self.logger.info("account_snapshot_paged pages=%s raw_row_count=%s", len(pages), len(rows))
         positions = tuple(_balance(row) for row in rows if int(float(row.get("hldg_qty") or 0)) > 0)
         return AccountSnapshot(
             cash_available=int(float(summary.get("dnca_tot_amt") or summary.get("nass_amt") or 0)),
@@ -113,14 +101,32 @@ class KisClient:
             positions=positions,
         )
 
-    def balance_snapshot_rows(self) -> tuple[dict[str, Any], ...]:
-        """Return read-only account holding rows for UI/new-season snapshot export.
-
-        This method uses the domestic-stock balance inquiry endpoint only. It does
-        not place, revise, or cancel orders.
-        """
+    def _balance_pages(self) -> list[dict[str, Any]]:
         self._require_account()
-        params = {
+        params = self._balance_params("", "")
+        pages: list[dict[str, Any]] = []
+        seen_tokens: set[tuple[str, str]] = set()
+        tr_id = "VTTC8434R" if self.is_demo else "TTTC8434R"
+        continuation = ""
+        for _ in range(20):
+            response = self._request("GET", BALANCE_PATH, params=params, tr_id=tr_id, tr_cont=continuation)
+            pages.append(response)
+            next_fk, next_nk = _next_balance_context(response)
+            token = (next_fk, next_nk)
+            if not next_fk or not next_nk:
+                break
+            if token in seen_tokens:
+                self.logger.warning("account_snapshot pagination stopped reason=repeated_context ctx_fk=%s ctx_nk=%s", next_fk, next_nk)
+                break
+            seen_tokens.add(token)
+            params = self._balance_params(next_fk, next_nk)
+            continuation = "N"
+        else:
+            self.logger.warning("account_snapshot pagination stopped reason=max_pages pages=%s", len(pages))
+        return pages
+
+    def _balance_params(self, ctx_fk: str, ctx_nk: str) -> dict[str, str]:
+        return {
             "CANO": self.account_number,
             "ACNT_PRDT_CD": self.account_product_code,
             "AFHR_FLPR_YN": "N",
@@ -130,11 +136,17 @@ class KisClient:
             "FUND_STTL_ICLD_YN": "N",
             "FNCG_AMT_AUTO_RDPT_YN": "N",
             "PRCS_DVSN": "01",
-            "CTX_AREA_FK100": "",
-            "CTX_AREA_NK100": "",
+            "CTX_AREA_FK100": ctx_fk,
+            "CTX_AREA_NK100": ctx_nk,
         }
-        response = self._request("GET", BALANCE_PATH, params=params, tr_id="VTTC8434R" if self.is_demo else "TTTC8434R")
-        rows = response.get("output1") or []
+
+    def balance_snapshot_rows(self) -> tuple[dict[str, Any], ...]:
+        """Return read-only account holding rows for UI/new-season snapshot export.
+
+        This method uses the domestic-stock balance inquiry endpoint only. It does
+        not place, revise, or cancel orders.
+        """
+        rows = [row for page in self._balance_pages() for row in page.get("output1") or []]
         return tuple(_balance_snapshot_row(row) for row in rows if int(float(row.get("hldg_qty") or 0)) > 0)
 
     def place_order(self, request: OrderRequest) -> OrderResult:
@@ -238,7 +250,7 @@ class KisClient:
         response = self._request("GET", OPEN_ORDER_PATH, params=params, tr_id="VTTC8036R" if self.is_demo else "TTTC8036R")
         return tuple(response.get("output") or [])
 
-    def _request(self, method: str, path: str, *, params: dict[str, str] | None = None, body: dict[str, Any] | None = None, tr_id: str) -> dict[str, Any]:
+    def _request(self, method: str, path: str, *, params: dict[str, str] | None = None, body: dict[str, Any] | None = None, tr_id: str, tr_cont: str = "") -> dict[str, Any]:
         query = f"?{urllib.parse.urlencode(params)}" if params else ""
         headers = {
             "Content-Type": "application/json; charset=utf-8",
@@ -248,6 +260,8 @@ class KisClient:
             "tr_id": tr_id,
             "custtype": self.account_config.customer_type,
         }
+        if tr_cont:
+            headers["tr_cont"] = tr_cont
         if method == "POST" and body is not None:
             headers["hashkey"] = self._hashkey(body)
         request = urllib.request.Request(f"{self.credentials.base_url}{path}{query}", data=json.dumps(body).encode("utf-8") if body is not None else None, headers=headers, method=method)
@@ -359,6 +373,12 @@ def _balance_snapshot_row(row: dict[str, Any]) -> dict[str, Any]:
     if sellable not in (None, ""):
         item["sellable_quantity"] = int(float(sellable))
     return item
+
+
+def _next_balance_context(response: dict[str, Any]) -> tuple[str, str]:
+    fk = str(_first_value(response, ("ctx_area_fk100", "CTX_AREA_FK100")) or "").strip()
+    nk = str(_first_value(response, ("ctx_area_nk100", "CTX_AREA_NK100")) or "").strip()
+    return fk, nk
 
 
 def _load_prices(path: Path) -> dict[str, int]:

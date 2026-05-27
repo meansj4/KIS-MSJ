@@ -136,3 +136,63 @@ def test_executions_does_not_log_raw_fields_when_disabled(caplog: pytest.LogCapt
         client.executions()
 
     assert not caplog.messages
+
+
+def test_account_snapshot_reads_all_balance_pages() -> None:
+    client = _client()
+    calls = []
+
+    def response(method, path, *, params=None, body=None, tr_id="", tr_cont=""):  # noqa: ANN001, ANN202
+        calls.append({"params": dict(params or {}), "tr_cont": tr_cont})
+        assert path == BALANCE_PATH
+        if len(calls) == 1:
+            return {
+                "output1": [{"pdno": "005930", "prdt_name": "삼성전자", "hldg_qty": "2", "pchs_avg_pric": "70000", "prpr": "71000"}],
+                "output2": [{"dnca_tot_amt": "1000000", "tot_evlu_amt": "1200000"}],
+                "ctx_area_fk100": "NEXT-FK",
+                "ctx_area_nk100": "NEXT-NK",
+            }
+        assert calls[-1]["params"]["CTX_AREA_FK100"] == "NEXT-FK"
+        assert calls[-1]["params"]["CTX_AREA_NK100"] == "NEXT-NK"
+        assert calls[-1]["tr_cont"] == "N"
+        return {
+            "output1": [{"pdno": "000660", "prdt_name": "SK하이닉스", "hldg_qty": "3", "pchs_avg_pric": "100000", "prpr": "101000"}],
+            "output2": [{"dnca_tot_amt": "1000000", "tot_evlu_amt": "1200000"}],
+            "ctx_area_fk100": "",
+            "ctx_area_nk100": "",
+        }
+
+    client._request = response
+
+    snapshot = client.account_snapshot()
+
+    assert [item.code for item in snapshot.positions] == ["005930", "000660"]
+    assert len(calls) == 2
+    assert calls[0]["tr_cont"] == ""
+
+
+def test_balance_snapshot_rows_reads_all_balance_pages() -> None:
+    client = _client()
+    calls = []
+
+    def response(method, path, *, params=None, body=None, tr_id="", tr_cont=""):  # noqa: ANN001, ANN202
+        calls.append({"params": dict(params or {}), "tr_cont": tr_cont})
+        if len(calls) == 1:
+            return {
+                "output1": [{"pdno": "005930", "prdt_name": "삼성전자", "hldg_qty": "2", "ord_psbl_qty": "2"}],
+                "ctx_area_fk100": "NEXT-FK",
+                "ctx_area_nk100": "NEXT-NK",
+            }
+        return {
+            "output1": [{"pdno": "000660", "prdt_name": "SK하이닉스", "hldg_qty": "3", "ord_psbl_qty": "3"}],
+            "ctx_area_fk100": "",
+            "ctx_area_nk100": "",
+        }
+
+    client._request = response
+
+    rows = client.balance_snapshot_rows()
+
+    assert [row["code"] for row in rows] == ["005930", "000660"]
+    assert len(calls) == 2
+    assert calls[1]["tr_cont"] == "N"

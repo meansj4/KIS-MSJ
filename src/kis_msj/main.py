@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Sequence
 
 from .config import DEFAULT_CONFIG_PATH, BotConfig, config_hash, config_to_dict, load_config, write_default_config
-from .kis_client import KisClient, MockKisClient
+from .kis_client import KisApiError, KisClient, MockKisClient
 from .logger import configure_trade_logger, log_decision
 from .lot_manager import LotManager
 from .models import AccountSnapshot, OrderSide, PositionState, Quote, SellReason
@@ -107,24 +107,58 @@ class AutoTrader:
             interrupt = self.runtime_interrupt_reason(f"before_symbol_{stock.code}")
             if interrupt:
                 return interrupt
-            self.process_manual_order_requests(snapshot, account_risk)
-            interrupt = self.runtime_interrupt_reason(f"after_manual_requests_{stock.code}")
-            if interrupt:
-                return interrupt
-            if not stock.enabled:
+            try:
+                self.process_manual_order_requests(snapshot, account_risk)
+                interrupt = self.runtime_interrupt_reason(f"after_manual_requests_{stock.code}")
+                if interrupt:
+                    return interrupt
+                if not stock.enabled:
+                    continue
+                position = self.position_manager.get(stock.code, stock.name)
+                if stock.danger_state:
+                    position.danger_state = True
+                    position.position_state = PositionLifecycle.RISK_BLOCKED.value
+                    position.auto_buy_enabled = False
+                self.evaluate(position, snapshot, account_risk)
+            except Exception as error:  # noqa: BLE001
+                if self._mark_symbol_blocked_for_kis_order_error(stock.code, stock.name, error):
+                    continue
+                self.logger.exception(
+                    "symbol_evaluate_failed code=%s name=%s error_type=%s error=%s continue_next_symbol=true",
+                    stock.code,
+                    stock.name,
+                    type(error).__name__,
+                    error,
+                )
                 continue
-            position = self.position_manager.get(stock.code, stock.name)
-            if stock.danger_state:
-                position.danger_state = True
-                position.position_state = PositionLifecycle.RISK_BLOCKED.value
-                position.auto_buy_enabled = False
-            self.evaluate(position, snapshot, account_risk)
             interrupt = self.runtime_interrupt_reason(f"after_symbol_{stock.code}")
             if interrupt:
                 return interrupt
         self.store.save_positions(self.position_manager.positions.values())
         self.store.save_lots(self.lot_manager.lots.values())
         return ""
+
+    def _mark_symbol_blocked_for_kis_order_error(self, code: str, name: str, error: Exception) -> bool:
+        message = str(error)
+        if not isinstance(error, KisApiError) or "APBK0066" not in message:
+            return False
+        position = self.position_manager.get(code, name)
+        position.danger_state = True
+        position.position_state = PositionLifecycle.RISK_BLOCKED.value
+        position.auto_buy_enabled = False
+        position.trading_paused = True
+        position.skip_reason = "kis_trading_halted"
+        position.review_reason = "kis_trading_halted: APBK0066 거래정지종목"
+        position.last_order_status = "REJECTED"
+        position.last_update_time = datetime.now().isoformat(timespec="seconds")
+        self.store.save_position(position)
+        self.logger.warning(
+            "symbol_blocked_by_kis_order_error code=%s name=%s reason=kis_trading_halted kis_msg=APBK0066 continue_next_symbol=true error=%s",
+            code,
+            name,
+            error,
+        )
+        return True
 
     def runtime_interrupt_reason(self, stage: str) -> str:
         runtime = load_runtime_control()
@@ -795,6 +829,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     continue
         except Exception as error:  # noqa: BLE001
             trader.risk_manager.data_mismatch_detected = True
+            trader.logger.exception("auto_trader_loop_failed error_type=%s error=%s", type(error).__name__, error)
             trader.notifier.notify("auto-trader error", f"{type(error).__name__}: {error}")
         loop_count += 1
         if args.once or (config.max_loop_count is not None and loop_count >= config.max_loop_count):

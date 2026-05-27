@@ -107,6 +107,7 @@ class PositionManager:
         return PositionLifecycle.NEVER_BOUGHT.value
 
     def sync_account(self, snapshot: AccountSnapshot) -> None:
+        self.account_mismatch_detected = False
         actual = {item.code: item for item in snapshot.positions}
         for code, item in actual.items():
             position = self.refresh_from_lots(code, item.current_price)
@@ -120,14 +121,32 @@ class PositionManager:
                 self.account_mismatch_detected = True
                 position.quantity = item.quantity
                 position.average_price = item.average_price
+            else:
+                self._clear_sync_flags(position, bool(self.lot_manager.open_lots(code)))
         for code, position in self.positions.items():
-            if code not in actual and position.quantity > 0:
+            if code in actual:
+                continue
+            position = self.refresh_from_lots(code, position.current_price)
+            has_open_lots = bool(self.lot_manager.open_lots(code))
+            if position.quantity > 0:
                 position.lot_quantity_mismatch = True
                 position.sync_status = PositionLifecycle.SYNC_REQUIRED.value
                 position.position_state = PositionLifecycle.SYNC_REQUIRED.value
                 position.trading_paused = True
                 position.auto_buy_enabled = False
                 self.account_mismatch_detected = True
+            else:
+                self._clear_sync_flags(position, has_open_lots)
+
+    def _clear_sync_flags(self, position: PositionState, has_open_lots: bool) -> None:
+        if position.sync_status != PositionLifecycle.SYNC_REQUIRED.value and not position.lot_quantity_mismatch:
+            return
+        position.lot_quantity_mismatch = False
+        position.sync_status = "OK"
+        position.trading_paused = False
+        if not position.needs_review and not position.danger_state:
+            position.auto_buy_enabled = True
+        position.position_state = self._lifecycle_for(position, has_open_lots)
 
     def apply_fill(self, fill: TradeFill) -> PositionState:
         position = self.get(fill.code, fill.name)

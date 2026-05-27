@@ -4,7 +4,7 @@ import pytest
 
 from kis_msj.config import BotConfig, OrderConfig, RiskConfig, StrategyConfig
 from kis_msj.lot_manager import LotManager
-from kis_msj.models import AccountSnapshot, LotState, OrderSide, PositionLifecycle, PositionState, ReentryType, SellReason, TradeFill
+from kis_msj.models import AccountSnapshot, BalanceItem, LotState, OrderSide, PositionLifecycle, PositionState, ReentryType, SellReason, TradeFill
 from kis_msj.position_manager import PositionManager
 from kis_msj.risk_manager import RiskDecision, RiskManager
 from kis_msj.strategy import LotGridStrategy
@@ -543,6 +543,54 @@ def test_lot_quantity_mismatch_blocks_new_buy() -> None:
 
     assert not decision.allowed
     assert "lot_quantity_mismatch" in decision.reasons
+
+
+def test_sync_account_clears_stale_sync_required_when_account_quantity_matches_open_lots() -> None:
+    _, _, positions, _, _, _ = setup_strategy()
+    add_lot(positions, "005930", 10000, 3)
+    position = positions.refresh_from_lots("005930", 10100)
+    position.lot_quantity_mismatch = True
+    position.sync_status = PositionLifecycle.SYNC_REQUIRED.value
+    position.position_state = PositionLifecycle.SYNC_REQUIRED.value
+    position.trading_paused = True
+    position.auto_buy_enabled = False
+
+    positions.sync_account(AccountSnapshot(10_000_000, 10_000_000, 0, 0, (BalanceItem("005930", "Test", 3, 10000, 10100),)))
+
+    assert not positions.account_mismatch_detected
+    assert not position.lot_quantity_mismatch
+    assert position.sync_status == "OK"
+    assert not position.trading_paused
+    assert position.auto_buy_enabled
+    assert position.position_state == PositionLifecycle.HOLDING.value
+
+
+def test_sync_account_keeps_sync_required_when_account_quantity_still_differs() -> None:
+    _, _, positions, _, _, _ = setup_strategy()
+    add_lot(positions, "005930", 10000, 3)
+
+    positions.sync_account(AccountSnapshot(10_000_000, 10_000_000, 0, 0, (BalanceItem("005930", "Test", 2, 10000, 10100),)))
+    position = positions.get("005930")
+
+    assert positions.account_mismatch_detected
+    assert position.lot_quantity_mismatch
+    assert position.sync_status == PositionLifecycle.SYNC_REQUIRED.value
+    assert position.position_state == PositionLifecycle.SYNC_REQUIRED.value
+    assert position.trading_paused
+    assert not position.auto_buy_enabled
+
+
+def test_sync_account_recalculates_global_mismatch_on_each_snapshot() -> None:
+    _, _, positions, _, _, _ = setup_strategy()
+    add_lot(positions, "005930", 10000, 3)
+
+    positions.sync_account(AccountSnapshot(10_000_000, 10_000_000, 0, 0, (BalanceItem("005930", "Test", 2, 10000, 10100),)))
+    assert positions.account_mismatch_detected
+
+    positions.sync_account(AccountSnapshot(10_000_000, 10_000_000, 0, 0, (BalanceItem("005930", "Test", 3, 10000, 10100),)))
+
+    assert not positions.account_mismatch_detected
+    assert positions.get("005930").sync_status == "OK"
 
 
 def test_total_invested_account_limit_blocks_new_buy() -> None:

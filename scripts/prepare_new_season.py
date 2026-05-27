@@ -549,8 +549,30 @@ def reset_db(config_path: Path, confirm: str, dry_run: bool) -> dict[str, Any]:
         return {"reset": False, "reason": "reset_blocked_by_open_order_or_sync_mismatch", "blockers": blockers, "dry_run": dry_run}
     if dry_run:
         return {"reset": False, "reason": "dry_run", "db_path": str(db_path), "dry_run": True}
-    db_path.unlink()
-    return {"reset": True, "db_path": str(db_path), "dry_run": False}
+    try:
+        db_path.unlink()
+        return {"reset": True, "db_path": str(db_path), "dry_run": False, "method": "unlink"}
+    except PermissionError:
+        cleared_tables = clear_sqlite_db(db_path)
+        return {"reset": True, "db_path": str(db_path), "dry_run": False, "method": "clear_tables", "cleared_tables": cleared_tables}
+
+
+def clear_sqlite_db(db_path: Path) -> list[str]:
+    """Clear all application tables when Windows refuses to unlink the DB file."""
+    with sqlite3.connect(db_path) as connection:
+        rows = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        ).fetchall()
+        tables = [str(row[0]) for row in rows]
+        connection.execute("PRAGMA foreign_keys=OFF")
+        for table in tables:
+            connection.execute(f'DELETE FROM "{table}"')
+        try:
+            connection.execute("DELETE FROM sqlite_sequence")
+        except sqlite3.Error:
+            pass
+        connection.commit()
+    return tables
 
 
 def create_liquidation_manual_requests(

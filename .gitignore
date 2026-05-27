@@ -4,7 +4,15 @@ __pycache__/
 *.egg-info/
 .env
 .kis/
+.pytest_tmp*/
+.verify_manual/
+archive/
+exports/
+logs/
+config/backups/
+data/backups/
 data/*.csv
 data/*.json
 data/*.mst
 data/*.zip
+data/*.sqlite3

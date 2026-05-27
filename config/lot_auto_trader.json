@@ -1485,15 +1485,15 @@
     {
       "code": "001230",
       "name": "동국홀딩스",
-      "enabled": true,
+      "enabled": false,
       "market": "KOSPI",
       "sector": "철강/지주",
-      "note": "철강 지주 가치",
+      "note": "APBK0066 거래정지종목 응답으로 자동매수 제외",
       "reason": "bootstrap_120_candidate",
-      "manual_only": false,
+      "manual_only": true,
       "priority": 79,
       "group": "bootstrap_120_low_price",
-      "trading_halted": false,
+      "trading_halted": true,
       "administrative_issue": false,
       "investment_alert": false,
       "audit_opinion_issue": false,
@@ -2471,8 +2471,8 @@
   "market_hours": {
     "open_time": "09:00",
     "close_time": "15:30",
-    "block_after_open_minutes": 5,
-    "block_before_close_minutes": 10
+    "block_after_open_minutes": 10,
+    "block_before_close_minutes": 2
   },
   "kis_account": {
     "account_number_env": "KIS_ACCOUNT_NUMBER",

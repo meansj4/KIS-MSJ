@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from kis_msj.config import BotConfig, OrderConfig, StockConfig, load_config
+from kis_msj.kis_client import KisApiError
 from kis_msj.main import AutoTrader
 from kis_msj.models import (
     Quote,
@@ -1339,4 +1340,67 @@ def test_bot_loop_interrupts_promptly_for_runtime_pause(tmp_path):
     with patch("kis_msj.main.load_runtime_control", return_value=RuntimeControl(bot_paused=True, reason="test_pause")):
         assert trader.run_once() == "bot_paused"
     assert trader.store.open_order_count() == 0
+
+
+def test_bot_loop_continues_after_one_symbol_evaluate_error(tmp_path):
+    config = BotConfig(
+        stocks=(StockConfig("005930", "Samsung"), StockConfig("000660", "Hynix")),
+        order=OrderConfig(live_trading=False),
+        storage_path=str(tmp_path / "state.sqlite3"),
+        log_path=str(tmp_path / "bot.log"),
+    )
+    trader = AutoTrader(config, use_mock_client=True)
+    seen: list[str] = []
+
+    def fake_evaluate(position, snapshot, account_risk):
+        seen.append(position.code)
+        if position.code == "005930":
+            raise RuntimeError("boom")
+
+    trader.reconcile_recent_executions_on_startup = lambda: None
+    trader.reconcile_open_orders = lambda: None
+    trader.startup_sync = lambda: AccountSnapshot(10_000_000, 10_000_000, 0, 0, ())
+    trader.process_manual_order_requests = lambda snapshot, account_risk: None
+    trader.evaluate = fake_evaluate
+
+    with patch("kis_msj.main.load_runtime_control", return_value=RuntimeControl()):
+        assert trader.run_once() == ""
+
+    assert seen == ["005930", "000660"]
+
+
+def test_bot_loop_marks_kis_trading_halted_symbol_and_continues(tmp_path):
+    config = BotConfig(
+        stocks=(StockConfig("001230", "Dongkuk"), StockConfig("000660", "Hynix")),
+        order=OrderConfig(live_trading=False),
+        storage_path=str(tmp_path / "state.sqlite3"),
+        log_path=str(tmp_path / "bot.log"),
+    )
+    trader = AutoTrader(config, use_mock_client=True)
+    seen: list[str] = []
+
+    def fake_evaluate(position, snapshot, account_risk):
+        seen.append(position.code)
+        if position.code == "001230":
+            raise KisApiError(
+                "KIS API failed: APBK0066 거래정지종목(주식)은 취소주문만 가능(정정불가)합니다.",
+                method="POST",
+                path="/uapi/domestic-stock/v1/trading/order-cash",
+                tr_id="TTTC0802U",
+            )
+
+    trader.reconcile_recent_executions_on_startup = lambda: None
+    trader.reconcile_open_orders = lambda: None
+    trader.startup_sync = lambda: AccountSnapshot(10_000_000, 10_000_000, 0, 0, ())
+    trader.process_manual_order_requests = lambda snapshot, account_risk: None
+    trader.evaluate = fake_evaluate
+
+    with patch("kis_msj.main.load_runtime_control", return_value=RuntimeControl()):
+        assert trader.run_once() == ""
+
+    blocked = trader.store.load_positions()["001230"]
+    assert seen == ["001230", "000660"]
+    assert blocked.position_state == PositionLifecycle.RISK_BLOCKED.value
+    assert blocked.skip_reason == "kis_trading_halted"
+    assert blocked.auto_buy_enabled is False
 
