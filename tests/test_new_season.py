@@ -212,6 +212,25 @@ def test_reset_dry_run_with_confirm_keeps_db(tmp_path) -> None:
     assert db_path.exists()
 
 
+def test_reset_execute_clears_tables_without_unlinking_db_file(tmp_path) -> None:
+    db_path = tmp_path / "state.sqlite3"
+    config_path = _write_config(tmp_path, db_path)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("CREATE TABLE orders (status TEXT)")
+        connection.execute("CREATE TABLE fills (code TEXT)")
+        connection.execute("INSERT INTO orders VALUES ('FILLED')")
+        connection.execute("INSERT INTO fills VALUES ('005930')")
+
+    result = prepare_new_season.reset_db(config_path, prepare_new_season.CONFIRM_RESET, dry_run=False)
+
+    assert result["reset"] is True
+    assert result["method"] == "clear_tables"
+    assert db_path.exists()
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM orders").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM fills").fetchone()[0] == 0
+
+
 def test_liquidation_plan_does_not_create_orders_or_requests(tmp_path) -> None:
     db_path = tmp_path / "state.sqlite3"
     config_path = _write_config(tmp_path, db_path)

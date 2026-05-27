@@ -6,6 +6,8 @@ Last updated: 2026-05-27
 Baseline profile: `expansion_100_safe`  
 Safety note: analysis/export must not call KIS order APIs, must not place orders, and must not reset DB.
 
+Quick operator guide: see `docs/market_data_tuning_guide.md` for the daily `Save market data now` workflow and the 2026-05-27 saved-data verification snapshot.
+
 ## Purpose
 
 The goal is not just to see whether the bot made money. The goal is to preserve enough decision, order, fill, LOT, and config context so future analysis can compare config versions and suggest better values for:

@@ -548,18 +548,33 @@ def reset_db(config_path: Path, confirm: str, dry_run: bool) -> dict[str, Any]:
     if any(blockers.values()):
         return {"reset": False, "reason": "reset_blocked_by_open_order_or_sync_mismatch", "blockers": blockers, "dry_run": dry_run}
     if dry_run:
-        return {"reset": False, "reason": "dry_run", "db_path": str(db_path), "dry_run": True}
-    try:
-        db_path.unlink()
-        return {"reset": True, "db_path": str(db_path), "dry_run": False, "method": "unlink"}
-    except PermissionError:
-        cleared_tables = clear_sqlite_db(db_path)
-        return {"reset": True, "db_path": str(db_path), "dry_run": False, "method": "clear_tables", "cleared_tables": cleared_tables}
+        return {
+            "reset": False,
+            "reason": "dry_run",
+            "db_path": str(db_path),
+            "dry_run": True,
+            "method": "clear_tables",
+        }
+    cleared_tables = clear_sqlite_db(db_path)
+    return {
+        "reset": True,
+        "db_path": str(db_path),
+        "dry_run": False,
+        "method": "clear_tables",
+        "cleared_tables": cleared_tables,
+    }
 
 
 def clear_sqlite_db(db_path: Path) -> list[str]:
-    """Clear all application tables when Windows refuses to unlink the DB file."""
-    with sqlite3.connect(db_path) as connection:
+    """Clear all application tables without deleting the SQLite file.
+
+    Keeping the DB file in place avoids the common Windows unlink failure when the
+    UI still has a read connection open. The reset guard must already have
+    confirmed that no open lots, pending orders, pending manual requests, or sync
+    mismatches remain before this function is called.
+    """
+    with sqlite3.connect(db_path, timeout=30) as connection:
+        connection.execute("PRAGMA busy_timeout=30000")
         rows = connection.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
         ).fetchall()

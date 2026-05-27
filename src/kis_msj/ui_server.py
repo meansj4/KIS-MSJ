@@ -715,8 +715,8 @@ async function loadNewSeason() {
     <p>${esc(msg.description || '')}</p>
     ${blockedGuide ? `<p class="bad"><strong>막힌 이유</strong>: ${esc(blockedGuide)}</p>` : ''}
     <p><strong>다음에 할 일</strong>: ${esc(msg.next_action || '아래 버튼을 눌러 다음 가능한 단계를 진행하세요.')}</p>
-    <p><button class="primary" onclick="prepareNewSeasonNext()">새 시즌 준비 계속 진행</button></p>
-    <p class="muted">이 버튼은 KIS 주문 API를 직접 호출하지 않습니다. 전량매도는 manual_order_requests 요청만 만들고, 실제 주문 처리는 실행 중인 Bot Core가 담당합니다.</p>
+    <p><button class="primary" onclick="prepareNewSeasonNext()">새 시즌 전량매도/DB초기화 다음 단계 진행</button></p>
+    <p class="muted">이 버튼은 현재 상태를 다시 확인한 뒤 안전하게 가능한 다음 단계만 실행합니다. 전량매도는 manual_order_requests 요청만 만들고, 실제 주문 처리는 실행 중인 Bot Core가 담당합니다. DB 초기화는 전량매도 체결, reconciliation, OPEN LOT 0개 조건이 끝난 뒤에만 가능합니다.</p>
   </div>
   ${s.new_season_ready ? '<div class="danger" style="background:#166534">새 시즌 시작 준비 완료</div>' : ''}
   <div class="grid">
@@ -733,7 +733,7 @@ async function loadNewSeason() {
     <button onclick="newSeasonPlan(false)">예정표 dry-run</button> <button onclick="newSeasonPlan(true)">예정표 생성</button></p>
     <p><button onclick="newSeasonRequests(false)">전량매도 요청 dry-run</button> <button onclick="newSeasonRequests(true)">manual SELL request 생성</button></p>
     <p><input id="resetConfirm" placeholder="RESET 확인" value="${esc(window.resetConfirm || '')}">
-    <button onclick="newSeasonReset(false)">reset dry-run</button> <button class="dangerBtn" onclick="newSeasonReset(true)">DB 초기화 실행</button></p>
+    <button onclick="newSeasonReset(false)">초기화 가능 여부 확인</button> <button class="dangerBtn" onclick="newSeasonReset(true)">DB 테이블 비우기 실행</button></p>
     <div id="newSeasonResult">${window.newSeasonLastResultObject ? renderReadableObject(window.newSeasonLastResultObject, {raw:true}) : ''}</div>
     ${metrics(s)}
   </details>`;
@@ -758,7 +758,7 @@ async function loadNewSeason() {
   <div class="manualBox">
     <h3>UI에서 진행하기</h3>
     <p class="muted">아래 버튼은 KIS 주문 API를 직접 호출하지 않습니다. 전량매도 요청 생성은 manual_order_requests 큐에 요청만 만들고, 실제 주문은 실행 중인 Bot Core가 기존 안전장치를 거쳐 처리합니다.</p>
-    <p><button class="primary" onclick="prepareNewSeasonNext()">새 시즌 준비 계속 진행</button></p>
+    <p><button class="primary" onclick="prepareNewSeasonNext()">새 시즌 전량매도/DB초기화 다음 단계 진행</button></p>
     <p class="muted">이 버튼은 현재 상태를 읽고 다음으로 가능한 안전 단계만 진행합니다. 막힌 경우에는 무엇을 입력하거나 확인해야 하는지 알려줍니다.</p>
     <div class="grid">
       <div class="controlCard">
@@ -785,8 +785,8 @@ async function loadNewSeason() {
       <div class="controlCard dangerZone">
         <h4>6. DB 초기화</h4>
         <input id="resetConfirm" placeholder="RESET 확인" value="${esc(window.resetConfirm || '')}">
-        <p><button onclick="newSeasonReset(false)">reset dry-run</button>
-        <button class="dangerBtn" onclick="newSeasonReset(true)">DB 초기화 실행</button></p>
+        <p><button onclick="newSeasonReset(false)">초기화 가능 여부 확인</button>
+        <button class="dangerBtn" onclick="newSeasonReset(true)">DB 테이블 비우기 실행</button></p>
         <p class="bad">OPEN LOT, 미체결, 미처리 요청, SYNC_REQUIRED가 있으면 차단됩니다.</p>
       </div>
     </div>

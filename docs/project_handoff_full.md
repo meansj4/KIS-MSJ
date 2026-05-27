@@ -5,6 +5,10 @@
 
 > 2026-05-27 update: the New Season UI can generate a KIS balance snapshot by calling the read-only KIS balance inquiry endpoint. This is not an order API call. The generated JSON is saved under `exports/kis_balance_snapshot_YYYYMMDD_HHMMSS.json`, validated immediately, and can be used for liquidation plan/request creation. The CLI script `scripts/prepare_new_season.py` still expects an existing snapshot JSON path.
 
+> 2026-05-27 market-data note: after market close, `Save market data now` was verified against `data/lot_auto_trader_real_test.sqlite3` with 119/119 symbols succeeded, 119 `daily_prices` rows, 119 additional `price_snapshots`, and zero failed symbols. See `docs/market_data_tuning_guide.md` for the daily collection and Level 2 tuning workflow.
+
+> 2026-05-27 reset note: DB reset now clears application tables inside the existing SQLite file instead of unlinking the `.sqlite3` file first. This reduces Windows file-lock friction when the UI has a read handle open. Reset guards still require OPEN LOT 0, no pending orders/manual requests, no `SYNC_REQUIRED`, and no lot mismatch.
+
 
 관련 문서:
 
