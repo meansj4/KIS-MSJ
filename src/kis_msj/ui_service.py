@@ -10,6 +10,7 @@ import re
 import shutil
 import sqlite3
 import uuid
+from collections import defaultdict
 from dataclasses import asdict
 from datetime import datetime, time as day_time
 from pathlib import Path
@@ -722,6 +723,269 @@ class UIService:
             "enabled_stock_count": sum(1 for stock in config.stocks if stock.enabled),
             "today_fill_count": sum(1 for fill in fills if str(fill.get("filled_at", "")).startswith(today)),
         }
+
+    def portfolio_dashboard(self) -> dict[str, Any]:
+        """Read-only portfolio and risk usage dashboard built from local DB rows."""
+        config = self.config
+        positions = self.positions()
+        lots = self.lots()
+        orders = self.orders()
+        fills = self.fills()
+        price_snapshots = self._table("price_snapshots")
+        positions_by_code = {str(row.get("code") or ""): row for row in positions}
+        latest_prices = self._latest_prices(price_snapshots, positions_by_code)
+        open_lots = [lot for lot in lots if _to_int(lot.get("remaining_quantity")) > 0 and str(lot.get("status") or "") != "CLOSED"]
+        buy_fills = [fill for fill in fills if str(fill.get("side") or "") == OrderSide.BUY.value]
+        sell_fills = [fill for fill in fills if str(fill.get("side") or "") == OrderSide.SELL.value]
+        lot_by_id = {str(lot.get("lot_id") or ""): lot for lot in lots}
+        buy_amount = sum(_to_int(fill.get("quantity")) * _to_int(fill.get("price")) for fill in buy_fills)
+        buy_lot_count = len(_unique_lot_keys(buy_fills))
+        holding_buy_amount = sum(_to_int(lot.get("remaining_quantity")) * _to_int(lot.get("buy_price")) for lot in open_lots)
+        holding_market_value = sum(_to_int(lot.get("remaining_quantity")) * _current_price_for_lot(lot, latest_prices) for lot in open_lots)
+        realized = self._realized_pnl_from_sell_fills(sell_fills, lot_by_id)
+        if realized["sold_cost"] <= 0:
+            realized["realized_pnl"] = sum(_to_int(lot.get("realized_profit_loss")) for lot in lots)
+            realized["sold_cost"] = sum(max(0, _to_int(lot.get("buy_quantity")) - _to_int(lot.get("remaining_quantity"))) * _to_int(lot.get("buy_price")) for lot in lots)
+        unrealized_pnl = sum((_current_price_for_lot(lot, latest_prices) - _to_int(lot.get("buy_price"))) * _to_int(lot.get("remaining_quantity")) for lot in open_lots)
+        today = datetime.now().date().isoformat()
+        active_codes = self._active_symbol_codes(positions, open_lots, orders)
+        overall = {
+            "total_buy_amount": buy_amount,
+            "total_buy_lot_count": buy_lot_count,
+            "current_holding_buy_amount": holding_buy_amount,
+            "current_holding_market_value": holding_market_value,
+            "current_holding_lot_count": len(open_lots),
+            "holding_symbol_count": len({str(lot.get("code") or "") for lot in open_lots}),
+            "realized_pnl": realized["realized_pnl"],
+            "realized_pnl_rate": _safe_rate(realized["realized_pnl"], realized["sold_cost"]),
+            "unrealized_pnl": unrealized_pnl,
+            "unrealized_pnl_rate": _safe_rate(unrealized_pnl, holding_buy_amount),
+            "today_buy_fill_count": sum(1 for fill in buy_fills if _date_key(fill.get("filled_at")) == today),
+            "today_sell_fill_count": sum(1 for fill in sell_fills if _date_key(fill.get("filled_at")) == today),
+            "today_realized_pnl": self._daily_realized(sell_fills, lot_by_id).get(today, {}).get("realized_pnl", 0),
+            "fee_tax_basis": "estimated_fee_tax_pct",
+            "fee_tax_rate_pct": config.strategy.estimated_fee_tax_pct,
+        }
+        limit_usage = self._limit_usage(config, positions, open_lots, orders, active_codes, holding_buy_amount, today)
+        daily_summary = self._daily_summary(buy_fills, sell_fills, open_lots, lot_by_id, latest_prices)
+        symbol_rows = self._symbol_exposures(positions, open_lots, latest_prices)
+        risk_counts = self._risk_status_counts(positions, open_lots)
+        latest_price_at = max((str(item.get("timestamp") or "") for item in latest_prices.values()), default="")
+        return {
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "pre_after_night_status": {
+                "status": "on_hold",
+                "message": "Pre/After/Night expansion is on hold; this dashboard uses the existing REGULAR-session DB data only.",
+            },
+            "overall_summary": overall,
+            "limit_usage": limit_usage,
+            "daily_summary": daily_summary,
+            "top_symbol_exposures": symbol_rows[:10],
+            "top_symbol_lot_counts": sorted(symbol_rows, key=lambda row: row["open_lot_count"], reverse=True)[:10],
+            "risk_status_counts": risk_counts,
+            "data_quality": {
+                "latest_price_source_at": latest_price_at,
+                "price_snapshot_count": len(price_snapshots),
+                "fee_tax_estimated": True,
+                "notes": self._portfolio_data_quality_notes(price_snapshots, latest_prices, open_lots),
+            },
+            "definitions": {
+                "total_buy_amount": "Sum of BUY fill quantity * price.",
+                "total_buy_lot_count": "Unique LOT ids created by BUY fills; falls back to fill/order key if lot_id is missing.",
+                "current_holding_buy_amount": "OPEN LOT remaining_quantity * buy_price.",
+                "realized_pnl": "SELL fill PnL minus estimated fee/tax when sell fill and lot cost are available; otherwise stored lot realized_profit_loss.",
+                "unrealized_pnl": "OPEN LOT current saved price minus buy price, multiplied by remaining quantity.",
+                "daily_unrealized_pnl": "Current-basis unrealized PnL for open LOTs bought on that date, not a historical close snapshot.",
+            },
+        }
+
+    def _latest_prices(self, price_snapshots: list[dict[str, Any]], positions_by_code: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        latest: dict[str, dict[str, Any]] = {}
+        for code, position in positions_by_code.items():
+            price = _to_int(position.get("current_price"))
+            if price > 0:
+                latest[code] = {"price": price, "source": "positions.current_price", "timestamp": str(position.get("last_update_time") or "")}
+        for snapshot in price_snapshots:
+            code = str(snapshot.get("code") or "")
+            price = _to_int(snapshot.get("current_price"))
+            timestamp = str(snapshot.get("sampled_at") or snapshot.get("collected_at") or "")
+            if not code or price <= 0:
+                continue
+            current = latest.get(code, {})
+            if not current.get("timestamp") or timestamp >= str(current.get("timestamp") or ""):
+                latest[code] = {"price": price, "source": "price_snapshots.current_price", "timestamp": timestamp}
+        return latest
+
+    def _realized_pnl_from_sell_fills(self, sell_fills: list[dict[str, Any]], lot_by_id: dict[str, dict[str, Any]]) -> dict[str, int]:
+        realized_pnl = 0
+        sold_cost = 0
+        for fill in sell_fills:
+            lot = lot_by_id.get(str(fill.get("lot_id") or ""))
+            if not lot:
+                continue
+            quantity = _to_int(fill.get("quantity"))
+            sell_price = _to_int(fill.get("price"))
+            buy_price = _to_int(lot.get("buy_price"))
+            fee_tax = int(round(sell_price * quantity * self.config.strategy.estimated_fee_tax_pct / 100.0))
+            realized_pnl += (sell_price - buy_price) * quantity - fee_tax
+            sold_cost += buy_price * quantity
+        return {"realized_pnl": realized_pnl, "sold_cost": sold_cost}
+
+    def _daily_realized(self, sell_fills: list[dict[str, Any]], lot_by_id: dict[str, dict[str, Any]]) -> dict[str, dict[str, int]]:
+        daily: dict[str, dict[str, int]] = defaultdict(lambda: {"realized_pnl": 0, "sold_cost": 0})
+        for fill in sell_fills:
+            day = _date_key(fill.get("filled_at"))
+            lot = lot_by_id.get(str(fill.get("lot_id") or ""))
+            if not day or not lot:
+                continue
+            quantity = _to_int(fill.get("quantity"))
+            sell_price = _to_int(fill.get("price"))
+            buy_price = _to_int(lot.get("buy_price"))
+            fee_tax = int(round(sell_price * quantity * self.config.strategy.estimated_fee_tax_pct / 100.0))
+            daily[day]["realized_pnl"] += (sell_price - buy_price) * quantity - fee_tax
+            daily[day]["sold_cost"] += buy_price * quantity
+        return daily
+
+    def _daily_summary(
+        self,
+        buy_fills: list[dict[str, Any]],
+        sell_fills: list[dict[str, Any]],
+        open_lots: list[dict[str, Any]],
+        lot_by_id: dict[str, dict[str, Any]],
+        latest_prices: dict[str, dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        rows: dict[str, dict[str, Any]] = defaultdict(lambda: {
+            "date": "",
+            "buy_amount": 0,
+            "buy_lot_count": 0,
+            "sell_amount": 0,
+            "sell_lot_count": 0,
+            "realized_pnl": 0,
+            "realized_pnl_rate": 0.0,
+            "unrealized_pnl": 0,
+            "unrealized_pnl_rate": 0.0,
+            "basis": "fills_by_filled_at_kst",
+        })
+        buy_lots_by_day: dict[str, set[str]] = defaultdict(set)
+        sell_lots_by_day: dict[str, set[str]] = defaultdict(set)
+        for fill in buy_fills:
+            day = _date_key(fill.get("filled_at"))
+            if not day:
+                continue
+            rows[day]["date"] = day
+            rows[day]["buy_amount"] += _to_int(fill.get("quantity")) * _to_int(fill.get("price"))
+            buy_lots_by_day[day].add(_lot_key(fill))
+        for fill in sell_fills:
+            day = _date_key(fill.get("filled_at"))
+            if not day:
+                continue
+            rows[day]["date"] = day
+            rows[day]["sell_amount"] += _to_int(fill.get("quantity")) * _to_int(fill.get("price"))
+            sell_lots_by_day[day].add(_lot_key(fill))
+        daily_realized = self._daily_realized(sell_fills, lot_by_id)
+        for day, values in daily_realized.items():
+            rows[day]["date"] = day
+            rows[day]["realized_pnl"] = values["realized_pnl"]
+            rows[day]["realized_pnl_rate"] = _safe_rate(values["realized_pnl"], values["sold_cost"])
+        for lot in open_lots:
+            day = _date_key(lot.get("buy_filled_at"))
+            if not day:
+                continue
+            rows[day]["date"] = day
+            cost = _to_int(lot.get("remaining_quantity")) * _to_int(lot.get("buy_price"))
+            pnl = (_current_price_for_lot(lot, latest_prices) - _to_int(lot.get("buy_price"))) * _to_int(lot.get("remaining_quantity"))
+            rows[day]["unrealized_pnl"] += pnl
+            rows[day]["_unrealized_cost"] = _to_int(rows[day].get("_unrealized_cost")) + cost
+        for day, row in rows.items():
+            row["buy_lot_count"] = len(buy_lots_by_day[day])
+            row["sell_lot_count"] = len(sell_lots_by_day[day])
+            row["unrealized_pnl_rate"] = _safe_rate(_to_int(row.get("unrealized_pnl")), _to_int(row.get("_unrealized_cost")))
+            row.pop("_unrealized_cost", None)
+        return sorted(rows.values(), key=lambda row: str(row.get("date") or ""), reverse=True)
+
+    def _limit_usage(
+        self,
+        config: BotConfig,
+        positions: list[dict[str, Any]],
+        open_lots: list[dict[str, Any]],
+        orders: list[dict[str, Any]],
+        active_codes: set[str],
+        holding_buy_amount: int,
+        today: str,
+    ) -> list[dict[str, Any]]:
+        today_initial_orders = [order for order in orders if order.get("side") == "BUY" and order.get("reason") == "initial_buy" and str(order.get("requested_at", "")).startswith(today)]
+        today_initial_amount = sum(_to_int(order.get("quantity")) * _to_int(order.get("limit_price")) for order in today_initial_orders)
+        return [
+            _usage("max_total_invested_amount", holding_buy_amount, config.risk.max_total_invested_amount, "KRW", "OPEN LOT remaining cost / risk.max_total_invested_amount"),
+            _usage("max_total_open_lots", len(open_lots), config.risk.max_total_open_lots, "lots", "OPEN LOT count / risk.max_total_open_lots"),
+            _usage("max_active_symbols", len(active_codes), config.risk.max_active_symbols, "symbols", "Active holding/order/review symbols / risk.max_active_symbols"),
+            _usage("max_new_buy_per_day", len(today_initial_orders), config.risk.max_new_buy_per_day, "orders", "Today initial BUY orders / risk.max_new_buy_per_day"),
+            _usage("max_new_buy_amount_per_day", today_initial_amount, config.risk.max_new_buy_amount_per_day, "KRW", "Today initial BUY order amount / risk.max_new_buy_amount_per_day"),
+            _usage("max_total_initial_buy_amount_per_day", today_initial_amount, config.risk.max_total_initial_buy_amount_per_day, "KRW", "Today initial BUY order amount / risk.max_total_initial_buy_amount_per_day"),
+        ]
+
+    def _symbol_exposures(self, positions: list[dict[str, Any]], open_lots: list[dict[str, Any]], latest_prices: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+        by_code: dict[str, dict[str, Any]] = {}
+        positions_by_code = {str(position.get("code") or ""): position for position in positions}
+        for lot in open_lots:
+            code = str(lot.get("code") or "")
+            row = by_code.setdefault(code, {"code": code, "name": positions_by_code.get(code, {}).get("name", ""), "open_lot_count": 0, "holding_buy_amount": 0, "market_value": 0, "unrealized_pnl": 0})
+            quantity = _to_int(lot.get("remaining_quantity"))
+            buy_price = _to_int(lot.get("buy_price"))
+            current_price = _current_price_for_lot(lot, latest_prices)
+            row["open_lot_count"] += 1
+            row["holding_buy_amount"] += quantity * buy_price
+            row["market_value"] += quantity * current_price
+            row["unrealized_pnl"] += (current_price - buy_price) * quantity
+        for code, row in by_code.items():
+            position = positions_by_code.get(code, {})
+            row["unrealized_pnl_rate"] = _safe_rate(_to_int(row.get("unrealized_pnl")), _to_int(row.get("holding_buy_amount")))
+            row["max_symbol_amount"] = _to_int(position.get("max_symbol_amount"))
+            row["max_symbol_amount_usage_pct"] = _safe_percent(_to_int(row.get("holding_buy_amount")), _to_int(position.get("max_symbol_amount")))
+            row["max_lots_per_symbol"] = _to_int(position.get("max_lots_per_symbol"))
+            row["max_lots_per_symbol_usage_pct"] = _safe_percent(_to_int(row.get("open_lot_count")), _to_int(position.get("max_lots_per_symbol")))
+            row["usage_level"] = _usage_level(max(row["max_symbol_amount_usage_pct"] or 0, row["max_lots_per_symbol_usage_pct"] or 0))
+        return sorted(by_code.values(), key=lambda row: max(row["max_symbol_amount_usage_pct"] or 0, row["max_lots_per_symbol_usage_pct"] or 0), reverse=True)
+
+    def _risk_status_counts(self, positions: list[dict[str, Any]], open_lots: list[dict[str, Any]]) -> dict[str, int]:
+        return {
+            "review_required_count": sum(1 for position in positions if position.get("needs_review") or position.get("position_state") == PositionLifecycle.REVIEW_REQUIRED.value),
+            "sync_required_count": sum(1 for position in positions if position.get("sync_status") == PositionLifecycle.SYNC_REQUIRED.value or position.get("position_state") == PositionLifecycle.SYNC_REQUIRED.value),
+            "risk_blocked_count": sum(1 for position in positions if position.get("danger_state") or position.get("position_state") == PositionLifecycle.RISK_BLOCKED.value),
+            "stale_lot_count": sum(1 for lot in open_lots if lot.get("stale_lot")),
+            "cleanup_candidate_count": sum(1 for lot in open_lots if lot.get("cleanup_candidate")),
+            "lot_quantity_mismatch_count": sum(1 for position in positions if position.get("lot_quantity_mismatch")),
+        }
+
+    def _active_symbol_codes(self, positions: list[dict[str, Any]], open_lots: list[dict[str, Any]], orders: list[dict[str, Any]]) -> set[str]:
+        return {
+            str(lot.get("code") or "") for lot in open_lots
+        } | {str(order.get("code") or "") for order in orders if order.get("status") in {"REQUESTED", "PARTIAL"}} | {
+            str(item.get("code") or "") for item in positions if item.get("position_state") in {
+                PositionLifecycle.HOLDING.value,
+                PositionLifecycle.WAIT_REENTRY.value,
+                PositionLifecycle.COOLDOWN_AFTER_CLEANUP.value,
+                PositionLifecycle.REVIEW_REQUIRED.value,
+                PositionLifecycle.RISK_BLOCKED.value,
+                PositionLifecycle.SYNC_REQUIRED.value,
+            }
+        }
+
+    def _portfolio_data_quality_notes(self, price_snapshots: list[dict[str, Any]], latest_prices: dict[str, dict[str, Any]], open_lots: list[dict[str, Any]]) -> list[str]:
+        notes = [
+            "평가손익은 DB에 저장된 positions.current_price 또는 최신 price_snapshots.current_price 기준입니다.",
+            "일자별 평가손익은 현재 기준 보조값이며, 장마감 snapshot 기준 과거 평가손익이 아닙니다.",
+            f"수수료/세금은 strategy.estimated_fee_tax_pct={self.config.strategy.estimated_fee_tax_pct}% 기준 추정치입니다.",
+        ]
+        if not price_snapshots:
+            notes.append("price_snapshots가 없어 positions.current_price 중심으로 평가손익을 계산했습니다.")
+        missing_price_codes = sorted({str(lot.get("code") or "") for lot in open_lots if _current_price_for_lot(lot, latest_prices) <= 0})
+        if missing_price_codes:
+            notes.append("현재가가 없어 평가손익이 0으로 처리된 종목: " + ", ".join(missing_price_codes[:10]))
+        latest_ts = max((str(item.get("timestamp") or "") for item in latest_prices.values()), default="")
+        if latest_ts:
+            notes.append(f"최신 가격 기준 시각: {latest_ts}")
+        return notes
 
     def warnings(self, config: BotConfig, positions: list[dict[str, Any]], orders: list[dict[str, Any]], raw_mapping: dict[str, Any]) -> list[dict[str, str]]:
         warnings = []
@@ -1864,6 +2128,68 @@ def _count_by(rows: list[dict[str, Any]], key: str) -> dict[str, int]:
         value = str(row.get(key, "UNKNOWN"))
         counts[value] = counts.get(value, 0) + 1
     return counts
+
+
+def _to_int(value: Any) -> int:
+    try:
+        if value is None or value == "":
+            return 0
+        return int(float(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _safe_rate(numerator: int | float, denominator: int | float) -> float:
+    return float(numerator) / float(denominator) if denominator else 0.0
+
+
+def _safe_percent(value: int | float, limit: int | float) -> float | None:
+    return round(float(value) / float(limit) * 100.0, 3) if limit else None
+
+
+def _usage(key: str, current: int, limit: int, unit: str, basis: str) -> dict[str, Any]:
+    pct = _safe_percent(current, limit)
+    return {
+        "key": key,
+        "current": current,
+        "limit": limit,
+        "usage_pct": pct,
+        "level": _usage_level(pct),
+        "unit": unit,
+        "basis": basis,
+        "unlimited": limit <= 0,
+    }
+
+
+def _usage_level(pct: float | None) -> str:
+    if pct is None:
+        return "unlimited"
+    if pct >= 100:
+        return "over"
+    if pct >= 80:
+        return "danger"
+    if pct >= 50:
+        return "warning"
+    return "normal"
+
+
+def _date_key(value: Any) -> str:
+    text = str(value or "")
+    return text[:10] if len(text) >= 10 else ""
+
+
+def _lot_key(row: dict[str, Any]) -> str:
+    return str(row.get("lot_id") or row.get("fill_id") or row.get("execution_id") or row.get("order_id") or "")
+
+
+def _unique_lot_keys(rows: list[dict[str, Any]]) -> set[str]:
+    return {key for key in (_lot_key(row) for row in rows) if key}
+
+
+def _current_price_for_lot(lot: dict[str, Any], latest_prices: dict[str, dict[str, Any]]) -> int:
+    code = str(lot.get("code") or "")
+    price = _to_int(latest_prices.get(code, {}).get("price"))
+    return price or _to_int(lot.get("current_price"))
 
 
 def _normalize_row(row: dict[str, Any]) -> dict[str, Any]:

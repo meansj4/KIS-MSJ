@@ -731,3 +731,19 @@ Operator flow:
 5. If the plan is valid, enter the confirm text and create manual SELL requests. This step still only writes `manual_order_requests`; Bot Core handles any real order later through the existing guard/order_manager path.
 
 CLI workflows can still pass an existing JSON file with `--kis-balance-json`. The UI-generated file can be used for that CLI argument.
+
+## Portfolio / Risk Dashboard
+
+The UI includes a read-only `운용 현황 Portfolio/Risk` tab.
+
+- Shows total BUY amount, total BUY LOT count, current OPEN LOT cost/count, realized PnL, realized PnL rate, unrealized PnL, and unrealized PnL rate.
+- Shows config limit usage as progress bars for total invested amount, total open LOTs, active symbols, daily new BUY count, and daily new BUY amount limits.
+- Shows daily BUY/SELL/realized performance by `fills.filled_at` date.
+- Shows top symbol exposure and risk/review/sync/stale counts.
+- Shows data quality notes for price source, snapshot availability, and fee/tax estimate basis.
+
+This tab only reads local DB/config state. It does not call KIS order APIs, does not create orders, does not mutate lots/positions/fills, and does not reset DB.
+
+Pre/After/Night session expansion remains on hold in a separate review branch. The main UI should be interpreted as regular-session LOT operation unless explicitly changed later.
+
+Detailed metric definitions are in [portfolio_dashboard.md](portfolio_dashboard.md).

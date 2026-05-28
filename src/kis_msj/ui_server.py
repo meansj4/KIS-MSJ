@@ -58,6 +58,15 @@ INDEX_HTML = r"""<!doctype html>
     .badge.warn { background: #ffedd5; color: #9a3412; }
     .badge.bad { background: #fee2e2; color: #991b1b; }
     .badge.neutral { background: #e0f2fe; color: #075985; }
+    .usageBar { height: 9px; border-radius: 999px; background: #e5e7eb; overflow: hidden; margin-top: 8px; }
+    .usageFill { height: 100%; border-radius: 999px; background: #16a34a; width: 0%; }
+    .usageFill.warning { background: #f59e0b; }
+    .usageFill.danger { background: #dc2626; }
+    .usageFill.over { background: #7f1d1d; }
+    .usageFill.unlimited { background: #64748b; }
+    .dashboardCard { border: 1px solid #e2e7ec; border-radius: 8px; padding: 12px; background: #fff; }
+    .dashboardCard h3 { margin: 0 0 8px; font-size: 14px; }
+    .dashboardValue { font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; }
     .pos { color: #15803d; font-weight: 700; }
     .neg { color: #b91c1c; font-weight: 700; }
     .muted { color: #7b8794; }
@@ -110,6 +119,7 @@ INDEX_HTML = r"""<!doctype html>
 </div>
 <main>
   <div class="tabs">
+    <button onclick="loadPortfolioDashboard()">운용 현황 Portfolio/Risk</button>
     <button onclick="loadDashboard()">대시보드 Dashboard</button>
     <button onclick="loadStocks()">종목 Stocks</button>
     <button onclick="loadLots()">LOT Lots</button>
@@ -495,6 +505,7 @@ function sortValue(v) {
 }
 let currentView = 'dashboard';
 async function reloadCurrent() {
+  if (currentView === 'portfolioDashboard') return loadPortfolioDashboard();
   if (currentView === 'stocks') return loadStocks();
   if (currentView === 'lots') return loadLots();
   if (currentView === 'orders') return loadOrders();
@@ -553,6 +564,62 @@ async function loadDashboard() {
     review_required_count: s.position_state_counts.REVIEW_REQUIRED || 0
   };
   document.getElementById('content').innerHTML = `<h2>대시보드</h2><h3>핵심 요약</h3>${metrics(top)}<h3>Analysis data status</h3>${metrics(s.analysis_status || {})}<h3>봇 상태</h3>${metrics(s.bot)}<h3>계좌/리스크</h3>${metrics(s.account_risk)}<h3>보유 상태별 종목 수</h3>${metrics(s.position_state_counts)}<h3>주문 상태</h3>${metrics(s.order_status_counts)}<h3>경고</h3>${table(s.warnings, 'warnings')}<h3>런타임 제어</h3>${metrics(s.runtime_control)}`;
+}
+async function loadPortfolioDashboard() {
+  currentView = 'portfolioDashboard';
+  const d = await api('/api/portfolio-dashboard');
+  const summary = d.overall_summary || {};
+  document.getElementById('content').innerHTML = `
+    <h2>운용 현황</h2>
+    <div class="manualBox"><strong>Read-only</strong><p class="muted">이 탭은 DB 조회만 수행하며 주문 API 호출, LOT/position/fill 변경, DB reset을 하지 않습니다. ${esc(d.pre_after_night_status?.message || '')}</p></div>
+    <h3>전체 요약</h3>
+    <div class="grid">
+      ${summaryCard('총 매수 금액', summary.total_buy_amount, 'KRW', 'BUY fill 누적 체결금액')}
+      ${summaryCard('총 매수 LOT', summary.total_buy_lot_count, 'LOTS', 'BUY fill 기준 unique LOT')}
+      ${summaryCard('현재 보유 원금', summary.current_holding_buy_amount, 'KRW', 'OPEN LOT remaining cost')}
+      ${summaryCard('현재 OPEN LOT', summary.current_holding_lot_count, 'LOTS', 'remaining_quantity > 0')}
+      ${summaryCard('실현 수익', summary.realized_pnl, 'KRW', 'SELL fill net estimate')}
+      ${summaryCard('실현 수익률', summary.realized_pnl_rate, 'RATE', 'realized_pnl / sold cost')}
+      ${summaryCard('평가 수익', summary.unrealized_pnl, 'KRW', 'saved current price basis')}
+      ${summaryCard('평가 수익률', summary.unrealized_pnl_rate, 'RATE', 'unrealized_pnl / open cost')}
+    </div>
+    <h3>한도 사용률</h3>
+    <div class="grid">${(d.limit_usage || []).map(usageCard).join('')}</div>
+    <h3>날짜별 성과</h3>
+    ${table(d.daily_summary || [], 'portfolioDaily')}
+    <h3>종목별 사용률 Top</h3>
+    ${table(d.top_symbol_exposures || [], 'portfolioSymbols')}
+    <h3>위험/검토 필요 요약</h3>
+    ${metrics(d.risk_status_counts || {})}
+    <h3>데이터 품질</h3>
+    ${metrics(d.data_quality || {})}
+    <details><summary>지표 정의 보기</summary>${renderReadableObject(d.definitions || {})}</details>
+  `;
+}
+function summaryCard(title, value, unit, help) {
+  const cls = Number(value || 0) < 0 ? 'neg' : (Number(value || 0) > 0 && title.includes('수익') ? 'pos' : '');
+  return `<div class="dashboardCard"><h3>${esc(title)}</h3><div class="dashboardValue ${cls}">${formatDashboardValue(value, unit)}</div><p class="muted">${esc(help)}</p></div>`;
+}
+function usageCard(row) {
+  const pct = row.usage_pct == null ? 0 : Math.max(0, Math.min(100, Number(row.usage_pct)));
+  const label = row.unlimited ? '무제한/비활성' : `${Number(row.usage_pct || 0).toFixed(1)}%`;
+  return `<div class="dashboardCard">
+    <h3>${esc(labelFor(row.key || ''))}</h3>
+    <div><strong>${displayCell('', row.current)} / ${row.unlimited ? '∞' : displayCell('', row.limit)}</strong> <span class="badge ${usageBadgeClass(row.level)}">${esc(label)}</span></div>
+    <div class="usageBar"><div class="usageFill ${esc(row.level || '')}" style="width:${pct}%"></div></div>
+    <p class="muted">${esc(row.basis || '')}</p>
+  </div>`;
+}
+function usageBadgeClass(level) {
+  if (level === 'over' || level === 'danger') return 'bad';
+  if (level === 'warning') return 'warn';
+  if (level === 'normal') return 'good';
+  return 'neutral';
+}
+function formatDashboardValue(value, unit) {
+  if (unit === 'RATE') return `${(Number(value || 0) * 100).toFixed(2)}%`;
+  if (unit === 'KRW') return Number(value || 0).toLocaleString();
+  return displayCell('', value);
 }
 async function loadStocks() {
   currentView = 'stocks';
@@ -1176,6 +1243,8 @@ class UIHandler(BaseHTTPRequestHandler):
                 "/api/orders": self.service.orders,
                 "/api/fills": self.service.fills,
                 "/api/manual-order-requests": self.service.manual_order_requests,
+                "/api/portfolio-dashboard": self.service.portfolio_dashboard,
+                "/api/portfolio/summary": self.service.portfolio_dashboard,
                 "/api/decisions": self.service.parse_decision_logs,
                 "/api/risk/summary": lambda: self.service.status()["account_risk"],
                 "/api/execution-mapping/status": self.service.execution_mapping_status,
