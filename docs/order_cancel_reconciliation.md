@@ -55,6 +55,24 @@ For a case like NEXTEEL where MTS shows 23 shares and DB open LOTs show 17:
 4. If only balance proves the extra shares and no execution row is available, do not edit `positions` alone. Use a manual reconciliation/audit procedure that creates an explicit repair fill or review record.
 5. After repair, verify DB open LOT quantity equals KIS balance quantity before clearing `SYNC_REQUIRED`.
 
+## Missing Fill Repair CLI
+
+Use `scripts/repair_missing_fill.py` for a staged, auditable repair.
+
+Plan-only mode creates a DB backup, filtered CSV exports, `before_summary.json`, `repair_plan.json`, and audit events. It does not change trading tables:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\repair_missing_fill.py --config config\lot_auto_trader.json --code 092790 --order-no 0018769500 --kis-readonly
+```
+
+Execution requires an explicit confirm text and still only inserts a verified fill, then applies it through `PositionManager.apply_fill()`:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\repair_missing_fill.py --config config\lot_auto_trader.json --code 092790 --order-no 0018769500 --kis-readonly --execute --confirm "누락체결 복구 확인"
+```
+
+If KIS execution inquiry cannot find a row, the script leaves `SYNC_REQUIRED` in place and writes a manual repair plan. Manual repair values must still become a fill row first; direct `positions` or `lots` quantity edits are not part of the repair flow.
+
 ## Safety
 
 This reconciliation design is read/query based. UI views must not call KIS order, revise, or cancel APIs. DB reset is not part of mismatch recovery.
