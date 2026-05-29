@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from .config import BotConfig
-from .lot_manager import LotManager
+from .lot_manager import LotManager, lot_buy_timestamp
 from .models import AccountSnapshot, LotState, OrderSide, PositionLifecycle, PositionState, ReentryType, SellReason
 from .risk_manager import RiskDecision
 
@@ -269,7 +269,15 @@ class LotGridStrategy:
             return (self._sort_sell_lots(profit_candidates, current_price)[0], SellReason.PROFIT_TAKE.value, 0, True)
         allowed_cleanup = [item for item in cleanup_candidates if item[2]]
         if allowed_cleanup:
-            lot, expected_loss, cleanup_allowed = sorted(allowed_cleanup, key=lambda item: (item[1], -item[0].age_weeks))[0]
+            lot, expected_loss, cleanup_allowed = sorted(
+                allowed_cleanup,
+                key=lambda item: (
+                    lot_buy_timestamp(item[0]),
+                    item[1],
+                    item[0].profit_pct_at(current_price),
+                    item[0].lot_id,
+                ),
+            )[0]
             return (lot, SellReason.CLEANUP_SELL.value, expected_loss, cleanup_allowed)
         return None
 
@@ -285,12 +293,12 @@ class LotGridStrategy:
         return sorted(
             lots,
             key=lambda lot: (
-                lot.profit_pct_at(current_price),
-                lot.open_amount,
-                -datetime.fromisoformat(lot.buy_filled_at).timestamp(),
+                lot_buy_timestamp(lot),
+                -lot.profit_pct_at(current_price),
+                -lot.open_amount,
                 -lot.remaining_quantity,
+                lot.lot_id,
             ),
-            reverse=True,
         )
 
     def context(self, position: PositionState, current_price: int, snapshot: AccountSnapshot | None = None) -> StrategyContext:

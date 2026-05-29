@@ -123,15 +123,41 @@ def test_sellable_lot_targets_only_profitable_lot() -> None:
     assert [lot.lot_id for lot in sellable] == [old.lot_id]
 
 
-def test_multiple_sellable_lots_sorted_by_profit_rate_first() -> None:
+def test_multiple_sellable_lots_sorted_by_oldest_first() -> None:
     _, lots, positions, _, _, _ = setup_strategy()
-    low = add_lot(positions, "005930", 9000, 10, 20)
-    high = add_lot(positions, "005930", 9500, 100, 10)
+    old_lower_profit = add_lot(positions, "005930", 10000, 10, 20)
+    newer_higher_profit = add_lot(positions, "005930", 9000, 100, 10)
 
-    sellable = lots.sellable_lots("005930", 10500, lots.cumulative_invested_amount("005930"))
+    sellable = lots.sellable_lots("005930", 10700, lots.cumulative_invested_amount("005930"))
 
-    assert sellable[0].lot_id == low.lot_id
-    assert high in sellable
+    assert sellable[0].lot_id == old_lower_profit.lot_id
+    assert newer_higher_profit in sellable
+
+
+def test_profit_take_sell_prefers_oldest_lot_over_highest_profit_rate() -> None:
+    _, _, positions, strategy, risk, snapshot = setup_strategy()
+    old_lower_profit = add_lot(positions, "005930", 10000, 10, 20)
+    add_lot(positions, "005930", 9000, 10, 10)
+    position = positions.refresh_from_lots("005930", 10700)
+
+    action = strategy.decide(position, 10700, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+
+    assert action is not None
+    assert action.sell_reason == SellReason.PROFIT_TAKE.value
+    assert action.lot_id == old_lower_profit.lot_id
+
+
+def test_profit_take_same_buy_time_uses_profit_rate_tie_breaker() -> None:
+    _, lots, positions, _, _, _ = setup_strategy()
+    first = add_lot(positions, "005930", 10000, 10)
+    second = add_lot(positions, "005930", 9000, 10)
+    same_time = datetime.now().isoformat(timespec="microseconds")
+    first.buy_filled_at = same_time
+    second.buy_filled_at = same_time
+
+    sellable = lots.sellable_lots("005930", 10700, lots.cumulative_invested_amount("005930"))
+
+    assert sellable[0].lot_id == second.lot_id
 
 
 def test_average_loss_but_profitable_lot_sells_only_that_lot() -> None:
@@ -373,6 +399,22 @@ def test_cleanup_sell_full_exit_sets_cleanup_cooldown() -> None:
     position = positions.apply_fill(TradeFill("005930", "Test", OrderSide.SELL, 1, 9600, "SELL-1", datetime.now(), old.lot_id, sell_reason=action.sell_reason))
     assert position.position_state == PositionLifecycle.COOLDOWN_AFTER_CLEANUP.value
     assert position.cleanup_reentry_cooldown_until
+
+
+def test_cleanup_sell_prefers_oldest_allowed_lot_over_smaller_loss() -> None:
+    strategy_config = StrategyConfig(cleanup_enabled=True, estimated_fee_tax_pct=0)
+    _, _, positions, strategy, risk, snapshot = setup_strategy(strategy_config, daily_profit_loss=10_000)
+    old_larger_loss = add_lot(positions, "005930", 10000, 1)
+    newer_smaller_loss = add_lot(positions, "005930", 9900, 1)
+    age_lot(old_larger_loss, 19)
+    age_lot(newer_smaller_loss, 18)
+    position = positions.refresh_from_lots("005930", 9700)
+
+    action = strategy.decide(position, 9700, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+
+    assert action is not None
+    assert action.sell_reason == SellReason.CLEANUP_SELL.value
+    assert action.lot_id == old_larger_loss.lot_id
 
 
 def test_cleanup_cooldown_blocks_reentry_even_when_price_drops() -> None:

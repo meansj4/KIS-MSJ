@@ -5,6 +5,8 @@
 
 > 2026-05-29 loop optimization: automatic scan now uses one quote per enabled symbol, runs 5-sample stability checks only for BUY/SELL candidates, and fetches one final quote before order request construction. Operational changes to accept: non-candidates skip stability sampling, candidates may be blocked more conservatively, and final quote can change quantity/limit/new unlocked LOT bucket. Rollback range: `0e8405d..42c37fe`. Final quote is traceable via `decisions.current_price`, linked `price_snapshots.current_price`, and submitted `orders`; `raw_json` currently stores `sample_count` only, not individual samples or a nested `final_quote`.
 
+> 2026-05-29 SELL LOT priority: if multiple OPEN LOTs satisfy a SELL condition, the bot now sells the oldest valid `buy_filled_at` first. `PROFIT_TAKE` keeps profit/exposure/quantity/`lot_id` as tie-breakers; `CLEANUP_SELL` keeps expected-loss/profit/`lot_id` as tie-breakers. Eligibility, guards, reconciliation, manual request routing, and fill-driven DB updates are unchanged.
+
 
 Last updated: 2026-05-26  
 기준 테스트 결과: `156 passed`  

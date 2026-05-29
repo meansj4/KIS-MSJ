@@ -9,6 +9,13 @@ from .config import StrategyConfig
 from .models import LotState, LotStatus, SellReason, TradeFill
 
 
+def lot_buy_timestamp(lot: LotState) -> float:
+    try:
+        return datetime.fromisoformat(lot.buy_filled_at).timestamp()
+    except (TypeError, ValueError):
+        return float("inf")
+
+
 class LotManager:
     def __init__(self, config: StrategyConfig, lots: dict[str, LotState] | None = None) -> None:
         self.config = config
@@ -92,12 +99,12 @@ class LotManager:
         return sorted(
             lots,
             key=lambda lot: (
-                lot.profit_pct_at(current_price),
-                lot.open_amount,
-                -datetime.fromisoformat(lot.buy_filled_at).timestamp(),
+                lot_buy_timestamp(lot),
+                -lot.profit_pct_at(current_price),
+                -lot.open_amount,
                 -lot.remaining_quantity,
+                lot.lot_id,
             ),
-            reverse=True,
         )
 
     def cleanup_candidate_lots(self, code: str, current_price: int) -> list[LotState]:
