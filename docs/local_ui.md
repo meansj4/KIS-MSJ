@@ -16,6 +16,21 @@ If MTS quantity and DB LOT quantity differ, keep the symbol in `SYNC_REQUIRED` u
 > Authoritative source: `docs/project_handoff_full.md` is the latest full baseline. `docs/project_handoff_thread_prompt.md` is for starting a new chat, and `docs/project_handoff_summary.md` is the short summary. `local_ui.md`, `strategy_lot_sizing.md`, `new_season_reset.md`, and `expansion_100_config.md` are detailed references. If a reference doc conflicts with the full handoff, use `project_handoff_full.md` as the source of truth.  
 > Last updated: 2026-05-26 / Baseline tests: `156 passed` / Baseline config profile: `expansion_100_safe`. Re-check config, DB, logs, and KIS account state at runtime.
 
+## Hourly Log Files
+
+Bot logs now use KST date/hour files under the configured `log_path` parent directory:
+
+```text
+logs/
+  260529/
+    09.log
+    10.log
+  260530/
+    09.log
+```
+
+The configured `log_path` such as `logs/lot_auto_trader.log` is kept as a compatibility anchor. Existing `logs/*.log` files are not deleted. New bot and UI audit log records are appended to the current KST `YYMMDD/HH.log` file. Rollover happens inside the logging handler per complete record, so a multiline record is not split between hours. The Logs tab and `/api/logs/tail` read both legacy root log files and the new hourly files, then apply the same keyword/level/event filters.
+
 
 ## REVIEW_REQUIRED 처리 가이드
 

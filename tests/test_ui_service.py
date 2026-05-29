@@ -752,7 +752,7 @@ def test_processing_manual_request_stale_requeue_and_cancel_are_safe(tmp_path):
     canceled = store.manual_order_requests()[0]
     assert canceled["status"] == "BLOCKED"
     assert canceled["block_reason"] == "operator_cancel_stale_processing"
-    log_text = Path(log_path).read_text(encoding="utf-8")
+    log_text = "\n".join(service.logs_tail(limit=100)["lines"])
     assert "manual_order_request_requeued" in log_text
     assert "manual_order_request_blocked_by_operator" in log_text
     assert "previous_processing_started_at" in log_text

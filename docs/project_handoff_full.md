@@ -15,6 +15,10 @@
 
 > 2026-05-29 SELL LOT priority update: when multiple OPEN LOTs satisfy the same SELL condition for a symbol, the selected LOT is now the oldest valid `buy_filled_at` first. `PROFIT_TAKE` ties keep higher profit rate/larger exposure/larger quantity/`lot_id` ordering; `CLEANUP_SELL` ties use lower expected loss/lower profit rate/`lot_id`. This can sell an older lower-profit LOT before a newer higher-profit LOT, but does not change SELL eligibility, target calculation, risk/open-order/runtime guards, reconciliation, manual request routing, or fill-driven DB updates.
 
+> 2026-05-29 hourly log storage update: the configured `log_path` remains the compatibility anchor, but new bot/UI audit records are written under its parent as KST `YYMMDD/HH.log` files, for example `logs/260529/09.log`. Rollover is handled per logging record, not by cutting files, so multiline records stay intact. Existing root `logs/*.log` files are preserved and the Logs UI/API tails both legacy and hourly files.
+
+> 2026-05-29 config update: `001230` 동국홀딩스 is back in the 120-symbol bootstrap set after read-only quote verification. It changed from `enabled=false`, `manual_only=true`, `trading_halted=true` to `enabled=true`, `manual_only=false`, `trading_halted=false`. Enabled symbols are now 120/120, matching `risk.max_active_symbols=120`.
+
 > 2026-05-27 update: the New Season UI can generate a KIS balance snapshot by calling the read-only KIS balance inquiry endpoint. This is not an order API call. The generated JSON is saved under `exports/kis_balance_snapshot_YYYYMMDD_HHMMSS.json`, validated immediately, and can be used for liquidation plan/request creation. The CLI script `scripts/prepare_new_season.py` still expects an existing snapshot JSON path.
 
 > 2026-05-27 market-data note: after market close, `Save market data now` was verified against `data/lot_auto_trader_real_test.sqlite3` with 119/119 symbols succeeded, 119 `daily_prices` rows, 119 additional `price_snapshots`, and zero failed symbols. See `docs/market_data_tuning_guide.md` for the daily collection and Level 2 tuning workflow.
@@ -540,7 +544,7 @@ profile 후보:
 | code | name | 처리 | 이유 |
 | --- | --- | --- | --- |
 | 005935 | 삼성전자우 | enabled=false, manual_only=true, liquidity_warning=true | KIS KOSPI master 검증에서 미확인되어 자동매수 비활성 |
-| 001230 | 동국홀딩스 | enabled=false, manual_only=true, trading_halted=true | KIS KOSPI master 기준 trading_halt_yn=Y |
+| 001230 | 동국홀딩스 | enabled=true, manual_only=false, trading_halted=false | 2026-05-29 read-only quote 확인 후 거래 대상 복귀 |
 | 020560 | 아시아나항공 | enabled=false, manual_only=true, administrative_issue=true | 대한항공 통합/브랜드 종료 일정 관련 이벤트 리스크 |
 
 전체 후보군은 `config/lot_auto_trader.json`의 `stocks` 배열이 원본이다. 아래 표는 현재 문서화 시점의 후보군이다. 새 세션에서 실제 작업을 이어갈 때는 config를 다시 읽어 최신 enabled/risk flag를 확인하는 것이 가장 안전하다.
@@ -611,7 +615,7 @@ profile 후보:
 | 62 | 010060 | OCI홀딩스 | KOSPI | 화학/태양광 | true | false | - |
 | 63 | 010130 | 고려아연 | KOSPI | 비철금속 | true | false | - |
 | 64 | 004020 | 현대제철 | KOSPI | 철강 | true | false | - |
-| 65 | 001230 | 동국홀딩스 | KOSPI | 철강/지주 | false | true | trading_halted, KIS master 기준 trading_halt_yn=Y |
+| 65 | 001230 | 동국홀딩스 | KOSPI | 철강/지주 | true | false | 2026-05-29 read-only quote 확인 후 거래 대상 복귀 |
 | 66 | 000720 | 현대건설 | KOSPI | 건설 | true | false | - |
 | 67 | 006360 | GS건설 | KOSPI | 건설 | true | false | - |
 | 68 | 047040 | 대우건설 | KOSPI | 건설 | true | false | - |

@@ -18,6 +18,7 @@ from typing import Any
 
 from .config import DEFAULT_CONFIG_PATH, BotConfig, config_hash, load_config
 from .kis_client import KisClient
+from .logger import append_hourly_log_line, tail_hourly_logs
 from .lot_manager import LotManager, round_price
 from .models import OrderSide, PositionLifecycle, PositionState
 from .runtime_control import DEFAULT_RUNTIME_CONTROL_PATH, RuntimeControl, load_runtime_control, runtime_block_reason, save_runtime_control
@@ -2009,10 +2010,7 @@ class UIService:
         return ""
 
     def parse_log_events(self, limit: int = 300) -> list[str]:
-        log_path = Path(self.config.log_path)
-        if not log_path.exists():
-            return []
-        return [_mask_sensitive(line.rstrip()) for line in _tail_lines(log_path, limit)]
+        return [_mask_sensitive(line.rstrip()) for line in tail_hourly_logs(self.config.log_path, limit)]
 
     def parse_decision_logs(self, limit: int = 500) -> list[dict[str, Any]]:
         decisions = []
@@ -2207,11 +2205,8 @@ class UIService:
         return False
 
     def _append_audit_log(self, event: str, payload: dict[str, Any]) -> None:
-        log_path = Path(self.config.log_path)
-        log_path.parent.mkdir(parents=True, exist_ok=True)
         item = " ".join(f"{key}={json.dumps(value, ensure_ascii=False, default=str)}" for key, value in payload.items())
-        with log_path.open("a", encoding="utf-8") as output:
-            output.write(f"{datetime.now().isoformat(timespec='seconds')} INFO {event} {item}\n")
+        append_hourly_log_line(self.config.log_path, f"{datetime.now().isoformat(timespec='seconds')} INFO {event} {item}")
 
     def _latest_log_time(self) -> str:
         for line in reversed(self.parse_log_events(200)):
@@ -2288,12 +2283,6 @@ def _deep_merge(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
         else:
             result[key] = value
     return result
-
-
-def _tail_lines(path: Path, limit: int) -> list[str]:
-    with path.open("r", encoding="utf-8", errors="replace") as input_file:
-        lines = input_file.readlines()
-    return lines[-limit:]
 
 
 def _mask_sensitive(value: str) -> str:

@@ -7,6 +7,8 @@
 
 > 2026-05-29 SELL LOT priority: if multiple OPEN LOTs satisfy a SELL condition, the bot now sells the oldest valid `buy_filled_at` first. `PROFIT_TAKE` keeps profit/exposure/quantity/`lot_id` as tie-breakers; `CLEANUP_SELL` keeps expected-loss/profit/`lot_id` as tie-breakers. Eligibility, guards, reconciliation, manual request routing, and fill-driven DB updates are unchanged.
 
+> 2026-05-29 logging/config: new bot/UI audit records use KST hourly files under the configured log parent (`logs/YYMMDD/HH.log`) while preserving legacy `logs/*.log`; Logs UI/API tails both. `001230` 동국홀딩스 was re-enabled after read-only quote verification, so enabled symbols are 120/120 with `max_active_symbols=120`.
+
 
 Last updated: 2026-05-26  
 기준 테스트 결과: `156 passed`  
