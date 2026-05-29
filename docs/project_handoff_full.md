@@ -7,6 +7,8 @@
 
 > Portfolio drill-down update: realized/unrealized PnL details are lazy-loaded through read-only endpoints under `/api/portfolio-dashboard/*-detail`. Realized detail is SELL-fill based for correct partial-sell handling; unrealized detail is OPEN-LOT based with target price/amount reference values. Default dashboard payload remains summary-first.
 
+> 2026-05-29 cancel/fill reconciliation update: cancel requests are no longer treated as proof of no fill. After a timeout cancel, the bot performs a post-cancel execution check and records `CANCELED_NO_FILL`, `CANCELED_AFTER_PARTIAL_FILL`, `FILLED_AFTER_CANCEL_REQUEST`, or `CANCEL_REJECTED` as appropriate. The Orders UI exposes cancel flags, filled quantity, remaining quantity, post-cancel check state, and warning badges. See [order_cancel_reconciliation.md](order_cancel_reconciliation.md).
+
 > 2026-05-27 update: the New Season UI can generate a KIS balance snapshot by calling the read-only KIS balance inquiry endpoint. This is not an order API call. The generated JSON is saved under `exports/kis_balance_snapshot_YYYYMMDD_HHMMSS.json`, validated immediately, and can be used for liquidation plan/request creation. The CLI script `scripts/prepare_new_season.py` still expects an existing snapshot JSON path.
 
 > 2026-05-27 market-data note: after market close, `Save market data now` was verified against `data/lot_auto_trader_real_test.sqlite3` with 119/119 symbols succeeded, 119 `daily_prices` rows, 119 additional `price_snapshots`, and zero failed symbols. See `docs/market_data_tuning_guide.md` for the daily collection and Level 2 tuning workflow.

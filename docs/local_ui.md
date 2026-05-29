@@ -1,5 +1,18 @@
 # KIS LOT Bot Local UI and Control API
 
+## Order Cancel Reconciliation UI
+
+The Orders table is read-only and now shows cancel/fill reconciliation fields so a canceled-looking order is not mistaken for a no-fill order:
+
+- `cancel_requested`, `cancel_confirmed`, `cancel_rejected`
+- `filled_quantity`, `remaining_quantity`, `fill_count`
+- `post_cancel_execution_checked`
+- `order_sync_warning`
+
+Important warnings include `canceled_status_with_fill`, `canceled_without_post_cancel_execution_check`, `cancel_rejected_reconciliation_required`, and `fill_confirmed_after_cancel_request`.
+
+If MTS quantity and DB LOT quantity differ, keep the symbol in `SYNC_REQUIRED` until a real execution row can be reconciled into `fills` and then applied to `lots`/`positions`. Do not repair by editing `positions` quantity alone. Details: [order_cancel_reconciliation.md](order_cancel_reconciliation.md).
+
 > Authoritative source: `docs/project_handoff_full.md` is the latest full baseline. `docs/project_handoff_thread_prompt.md` is for starting a new chat, and `docs/project_handoff_summary.md` is the short summary. `local_ui.md`, `strategy_lot_sizing.md`, `new_season_reset.md`, and `expansion_100_config.md` are detailed references. If a reference doc conflicts with the full handoff, use `project_handoff_full.md` as the source of truth.  
 > Last updated: 2026-05-26 / Baseline tests: `156 passed` / Baseline config profile: `expansion_100_safe`. Re-check config, DB, logs, and KIS account state at runtime.
 

@@ -9,18 +9,36 @@ from kis_msj.storage import StateStore
 
 
 class ReconcileClient:
-    def __init__(self, fills: tuple[TradeFill, ...] = ()) -> None:
+    def __init__(self, fills: tuple[TradeFill, ...] = (), *, cancel_status: OrderStatus = OrderStatus.CANCELED, cancel_error: Exception | None = None, execution_batches: tuple[tuple[TradeFill, ...], ...] = ()) -> None:
         self.fills = fills
+        self.execution_batches = list(execution_batches)
         self.canceled: list[tuple[str, int]] = []
         self.execution_since = None
+        self.cancel_status = cancel_status
+        self.cancel_error = cancel_error
 
     def executions(self, *, since=None):
         self.execution_since = since
+        if self.execution_batches:
+            return self.execution_batches.pop(0)
         return self.fills
 
     def cancel_order(self, order_id: str, quantity: int) -> OrderStatus:
         self.canceled.append((order_id, quantity))
-        return OrderStatus.CANCELED
+        if self.cancel_error is not None:
+            raise self.cancel_error
+        return self.cancel_status
+
+
+class SubmitClient(ReconcileClient):
+    def __init__(self, *, order_id: str = "000001", **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.order_id = order_id
+        self.placed: list[OrderRequest] = []
+
+    def place_order(self, request: OrderRequest) -> OrderResult:
+        self.placed.append(request)
+        return OrderResult(request, self.order_id, OrderStatus.REQUESTED, "requested")
 
 
 def order(code: str = "005930", side: OrderSide = OrderSide.BUY, quantity: int = 10, lot_id: str = "") -> OrderResult:
@@ -62,6 +80,80 @@ def test_old_partial_order_becomes_partial_canceled_after_cancel(tmp_path) -> No
     manager.reconcile_open_orders()
 
     assert not store.has_open_order("005930", OrderSide.BUY)
+    assert store.find_order("000001").status is OrderStatus.CANCELED_AFTER_PARTIAL_FILL
+
+
+def test_cancel_request_then_full_fill_is_recorded_as_fill_after_cancel(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    store.record_order(order(quantity=6))
+    fill = TradeFill("005930", "Test", OrderSide.BUY, 6, 10000, "000001", datetime.now(), execution_id="E-CANCEL-FILL")
+    client = ReconcileClient(execution_batches=((), (fill,)))
+    manager = OrderManager(BotConfig(order=OrderConfig(limit_order_timeout_seconds=0)), client, store, __import__("logging").getLogger("test"))
+
+    fills = manager.reconcile_open_orders()
+
+    assert fills == (fill,)
+    assert store.find_order("000001").status is OrderStatus.FILLED_AFTER_CANCEL_REQUEST
+    assert store.filled_quantity_for_order("000001") == 6
+    with store._connect() as connection:
+        row = connection.execute("SELECT cancel_requested, cancel_confirmed, filled_after_cancel_request, post_cancel_execution_checked_at FROM orders WHERE order_id = '000001'").fetchone()
+    assert row["cancel_requested"] == 1
+    assert row["cancel_confirmed"] == 1
+    assert row["filled_after_cancel_request"] == 1
+    assert row["post_cancel_execution_checked_at"]
+
+
+def test_submit_timeout_cancel_then_fill_is_returned_for_position_apply(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    request = OrderRequest("005930", "Test", OrderSide.BUY, 6, 10000, "test")
+    fill = TradeFill("005930", "Test", OrderSide.BUY, 6, 10000, "000001", datetime.now(), execution_id="E-SUBMIT-CANCEL-FILL")
+    client = SubmitClient(execution_batches=((fill,),))
+    manager = OrderManager(BotConfig(order=OrderConfig(live_trading=True, limit_order_timeout_seconds=0)), client, store, __import__("logging").getLogger("test"))
+
+    result, returned_fill = manager.submit_and_confirm(request)
+
+    assert result.status is OrderStatus.FILLED_AFTER_CANCEL_REQUEST
+    assert returned_fill == fill
+    assert store.filled_quantity_for_order("000001") == 6
+
+
+def test_partial_fill_then_remaining_cancel_records_partial_cancel_status(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    store.record_order(order(quantity=10))
+    fill = TradeFill("005930", "Test", OrderSide.BUY, 4, 10000, "000001", datetime.now(), execution_id="E-PARTIAL-CANCEL")
+    client = ReconcileClient((fill,))
+    manager = OrderManager(BotConfig(order=OrderConfig(limit_order_timeout_seconds=0)), client, store, __import__("logging").getLogger("test"))
+
+    fills = manager.reconcile_open_orders()
+
+    assert fills == (fill,)
+    assert store.filled_quantity_for_order("000001") == 4
+    assert store.find_order("000001").status is OrderStatus.CANCELED_AFTER_PARTIAL_FILL
+
+
+def test_cancel_confirmed_without_fill_records_no_fill_status(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    store.record_order(order(quantity=6))
+    manager = OrderManager(BotConfig(order=OrderConfig(limit_order_timeout_seconds=0)), ReconcileClient(()), store, __import__("logging").getLogger("test"))
+
+    fills = manager.reconcile_open_orders()
+
+    assert fills == ()
+    assert store.filled_quantity_for_order("000001") == 0
+    assert store.find_order("000001").status is OrderStatus.CANCELED_NO_FILL
+
+
+def test_cancel_rejected_order_remains_reconciliation_candidate(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    store.record_order(order(quantity=6))
+    client = ReconcileClient((), cancel_error=RuntimeError("40330000 KRX cancel rejected"))
+    manager = OrderManager(BotConfig(order=OrderConfig(limit_order_timeout_seconds=0)), client, store, __import__("logging").getLogger("test"))
+
+    fills = manager.reconcile_open_orders()
+
+    assert fills == ()
+    assert store.find_order("000001").status is OrderStatus.CANCEL_REJECTED
+    assert store.has_open_order("005930", OrderSide.BUY)
 
 
 def test_canceled_order_no_longer_counts_as_open(tmp_path) -> None:

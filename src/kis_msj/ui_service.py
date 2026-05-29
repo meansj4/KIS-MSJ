@@ -30,7 +30,7 @@ MANUAL_PROCESSING_STALE_MINUTES = 10
 MANUAL_REQUEUE_CONFIRM_TEXT = "수동요청 재처리 확인"
 MANUAL_CANCEL_CONFIRM_TEXT = "수동요청 차단 확인"
 MANUAL_PENDING_STATUSES = {"REQUESTED", "PROCESSING", "ACCEPTED", "SUBMITTED", "PENDING", "OPEN", "NEW", "CREATED", "RETRYING"}
-ORDER_PENDING_STATUSES = {"REQUESTED", "PARTIAL", "SUBMITTED", "ACCEPTED", "PENDING", "OPEN", "NEW"}
+ORDER_PENDING_STATUSES = {"REQUESTED", "PARTIAL", "CANCEL_REJECTED", "SUBMITTED", "ACCEPTED", "PENDING", "OPEN", "NEW"}
 
 NEW_SEASON_REASON_GUIDE: dict[str, dict[str, str]] = {
     "": {"title": "진행 가능", "description": "현재 단계의 조건을 만족했습니다.", "next_action": "다음 단계로 진행하세요."},
@@ -1584,7 +1584,37 @@ class UIService:
         return rows
 
     def orders(self) -> list[dict[str, Any]]:
-        return self._table("orders")
+        rows = self._table("orders")
+        fill_totals: dict[str, dict[str, int]] = {}
+        for fill in self.fills():
+            order_id = str(fill.get("order_id") or "")
+            if not order_id:
+                continue
+            item = fill_totals.setdefault(order_id, {"quantity": 0, "count": 0})
+            item["quantity"] += _to_int(fill.get("quantity"))
+            item["count"] += 1
+        for row in rows:
+            order_id = str(row.get("order_id") or "")
+            totals = fill_totals.get(order_id, {"quantity": 0, "count": 0})
+            filled_quantity = totals["quantity"]
+            quantity = _to_int(row.get("quantity"))
+            row["filled_quantity"] = filled_quantity
+            row["fill_count"] = totals["count"]
+            row["fill_exists"] = filled_quantity > 0
+            row["remaining_quantity"] = max(0, quantity - filled_quantity)
+            status = str(row.get("status") or "")
+            row["post_cancel_execution_checked"] = bool(row.get("post_cancel_execution_checked_at"))
+            if status in {"CANCELED", "CANCELED_NO_FILL"} and filled_quantity > 0:
+                row["order_sync_warning"] = "canceled_status_with_fill"
+            elif status in {"CANCELED", "CANCELED_NO_FILL"} and not row["post_cancel_execution_checked"]:
+                row["order_sync_warning"] = "canceled_without_post_cancel_execution_check"
+            elif status == "CANCEL_REJECTED":
+                row["order_sync_warning"] = "cancel_rejected_reconciliation_required"
+            elif status in {"FILLED_AFTER_CANCEL_REQUEST", "CANCELED_AFTER_PARTIAL_FILL"}:
+                row["order_sync_warning"] = "fill_confirmed_after_cancel_request"
+            else:
+                row["order_sync_warning"] = ""
+        return rows
 
     def fills(self) -> list[dict[str, Any]]:
         rows = self._table("fills")

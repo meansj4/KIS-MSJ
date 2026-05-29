@@ -15,7 +15,7 @@ from .models import LotState, OrderRequest, OrderResult, OrderSide, OrderStatus,
 
 POSITION_COLUMNS = tuple(PositionState.__dataclass_fields__.keys())
 LOT_COLUMNS = tuple(LotState.__dataclass_fields__.keys())
-OPEN_ORDER_STATUSES = (OrderStatus.REQUESTED.value, OrderStatus.PARTIAL.value)
+OPEN_ORDER_STATUSES = (OrderStatus.REQUESTED.value, OrderStatus.PARTIAL.value, OrderStatus.CANCEL_REJECTED.value)
 SYNC_REQUIRED = "SYNC_REQUIRED"
 
 
@@ -204,6 +204,14 @@ class StateStore:
             _ensure_column(connection, "orders", "config_version", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(connection, "orders", "run_id", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(connection, "orders", "experiment_name", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "orders", "cancel_requested", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "orders", "cancel_confirmed", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "orders", "cancel_rejected", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "orders", "filled_after_cancel_request", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "orders", "cancel_response_code", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "orders", "cancel_response_message", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "orders", "cancel_checked_at", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "orders", "post_cancel_execution_checked_at", "TEXT NOT NULL DEFAULT ''")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS manual_order_requests (
@@ -418,7 +426,7 @@ class StateStore:
             },
             "lots": {"cleanup_candidate", "age_weeks", "base_target_profit_rate", "effective_target_profit_rate", "last_sell_reason"},
             "fills": {"execution_id", "sell_reason", "reentry_type", "config_hash", "config_version", "run_id", "experiment_name"},
-            "orders": {"requested_at", "sell_reason", "reentry_type", "cleanup_flag", "config_hash", "config_version", "run_id", "experiment_name"},
+            "orders": {"requested_at", "sell_reason", "reentry_type", "cleanup_flag", "config_hash", "config_version", "run_id", "experiment_name", "cancel_requested", "cancel_confirmed", "cancel_rejected", "filled_after_cancel_request", "cancel_response_code", "cancel_response_message", "cancel_checked_at", "post_cancel_execution_checked_at"},
             "manual_order_requests": {"request_id", "source", "requested_by", "requested_at", "code", "side", "current_price", "amount", "quantity", "lot_id", "order_type", "preview_json", "runtime_snapshot_json", "live_trading", "confirm_text_verified", "status", "block_reason", "linked_order_id", "processing_started_at", "processing_claimed_by", "claim_attempt_count", "last_processing_error", "stale_processing_reason", "config_hash", "config_version", "run_id", "experiment_name", "created_at", "updated_at"},
         }
         missing = False
@@ -701,12 +709,40 @@ class StateStore:
     def record_order(self, result: OrderResult) -> None:
         request = result.request
         requested_at = datetime.now().isoformat(timespec="seconds")
+        cancel_requested = result.status in {
+            OrderStatus.CANCEL_REJECTED,
+            OrderStatus.CANCELED,
+            OrderStatus.CANCELED_NO_FILL,
+            OrderStatus.CANCELED_AFTER_PARTIAL_FILL,
+            OrderStatus.PARTIAL_CANCELED,
+            OrderStatus.FILLED_AFTER_CANCEL_REQUEST,
+        }
+        cancel_confirmed = result.status in {
+            OrderStatus.CANCELED,
+            OrderStatus.CANCELED_NO_FILL,
+            OrderStatus.CANCELED_AFTER_PARTIAL_FILL,
+            OrderStatus.PARTIAL_CANCELED,
+        }
+        cancel_rejected = result.status is OrderStatus.CANCEL_REJECTED
+        filled_after_cancel = result.status is OrderStatus.FILLED_AFTER_CANCEL_REQUEST
         with self._connect() as connection:
             connection.execute(
                 """
-                INSERT INTO orders (order_id, code, side, quantity, limit_price, status, reason, lot_id, message, sell_reason, reentry_type, cleanup_flag, config_hash, config_version, run_id, experiment_name, requested_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(order_id) DO UPDATE SET status=excluded.status, message=excluded.message, updated_at=CURRENT_TIMESTAMP
+                INSERT INTO orders (
+                    order_id, code, side, quantity, limit_price, status, reason, lot_id, message,
+                    sell_reason, reentry_type, cleanup_flag, config_hash, config_version, run_id,
+                    experiment_name, requested_at, cancel_requested, cancel_confirmed,
+                    cancel_rejected, filled_after_cancel_request
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(order_id) DO UPDATE SET
+                    status=excluded.status,
+                    message=excluded.message,
+                    cancel_requested=MAX(orders.cancel_requested, excluded.cancel_requested),
+                    cancel_confirmed=MAX(orders.cancel_confirmed, excluded.cancel_confirmed),
+                    cancel_rejected=MAX(orders.cancel_rejected, excluded.cancel_rejected),
+                    filled_after_cancel_request=MAX(orders.filled_after_cancel_request, excluded.filled_after_cancel_request),
+                    updated_at=CURRENT_TIMESTAMP
                 """,
                 (
                     result.order_id,
@@ -726,6 +762,55 @@ class StateStore:
                     self.active_run_id,
                     self.active_experiment_name,
                     requested_at,
+                    int(cancel_requested),
+                    int(cancel_confirmed),
+                    int(cancel_rejected),
+                    int(filled_after_cancel),
+                ),
+            )
+
+    def mark_order_cancel_check(
+        self,
+        order_id: str,
+        *,
+        cancel_requested: bool = True,
+        cancel_confirmed: bool = False,
+        cancel_rejected: bool = False,
+        filled_after_cancel_request: bool = False,
+        response_code: str = "",
+        response_message: str = "",
+        post_cancel_execution_checked: bool = False,
+    ) -> None:
+        now = datetime.now().isoformat(timespec="seconds")
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE orders
+                SET cancel_requested = MAX(cancel_requested, ?),
+                    cancel_confirmed = MAX(cancel_confirmed, ?),
+                    cancel_rejected = MAX(cancel_rejected, ?),
+                    filled_after_cancel_request = MAX(filled_after_cancel_request, ?),
+                    cancel_response_code = CASE WHEN ? != '' THEN ? ELSE cancel_response_code END,
+                    cancel_response_message = CASE WHEN ? != '' THEN ? ELSE cancel_response_message END,
+                    cancel_checked_at = CASE WHEN ? THEN ? ELSE cancel_checked_at END,
+                    post_cancel_execution_checked_at = CASE WHEN ? THEN ? ELSE post_cancel_execution_checked_at END,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE order_id = ?
+                """,
+                (
+                    int(cancel_requested),
+                    int(cancel_confirmed),
+                    int(cancel_rejected),
+                    int(filled_after_cancel_request),
+                    response_code,
+                    response_code,
+                    response_message,
+                    response_message,
+                    int(cancel_requested),
+                    now,
+                    int(post_cancel_execution_checked),
+                    now,
+                    order_id,
                 ),
             )
 

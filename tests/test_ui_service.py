@@ -140,6 +140,24 @@ def test_state_store_ignores_deferred_market_session_columns(tmp_path):
     assert reloaded.load_positions()["005930"].current_price == 10000
 
 
+def test_orders_include_cancel_fill_reconciliation_fields(tmp_path):
+    config_path, db_path, _ = _write_config(tmp_path)
+    store = StateStore(db_path)
+    request = OrderRequest("005930", "Samsung", OrderSide.BUY, 6, 10000, "add_buy_drop_6%")
+    store.record_order(OrderResult(request, "ORDER-CANCEL", OrderStatus.CANCELED_NO_FILL, "unfilled_limit_order_timeout"))
+    store.mark_order_cancel_check("ORDER-CANCEL", cancel_requested=True, cancel_confirmed=True, post_cancel_execution_checked=True)
+    store.record_fill(TradeFill("005930", "Samsung", OrderSide.BUY, 6, 10000, "ORDER-CANCEL", datetime(2026, 5, 29, 10, 35), execution_id="EXEC-CANCEL-FILL"))
+    service = UIService(config_path)
+
+    row = next(order for order in service.orders() if order["order_id"] == "ORDER-CANCEL")
+
+    assert row["fill_exists"] is True
+    assert row["filled_quantity"] == 6
+    assert row["remaining_quantity"] == 0
+    assert row["post_cancel_execution_checked"] is True
+    assert row["order_sync_warning"] == "canceled_status_with_fill"
+
+
 def test_ui_status_masks_and_shows_core_tables(tmp_path):
     config_path, db_path, log_path = _write_config(tmp_path)
     _seed_store(db_path)

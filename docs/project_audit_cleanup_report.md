@@ -3,6 +3,12 @@
 > Authoritative source: `docs/project_handoff_full.md` is the latest full baseline. This report records the whole-project audit/cleanup pass performed after the handoff docs. If this report conflicts with `project_handoff_full.md`, re-check code first and then update the full handoff.  
 > Last updated: 2026-05-27 / Latest tests after this audit: `156 passed` with one pytest cache warning / Baseline config profile: `expansion_100_safe`.
 
+## 2026-05-29 Cancel/Fill Reconciliation Addendum
+
+The audit baseline now includes a cancel-race safety fix. A cancel request is not treated as proof that no fill exists. After timeout cancel handling, the bot performs a post-cancel execution check and distinguishes `CANCELED_NO_FILL`, `CANCELED_AFTER_PARTIAL_FILL`, `FILLED_AFTER_CANCEL_REQUEST`, and `CANCEL_REJECTED`.
+
+The Orders UI exposes cancel flags, filled quantity, remaining quantity, fill count, post-cancel execution check state, and warning labels. If MTS/KIS balance and DB LOT quantity differ, the symbol must remain `SYNC_REQUIRED` until the missing execution is reconciled into `fills` and applied to `lots`/`positions`. Direct position-only repair is intentionally avoided.
+
 ## 0. 2026-05-27 추가 보강 요약
 
 이번 추가 보강에서는 deprecated inventory에 그치지 않고, 리스크 없이 줄일 수 있는 legacy 노출면과 운영 리스크를 실제로 정리했다.
