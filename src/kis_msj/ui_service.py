@@ -360,6 +360,32 @@ class UIService:
             "reconciliation": self.reconciliation_summary(logs),
             "execution_mapping": raw_mapping,
             "analysis_status": self.analysis_status(positions, lots, fills),
+            "loop_performance": self.loop_performance_summary(logs),
+        }
+
+    def loop_performance_summary(self, log_lines: list[str]) -> dict[str, Any]:
+        loop_rows = []
+        for line in log_lines:
+            if "loop_profile " not in line:
+                continue
+            payload = _parse_key_values(line.split("loop_profile", 1)[1])
+            if payload:
+                loop_rows.append(payload)
+        latest = loop_rows[-1] if loop_rows else {}
+        durations = [_safe_float(row.get("loop_duration_ms")) for row in loop_rows[-10:] if row.get("loop_duration_ms") not in (None, "")]
+        p95 = 0.0
+        if durations:
+            ordered = sorted(durations)
+            index = min(len(ordered) - 1, int(round((len(ordered) - 1) * 0.95)))
+            p95 = ordered[index]
+        return {
+            "last_loop_duration_ms": latest.get("loop_duration_ms", ""),
+            "avg_loop_duration_10_ms": round(sum(durations) / len(durations), 2) if durations else "",
+            "p95_loop_duration_10_ms": round(p95, 2) if durations else "",
+            "slowest_symbol_last_loop": latest.get("slowest_symbol_last_loop", ""),
+            "bottleneck_stage": latest.get("bottleneck_stage", ""),
+            "symbols_processed": latest.get("symbols_processed", ""),
+            "loop_over_interval": latest.get("loop_over_interval", ""),
         }
 
     def analysis_status(self, positions: list[dict[str, Any]], lots: list[dict[str, Any]], fills: list[dict[str, Any]]) -> dict[str, Any]:
@@ -2337,6 +2363,15 @@ def _count_by(rows: list[dict[str, Any]], key: str) -> dict[str, int]:
         value = str(row.get(key, "UNKNOWN"))
         counts[value] = counts.get(value, 0) + 1
     return counts
+
+
+def _safe_float(value: Any) -> float:
+    try:
+        if value is None or value == "":
+            return 0.0
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _to_int(value: Any) -> int:
