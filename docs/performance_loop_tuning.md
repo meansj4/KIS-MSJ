@@ -112,6 +112,28 @@ Post-change mock benchmark with current `2s` sampling interval, 10 symbols:
 
 The actual loop duration now depends heavily on how many symbols produce BUY/SELL candidates in that loop.
 
+Operational changes to accept:
+
+- Non-candidate symbols no longer run the 5-sample stability check.
+- Candidate symbols can be blocked more conservatively after the final quote.
+- BUY quantity, SELL limit price, BUY limit price, and a new/unlocked LOT sizing bucket can change based on the final quote.
+- If many symbols become BUY/SELL candidates, the loop can still be long because each candidate pays the stability-sampling cost.
+
+Rollback reference:
+
+- Final optimized commit: `42c37fe` (`loop 시간 줄이기 3차`).
+- Pre-optimization baseline: `0e8405d` (`block reason 초기화 안되던 문제 해결`).
+- The optimization series is `572247a..42c37fe`.
+- Rollback scope: `src/kis_msj/main.py`, `src/kis_msj/config.py`, `src/kis_msj/loop_profile.py`, `scripts/benchmark_loop.py`, `src/kis_msj/ui_service.py`, `src/kis_msj/ui_server.py`, related tests/docs, and the two profiling config keys in `config/lot_auto_trader.json`.
+
+Decision and price snapshot traceability:
+
+- For non-candidate symbols, decision `current_price` and the linked `price_snapshots.current_price` are the one scan quote. `raw_json.sample_count` is `1`.
+- For BUY/SELL candidates, the linked decision and price snapshot use the final quote as `current_price`, and `sampled_at` is the final quote timestamp.
+- For BUY/SELL candidates, `raw_json.sample_count` is `6`: the configured 5 stability samples plus the final quote. The scan quote is not included in that count.
+- The actual order request quantity and limit price are built from this final quote path. The order row remains the authoritative record for submitted quantity/limit price.
+- Current limitation: `raw_json` records only the total sample count and does not separately store each stability sample price or label the final quote as a separate nested object. The final quote is still traceable through decision/price snapshot `current_price` and `sampled_at`.
+
 ## Loop Interval
 
 Current config:

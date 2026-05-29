@@ -3,6 +3,8 @@
 > Authoritative source: `docs/project_handoff_full.md` is the latest full baseline. `docs/project_handoff_thread_prompt.md` is for starting a new chat, and `docs/project_handoff_summary.md` is the short summary. `local_ui.md`, `strategy_lot_sizing.md`, `new_season_reset.md`, and `expansion_100_config.md` are detailed references. If a reference doc conflicts with the full handoff, use `project_handoff_full.md` as the source of truth.  
 > Last updated: 2026-05-26 / Baseline tests: `156 passed` / Baseline config profile: `expansion_100_safe`. Re-check config, DB, logs, and KIS account state at runtime.
 
+> 2026-05-29 loop optimization: automatic scan now uses one quote per enabled symbol, runs 5-sample stability checks only for BUY/SELL candidates, and fetches one final quote before order request construction. Operational changes to accept: non-candidates skip stability sampling, candidates may be blocked more conservatively, and final quote can change quantity/limit/new unlocked LOT bucket. Rollback range: `0e8405d..42c37fe`. Final quote is traceable via `decisions.current_price`, linked `price_snapshots.current_price`, and submitted `orders`; `raw_json` currently stores `sample_count` only, not individual samples or a nested `final_quote`.
+
 
 Last updated: 2026-05-26  
 기준 테스트 결과: `156 passed`  
