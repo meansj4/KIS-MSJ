@@ -133,5 +133,58 @@ def test_portfolio_dashboard_is_read_only_and_handles_zero_limits_and_missing_sn
 def test_portfolio_dashboard_ui_contains_tab_and_progress_bar() -> None:
     assert "loadPortfolioDashboard" in INDEX_HTML
     assert "/api/portfolio-dashboard" in INDEX_HTML
+    assert "${kind}-detail" in INDEX_HTML
     assert "usageBar" in INDEX_HTML
     assert "usage_pct" in INDEX_HTML
+    assert "loadPortfolioDetail" in INDEX_HTML
+
+
+def test_portfolio_realized_detail_returns_sell_fill_lot_pnl_and_pagination(tmp_path) -> None:
+    service, store = _service(tmp_path)
+    _seed_dashboard_data(store)
+
+    detail = service.portfolio_realized_detail({"limit": "1", "offset": "0"})
+
+    assert detail["read_only"] is True
+    assert detail["order_api_called"] is False
+    assert detail["total_count"] == 1
+    row = detail["rows"][0]
+    assert row["code"] == "005930"
+    assert row["lot_id"] == "LOT-1"
+    assert row["buy_amount"] == 40000
+    assert row["sell_amount"] == 48000
+    assert row["fee_tax_estimate"] == 120
+    assert row["realized_pnl"] == 7880
+    assert row["pnl_basis"] == "sell_fill_net_estimate"
+
+
+def test_portfolio_unrealized_detail_returns_open_lot_targets_and_price_source(tmp_path) -> None:
+    service, store = _service(tmp_path)
+    _seed_dashboard_data(store)
+
+    detail = service.portfolio_unrealized_detail({"sort": "unrealized_pnl"})
+
+    assert detail["read_only"] is True
+    assert detail["total_count"] == 2
+    lot2 = next(row for row in detail["rows"] if row["lot_id"] == "LOT-2")
+    assert lot2["current_price"] == 9000
+    assert lot2["remaining_buy_amount"] == 10000
+    assert lot2["current_market_value"] == 9000
+    assert lot2["unrealized_pnl"] == -1000
+    assert lot2["target_price"] > lot2["buy_price"]
+    assert "target" in lot2["data_quality_note"]
+
+
+def test_daily_detail_filters_sell_fill_date_and_current_basis_unrealized(tmp_path) -> None:
+    service, store = _service(tmp_path)
+    _seed_dashboard_data(store)
+
+    realized = service.portfolio_realized_detail({"date": "2026-05-28"})
+    unrealized = service.portfolio_unrealized_detail({"date": "2026-05-27"})
+
+    assert realized["total_count"] == 1
+    assert realized["rows"][0]["sell_filled_at"].startswith("2026-05-28")
+    assert unrealized["total_count"] == 1
+    assert unrealized["rows"][0]["lot_id"] == "LOT-2"
+    assert "현재 기준" in unrealized["calculation_basis"]
+    assert unrealized["data_quality_notes"]

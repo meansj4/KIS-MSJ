@@ -457,6 +457,7 @@ class StateStore:
             data.setdefault("skip_reason", "")
             for key in ("needs_review", "auto_buy_enabled", "danger_state", "lot_quantity_mismatch", "trading_paused", "anchor_single_fill"):
                 data[key] = bool(data[key])
+            data = _known_model_fields(data, PositionState)
             positions[data["code"]] = PositionState(**data)
         return positions
 
@@ -475,6 +476,7 @@ class StateStore:
             if not data.get("effective_target_profit_rate"):
                 data["effective_target_profit_rate"] = data.get("base_target_profit_rate", data.get("target_profit_pct", 0.0) / 100.0)
             data.setdefault("last_sell_reason", "UNKNOWN")
+            data = _known_model_fields(data, LotState)
             lots[data["lot_id"]] = LotState(**data)
         return lots
 
@@ -1124,6 +1126,10 @@ def _normalize_row(row: dict[str, object]) -> dict[str, object]:
         if key in row:
             row[key] = bool(row[key])
     return row
+
+
+def _known_model_fields(data: dict[str, object], model: type) -> dict[str, object]:
+    return {key: data[key] for key in model.__dataclass_fields__ if key in data}
 
 
 def _ensure_column(connection: sqlite3.Connection, table: str, column: str, definition: str) -> None:

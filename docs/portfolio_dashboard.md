@@ -66,3 +66,75 @@ The dashboard reports data quality notes in the UI:
 - fee/tax is estimated
 - missing or stale price snapshots may make unrealized PnL less reliable
 
+## PnL Drill-Down
+
+The default dashboard stays summary-first. PnL details are lazy-loaded only when the operator clicks a detail button.
+
+Read-only endpoints:
+
+- `GET /api/portfolio-dashboard/realized-detail`
+- `GET /api/portfolio-dashboard/unrealized-detail`
+- `GET /api/portfolio-dashboard/daily/{date}/realized-detail`
+- `GET /api/portfolio-dashboard/daily/{date}/unrealized-detail`
+
+Supported query parameters:
+
+- `limit`, default 100, maximum 1000
+- `offset`
+- `sort`, prefix with `-` for descending
+- `code`
+- `lot_id`
+- `date_from`
+- `date_to`
+- `q`
+
+The endpoints return `rows`, `total_count`, `generated_at`, `calculation_basis`, `data_quality_notes`, and `price_source_info`. They do not call KIS APIs and do not mutate DB trading rows.
+
+### Realized Detail
+
+Realized detail is SELL-fill based. This matters for partial sells: if one LOT is sold in several fills or on several dates, each SELL fill gets its own realized PnL row.
+
+For each SELL fill with a matching LOT row:
+
+```text
+buy_amount = lot.buy_price * sell_fill.quantity
+sell_amount = sell_fill.price * sell_fill.quantity
+fee_tax_estimate = sell_amount * strategy.estimated_fee_tax_pct / 100
+realized_pnl = sell_amount - buy_amount - fee_tax_estimate
+realized_pnl_rate = realized_pnl / buy_amount
+```
+
+Rows include code, name, LOT id, buy time, sell time, buy/sell quantity and price, gross/net PnL, fee/tax estimate, sell reason, holding days, config hash, run id, and experiment name.
+
+### Unrealized Detail
+
+Unrealized detail is OPEN-LOT based.
+
+```text
+remaining_buy_amount = lot.buy_price * lot.remaining_quantity
+current_market_value = current_price * lot.remaining_quantity
+unrealized_pnl = current_market_value - remaining_buy_amount
+unrealized_pnl_rate = unrealized_pnl / remaining_buy_amount
+```
+
+`current_price` comes from stored position price or latest price snapshot. If current price is missing, unrealized PnL is shown as 0 with a data quality warning.
+
+Target price and target amount are reference values, not actual order prices. They are calculated from the current target-profit LOT band and age decay:
+
+```text
+effective_target_profit_rate = current_base_target_profit_rate - age_weeks * strategy.age_decay_rate
+target_price = rounded(lot.buy_price * (1 + effective_target_profit_rate))
+target_amount = target_price * remaining_quantity
+```
+
+### Daily Detail
+
+Daily realized detail filters SELL fills by `filled_at` date.
+
+Daily unrealized detail is a current-basis helper view: it shows OPEN LOTs bought on that date and evaluates them using the current saved price. It is not historical end-of-day portfolio valuation. A future daily portfolio snapshot table would allow exact historical daily unrealized PnL.
+
+## Performance Notes
+
+The summary endpoint does not include detail rows. Detail tables use lazy loading, default `limit=100`, maximum `limit=1000`, and offset pagination.
+
+The current implementation uses read-only local SQLite queries through the UI service and in-memory row assembly after loading the relevant local tables. It is separate from Bot Core's strategy/order loop. No extra SQLite indexes are created in this change because index creation would mutate the DB schema; if the DB grows large enough to make detail endpoints slow, add indexes for `fills(side, filled_at)`, `fills(lot_id)`, `lots(lot_id)`, `lots(code, status)`, and `lots(buy_filled_at)` in a planned migration.

@@ -112,6 +112,34 @@ def _seed_store(db_path):
     return store
 
 
+def test_state_store_ignores_deferred_market_session_columns(tmp_path):
+    db_path = tmp_path / "state.sqlite3"
+    store = StateStore(db_path)
+    store.save_position(PositionState("005930", "Samsung", current_price=10000))
+    store.save_lot(
+        LotState(
+            "LOT-EXTRA",
+            "005930",
+            "2026-05-01T09:05:00",
+            buy_price=10000,
+            buy_quantity=1,
+            buy_amount=10000,
+            remaining_quantity=1,
+            target_profit_pct=6.0,
+            target_sell_price=10600,
+        )
+    )
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("ALTER TABLE lots ADD COLUMN buy_market_session TEXT NOT NULL DEFAULT 'REGULAR'")
+        connection.execute("ALTER TABLE lots ADD COLUMN last_sell_market_session TEXT NOT NULL DEFAULT 'REGULAR'")
+        connection.execute("ALTER TABLE positions ADD COLUMN last_action_market_session TEXT NOT NULL DEFAULT 'REGULAR'")
+
+    reloaded = StateStore(db_path)
+
+    assert reloaded.load_lots()["LOT-EXTRA"].buy_price == 10000
+    assert reloaded.load_positions()["005930"].current_price == 10000
+
+
 def test_ui_status_masks_and_shows_core_tables(tmp_path):
     config_path, db_path, log_path = _write_config(tmp_path)
     _seed_store(db_path)

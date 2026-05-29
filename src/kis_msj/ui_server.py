@@ -296,9 +296,12 @@ const DEFAULT_COLUMNS = {
   orders: ['order_id','code','name','side','status','quantity','limit_price','reason','requested_at','updated_at','lot_id','sell_reason','reentry_type'],
   fills: ['fill_id','execution_id','dedupe_key_type','order_id','code','name','side','price','quantity','filled_at','lot_id','sell_reason','reentry_type'],
   manualRequests: ['request_id','code','side','quantity','amount','lot_id','status','processing_stale','processing_age_minutes','claim_attempt_count','last_processing_error','stale_processing_reason','recovery_block_reason','block_reason','linked_order_id','requested_at','updated_at'],
-  reviewRequired: ['code','name','position_state','review_reason','current_pnl_rate','open_lot_count','stale_lot_count','sync_status','lot_quantity_mismatch','profitable_lot_count']
+  reviewRequired: ['code','name','position_state','review_reason','current_pnl_rate','open_lot_count','stale_lot_count','sync_status','lot_quantity_mismatch','profitable_lot_count'],
+  portfolioRealizedDetail: ['code','name','lot_id','buy_filled_at','sell_filled_at','sell_quantity','buy_price','sell_price','buy_amount','sell_amount','realized_pnl','realized_pnl_rate','fee_tax_estimate','sell_reason','holding_days'],
+  portfolioUnrealizedDetail: ['code','name','lot_id','buy_filled_at','remaining_quantity','buy_price','remaining_buy_amount','current_price','current_market_value','unrealized_pnl','unrealized_pnl_rate','target_price','target_amount','target_remaining_amount','target_remaining_rate','stale_lot','cleanup_candidate','price_snapshot_at']
 };
 const columnPrefs = {};
+let portfolioDetailState = null;
 let configOriginal = null;
 let configDraft = null;
 let configSchema = null;
@@ -429,12 +432,14 @@ function columnControls(tableId, keys, visibleKeys) {
 function showDefaultColumns(tableId) {
   delete columnPrefs[tableId];
   if (tableId === 'stockLots' && window.selectedStockCode) { openStockLots(window.selectedStockCode); return; }
+  if ((tableId === 'portfolioRealizedDetail' || tableId === 'portfolioUnrealizedDetail') && portfolioDetailState) { renderPortfolioDetailPanel(portfolioDetailState); return; }
   reloadCurrent();
 }
 function showAllColumns(tableId) {
   const rows = rowsForTable(tableId);
   if (rows.length) columnPrefs[tableId] = new Set(Object.keys(rows[0]));
   if (tableId === 'stockLots' && window.selectedStockCode) { openStockLots(window.selectedStockCode); return; }
+  if ((tableId === 'portfolioRealizedDetail' || tableId === 'portfolioUnrealizedDetail') && portfolioDetailState) { renderPortfolioDetailPanel(portfolioDetailState); return; }
   reloadCurrent();
 }
 function toggleColumn(tableId, key, checked) {
@@ -444,6 +449,7 @@ function toggleColumn(tableId, key, checked) {
   if (checked) current.add(key); else current.delete(key);
   columnPrefs[tableId] = current;
   if (tableId === 'stockLots' && window.selectedStockCode) { openStockLots(window.selectedStockCode); return; }
+  if ((tableId === 'portfolioRealizedDetail' || tableId === 'portfolioUnrealizedDetail') && portfolioDetailState) { renderPortfolioDetailPanel(portfolioDetailState); return; }
   reloadCurrent();
 }
 function rowsForTable(tableId) {
@@ -454,6 +460,7 @@ function rowsForTable(tableId) {
   if (tableId === 'fills') return window.fillRows || [];
   if (tableId === 'manualRequests') return window.manualRequestRows || [];
   if (tableId === 'reviewRequired') return window.reviewRequiredRows || [];
+  if (tableId === 'portfolioRealizedDetail' || tableId === 'portfolioUnrealizedDetail') return window.portfolioDetailRows || [];
   return [];
 }function rowActions(tableId, row) {
   if (tableId === 'stocks') {
@@ -478,6 +485,7 @@ function sortTable(tableId, key) {
   if (!current || current.key !== key) sortState[tableId] = {key, dir:'asc'};
   else if (current.dir === 'asc') sortState[tableId] = {key, dir:'desc'};
   else delete sortState[tableId];
+  if ((tableId === 'portfolioRealizedDetail' || tableId === 'portfolioUnrealizedDetail') && portfolioDetailState) { renderPortfolioDetailPanel(portfolioDetailState); return; }
   reloadCurrent();
 }
 function sortRows(rows, key, dir) {
@@ -583,10 +591,17 @@ async function loadPortfolioDashboard() {
       ${summaryCard('평가 수익', summary.unrealized_pnl, 'KRW', 'saved current price basis')}
       ${summaryCard('평가 수익률', summary.unrealized_pnl_rate, 'RATE', 'unrealized_pnl / open cost')}
     </div>
+    <div class="manualBox">
+      <strong>손익 상세 drill-down</strong>
+      <p class="muted">상세 내역은 버튼을 누를 때만 별도 read-only API로 가져옵니다.</p>
+      <button onclick="loadPortfolioDetail('realized')">전체 실현수익 상세</button>
+      <button onclick="loadPortfolioDetail('unrealized')">전체 평가수익 상세</button>
+      <div id="portfolioDetailPanel"></div>
+    </div>
     <h3>한도 사용률</h3>
     <div class="grid">${(d.limit_usage || []).map(usageCard).join('')}</div>
     <h3>날짜별 성과</h3>
-    ${table(d.daily_summary || [], 'portfolioDaily')}
+    ${portfolioDailyTable(d.daily_summary || [])}
     <h3>종목별 사용률 Top</h3>
     ${table(d.top_symbol_exposures || [], 'portfolioSymbols')}
     <h3>위험/검토 필요 요약</h3>
@@ -620,6 +635,47 @@ function formatDashboardValue(value, unit) {
   if (unit === 'RATE') return `${(Number(value || 0) * 100).toFixed(2)}%`;
   if (unit === 'KRW') return Number(value || 0).toLocaleString();
   return displayCell('', value);
+}
+function portfolioDailyTable(rows) {
+  const body = (rows || []).map(row => `<tr>
+    <td>${esc(row.date || '')}</td>
+    <td class="num">${displayCell('', row.buy_amount)}</td>
+    <td class="num">${displayCell('', row.sell_amount)}</td>
+    <td class="num ${Number(row.realized_pnl || 0) < 0 ? 'neg' : 'pos'}">${displayCell('', row.realized_pnl)}</td>
+    <td class="num ${Number(row.unrealized_pnl || 0) < 0 ? 'neg' : 'pos'}">${displayCell('', row.unrealized_pnl)}</td>
+    <td><button onclick="loadPortfolioDetail('realized','${esc(row.date || '')}')">실현 상세</button> <button onclick="loadPortfolioDetail('unrealized','${esc(row.date || '')}')">평가 상세</button></td>
+  </tr>`).join('');
+  return `<div class="tableWrap"><table data-table-id="portfolioDaily"><thead><tr><th>date</th><th>buy_amount</th><th>sell_amount</th><th>realized_pnl</th><th>unrealized_pnl</th><th>detail</th></tr></thead><tbody>${body}</tbody></table></div><p class="muted">날짜별 평가손익은 현재 기준 참고값입니다. 과거 장마감 기준 평가손익이 아닙니다.</p>`;
+}
+async function loadPortfolioDetail(kind, date='', offset=0) {
+  const panel = document.getElementById('portfolioDetailPanel') || document.getElementById('content');
+  const endpoint = date ? `/api/portfolio-dashboard/daily/${encodeURIComponent(date)}/${kind}-detail` : `/api/portfolio-dashboard/${kind}-detail`;
+  const result = await api(`${endpoint}?limit=100&offset=${offset}`);
+  const title = `${date ? date + ' ' : '전체 '}${kind === 'realized' ? '실현수익' : '평가수익'} 상세`;
+  panel.innerHTML = `<div class="detailPanel"><h3>${esc(title)}</h3><p class="muted">${esc(result.calculation_basis || '')}</p>${table(result.rows || [], 'portfolioDetail')}<p class="muted">total=${esc(result.total_count || 0)} / limit=100 / offset=${offset}</p><p>${offset > 0 ? `<button onclick="loadPortfolioDetail('${kind}','${esc(date)}',${Math.max(0, offset-100)})">이전</button>` : ''} ${(offset + 100) < Number(result.total_count || 0) ? `<button onclick="loadPortfolioDetail('${kind}','${esc(date)}',${offset+100})">다음</button>` : ''}</p>${renderReadableObject(result.data_quality_notes || [])}</div>`;
+}
+async function loadPortfolioDetail(kind, date='', offset=0) {
+  const panel = document.getElementById('portfolioDetailPanel') || document.getElementById('content');
+  const key = `${kind}|${date || ''}|${offset}`;
+  if (portfolioDetailState && portfolioDetailState.key === key) {
+    portfolioDetailState = null;
+    window.portfolioDetailRows = [];
+    panel.innerHTML = '';
+    return;
+  }
+  const endpoint = date ? `/api/portfolio-dashboard/daily/${encodeURIComponent(date)}/${kind}-detail` : `/api/portfolio-dashboard/${kind}-detail`;
+  const result = await api(`${endpoint}?limit=100&offset=${offset}`);
+  const title = `${date ? date + ' ' : '전체 '}${kind === 'realized' ? '실현수익' : '평가수익'} 상세`;
+  portfolioDetailState = {key, kind, date, offset, title, result};
+  window.portfolioDetailRows = result.rows || [];
+  renderPortfolioDetailPanel(portfolioDetailState);
+}
+function renderPortfolioDetailPanel(state) {
+  const panel = document.getElementById('portfolioDetailPanel') || document.getElementById('content');
+  const {kind, date, offset, title, result} = state;
+  const tableId = kind === 'realized' ? 'portfolioRealizedDetail' : 'portfolioUnrealizedDetail';
+  window.portfolioDetailRows = result.rows || [];
+  panel.innerHTML = `<div class="detailPanel"><h3>${esc(title)}</h3><p class="muted">${esc(result.calculation_basis || '')}</p><p><button onclick="loadPortfolioDetail('${kind}','${esc(date)}',${offset})">상세 닫기</button></p>${table(result.rows || [], tableId)}<p class="muted">total=${esc(result.total_count || 0)} / limit=100 / offset=${offset}</p><p>${offset > 0 ? `<button onclick="loadPortfolioDetail('${kind}','${esc(date)}',${Math.max(0, offset-100)})">이전</button>` : ''} ${(offset + 100) < Number(result.total_count || 0) ? `<button onclick="loadPortfolioDetail('${kind}','${esc(date)}',${offset+100})">다음</button>` : ''}</p>${renderReadableObject(result.data_quality_notes || [])}</div>`;
 }
 async function loadStocks() {
   currentView = 'stocks';
@@ -1257,6 +1313,9 @@ class UIHandler(BaseHTTPRequestHandler):
                 code = parsed.path.rsplit("/", 1)[-1]
                 self._send_json(self.service.stock_detail(code))
                 return
+            if parsed.path.startswith("/api/portfolio-dashboard/"):
+                self._send_json(self._portfolio_dashboard_detail(parsed.path, query))
+                return
             if parsed.path.startswith("/api/positions/") and parsed.path.endswith("/review-status"):
                 code = parsed.path.split("/")[3].zfill(6)
                 self._send_json(self.service.review_status(code))
@@ -1278,6 +1337,19 @@ class UIHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
         except Exception as error:  # noqa: BLE001
             self._send_json({"error": type(error).__name__, "message": str(error)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _portfolio_dashboard_detail(self, path: str, query: dict[str, list[str]]) -> dict[str, Any]:
+        parts = [part for part in path.split("/") if part]
+        filters = {key: values[0] for key, values in query.items() if values}
+        if parts[-1] == "realized-detail":
+            if len(parts) >= 5 and parts[-3] == "daily":
+                filters["date"] = parts[-2]
+            return self.service.portfolio_realized_detail(filters)
+        if parts[-1] == "unrealized-detail":
+            if len(parts) >= 5 and parts[-3] == "daily":
+                filters["date"] = parts[-2]
+            return self.service.portfolio_unrealized_detail(filters)
+        return {"error": "not_found"}
 
     def do_POST(self) -> None:  # noqa: N802
         self._write_route()

@@ -747,3 +747,12 @@ This tab only reads local DB/config state. It does not call KIS order APIs, does
 Pre/After/Night session expansion remains on hold in a separate review branch. The main UI should be interpreted as regular-session LOT operation unless explicitly changed later.
 
 Detailed metric definitions are in [portfolio_dashboard.md](portfolio_dashboard.md).
+
+PnL cards and daily rows support lazy drill-down:
+
+- total realized PnL detail
+- total unrealized PnL detail
+- daily realized SELL-fill detail
+- daily current-basis unrealized OPEN-LOT detail
+
+The detail tables are fetched only after clicking a button, with default pagination, so the normal dashboard stays light.

@@ -18,7 +18,7 @@ from typing import Any
 
 from .config import DEFAULT_CONFIG_PATH, BotConfig, config_hash, load_config
 from .kis_client import KisClient
-from .lot_manager import LotManager
+from .lot_manager import LotManager, round_price
 from .models import OrderSide, PositionLifecycle, PositionState
 from .runtime_control import DEFAULT_RUNTIME_CONTROL_PATH, RuntimeControl, load_runtime_control, runtime_block_reason, save_runtime_control
 from .strategy import LotGridStrategy, StrategyAction
@@ -798,6 +798,185 @@ class UIService:
                 "daily_unrealized_pnl": "Current-basis unrealized PnL for open LOTs bought on that date, not a historical close snapshot.",
             },
         }
+
+    def portfolio_realized_detail(self, filters: dict[str, Any] | None = None) -> dict[str, Any]:
+        filters = filters or {}
+        lots = self.lots()
+        fills = self.fills()
+        lot_by_id = {str(lot.get("lot_id") or ""): lot for lot in lots}
+        rows = []
+        for fill in fills:
+            if str(fill.get("side") or "") != OrderSide.SELL.value:
+                continue
+            lot = lot_by_id.get(str(fill.get("lot_id") or ""))
+            if not lot:
+                continue
+            quantity = _to_int(fill.get("quantity"))
+            buy_price = _to_int(lot.get("buy_price"))
+            sell_price = _to_int(fill.get("price"))
+            buy_amount = buy_price * quantity
+            sell_amount = sell_price * quantity
+            fee_tax = int(round(sell_amount * self.config.strategy.estimated_fee_tax_pct / 100.0))
+            realized_pnl = sell_amount - buy_amount - fee_tax
+            row = {
+                "date": _date_key(fill.get("filled_at")),
+                "code": fill.get("code") or lot.get("code"),
+                "name": fill.get("name") or "",
+                "lot_id": fill.get("lot_id") or "",
+                "buy_filled_at": lot.get("buy_filled_at", ""),
+                "buy_quantity": lot.get("buy_quantity", 0),
+                "buy_price": buy_price,
+                "buy_amount": buy_amount,
+                "sell_filled_at": fill.get("filled_at", ""),
+                "sell_quantity": quantity,
+                "sell_price": sell_price,
+                "sell_amount": sell_amount,
+                "gross_realized_pnl": sell_amount - buy_amount,
+                "fee_tax_estimate": fee_tax,
+                "realized_pnl": realized_pnl,
+                "realized_pnl_rate": _safe_rate(realized_pnl, buy_amount),
+                "pnl_basis": "sell_fill_net_estimate",
+                "sell_reason": fill.get("sell_reason") or lot.get("last_sell_reason") or "",
+                "market_session": fill.get("market_session") or lot.get("buy_market_session") or "REGULAR",
+                "holding_days": _holding_days(lot.get("buy_filled_at"), fill.get("filled_at")),
+                "config_hash": fill.get("config_hash", ""),
+                "run_id": fill.get("run_id", ""),
+                "experiment_name": fill.get("experiment_name", ""),
+                "execution_id": fill.get("execution_id", ""),
+                "order_id": fill.get("order_id", ""),
+            }
+            rows.append(row)
+        rows = self._filter_detail_rows(rows, filters)
+        total = len(rows)
+        rows = self._sort_and_page(rows, filters, default_sort="-realized_pnl")
+        return {
+            "rows": rows,
+            "total_count": total,
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "calculation_basis": "SELL fill 기준. 부분매도는 LOT 전체가 아니라 각 SELL fill 수량 기준으로 계산합니다.",
+            "data_quality_notes": [
+                f"수수료/세금은 strategy.estimated_fee_tax_pct={self.config.strategy.estimated_fee_tax_pct}% 기준 추정치입니다.",
+                "SELL fill에 lot_id가 없거나 LOT row가 없으면 정확한 원가 계산이 어려워 상세에서 제외됩니다.",
+            ],
+            "price_source_info": {"required": False, "source": "sell_fill_and_lot_cost"},
+            "read_only": True,
+            "order_api_called": False,
+            "db_reset_executed": False,
+        }
+
+    def portfolio_unrealized_detail(self, filters: dict[str, Any] | None = None) -> dict[str, Any]:
+        filters = filters or {}
+        positions = self.positions()
+        lots = self.lots()
+        price_snapshots = self._table("price_snapshots")
+        positions_by_code = {str(row.get("code") or ""): row for row in positions}
+        latest_prices = self._latest_prices(price_snapshots, positions_by_code)
+        open_lots = [lot for lot in lots if _to_int(lot.get("remaining_quantity")) > 0 and str(lot.get("status") or "") != "CLOSED"]
+        lot_states = {str(lot.get("lot_id") or ""): _lot_state_from_row(lot) for lot in open_lots}
+        lot_manager = LotManager(self.config.strategy, lot_states)
+        rows = []
+        for lot in open_lots:
+            code = str(lot.get("code") or "")
+            position = positions_by_code.get(code, {})
+            current_price = _current_price_for_lot(lot, latest_prices)
+            price_info = latest_prices.get(code, {})
+            quantity = _to_int(lot.get("remaining_quantity"))
+            buy_price = _to_int(lot.get("buy_price"))
+            buy_amount = quantity * buy_price
+            market_value = quantity * current_price if current_price else 0
+            unrealized_pnl = market_value - buy_amount if current_price else 0
+            state = lot_states.get(str(lot.get("lot_id") or ""))
+            current_base_rate, target_band, target_source = lot_manager.current_target_profit_info(code)
+            effective_rate = float(lot.get("effective_target_profit_rate") or 0)
+            if state is not None:
+                lot_manager.update_lot_target_metadata(state, current_price, current_base_target_profit_rate=current_base_rate)
+                effective_rate = state.effective_target_profit_rate
+            target_price = round_price(buy_price * (1.0 + effective_rate)) if buy_price else 0
+            target_amount = target_price * quantity
+            row = {
+                "date": _date_key(lot.get("buy_filled_at")),
+                "code": code,
+                "name": position.get("name", ""),
+                "lot_id": lot.get("lot_id", ""),
+                "buy_filled_at": lot.get("buy_filled_at", ""),
+                "buy_quantity": lot.get("buy_quantity", 0),
+                "remaining_quantity": quantity,
+                "buy_price": buy_price,
+                "remaining_buy_amount": buy_amount,
+                "current_price": current_price,
+                "current_market_value": market_value,
+                "unrealized_pnl": unrealized_pnl,
+                "unrealized_pnl_rate": _safe_rate(unrealized_pnl, buy_amount),
+                "target_price": target_price,
+                "target_amount": target_amount,
+                "target_profit_lot_band": target_band,
+                "target_source": target_source,
+                "current_base_target_profit_rate": current_base_rate,
+                "effective_target_profit_rate": effective_rate,
+                "target_remaining_amount": max(0, target_amount - market_value) if current_price else 0,
+                "target_remaining_rate": _safe_rate(target_price - current_price, current_price) if current_price else 0.0,
+                "stale_lot": bool(lot.get("stale_lot")),
+                "cleanup_candidate": bool(lot.get("cleanup_candidate")),
+                "position_state": position.get("position_state", ""),
+                "market_session": lot.get("buy_market_session") or "REGULAR",
+                "price_snapshot_at": price_info.get("timestamp", ""),
+                "current_price_source": price_info.get("source", ""),
+                "data_quality_note": "현재 기준 참고값입니다. target 가격/금액은 실제 주문 예정가가 아니라 현재 로직 기준 목표값입니다.",
+                "run_id": lot.get("run_id", ""),
+                "experiment_name": lot.get("experiment_name", ""),
+                "config_hash": lot.get("config_hash", ""),
+            }
+            rows.append(row)
+        rows = self._filter_detail_rows(rows, filters)
+        total = len(rows)
+        rows = self._sort_and_page(rows, filters, default_sort="unrealized_pnl")
+        return {
+            "rows": rows,
+            "total_count": total,
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "calculation_basis": "OPEN LOT 현재 기준 평가손익. 날짜별 조회는 해당 날짜에 매수되어 현재 OPEN 상태인 LOT만 보여줍니다.",
+            "data_quality_notes": self._portfolio_data_quality_notes(price_snapshots, latest_prices, open_lots) + [
+                "target_price/target_amount는 실제 주문 예정가가 아니라 target_profit_lot_bands와 age_decay가 반영된 참고 목표값입니다.",
+            ],
+            "price_source_info": {code: latest_prices.get(code, {}) for code in sorted({str(lot.get("code") or "") for lot in open_lots})},
+            "read_only": True,
+            "order_api_called": False,
+            "db_reset_executed": False,
+        }
+
+    def _filter_detail_rows(self, rows: list[dict[str, Any]], filters: dict[str, Any]) -> list[dict[str, Any]]:
+        code = str(filters.get("code") or "").zfill(6) if filters.get("code") else ""
+        lot_id = str(filters.get("lot_id") or "")
+        date = str(filters.get("date") or "")
+        date_from = str(filters.get("date_from") or "")
+        date_to = str(filters.get("date_to") or "")
+        query = str(filters.get("q") or "").lower()
+        result = []
+        for row in rows:
+            row_date = str(row.get("date") or "")
+            if code and str(row.get("code") or "").zfill(6) != code:
+                continue
+            if lot_id and str(row.get("lot_id") or "") != lot_id:
+                continue
+            if date and row_date != date:
+                continue
+            if date_from and row_date < date_from:
+                continue
+            if date_to and row_date > date_to:
+                continue
+            if query and query not in json.dumps(row, ensure_ascii=False).lower():
+                continue
+            result.append(row)
+        return result
+
+    def _sort_and_page(self, rows: list[dict[str, Any]], filters: dict[str, Any], *, default_sort: str) -> list[dict[str, Any]]:
+        sort = str(filters.get("sort") or default_sort)
+        reverse = sort.startswith("-")
+        key = sort[1:] if reverse else sort
+        rows = sorted(rows, key=lambda row: _sort_value(row.get(key)), reverse=reverse)
+        limit = min(max(_to_int(filters.get("limit")) or 100, 1), 1000)
+        offset = max(_to_int(filters.get("offset")), 0)
+        return rows[offset:offset + limit]
 
     def _latest_prices(self, price_snapshots: list[dict[str, Any]], positions_by_code: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
         latest: dict[str, dict[str, Any]] = {}
@@ -2190,6 +2369,28 @@ def _current_price_for_lot(lot: dict[str, Any], latest_prices: dict[str, dict[st
     code = str(lot.get("code") or "")
     price = _to_int(latest_prices.get(code, {}).get("price"))
     return price or _to_int(lot.get("current_price"))
+
+
+def _holding_days(start: Any, end: Any) -> float:
+    start_at = _parse_datetime(str(start or ""))
+    end_at = _parse_datetime(str(end or ""))
+    if not start_at or not end_at:
+        return 0.0
+    return round(max(0.0, (end_at.replace(tzinfo=None) - start_at.replace(tzinfo=None)).total_seconds() / 86400), 3)
+
+
+def _sort_value(value: Any) -> Any:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return value
+    if value is None:
+        return ""
+    text = str(value)
+    numeric = _to_int(text)
+    if text.strip() and str(numeric) == text.strip():
+        return numeric
+    return text
 
 
 def _normalize_row(row: dict[str, Any]) -> dict[str, Any]:
