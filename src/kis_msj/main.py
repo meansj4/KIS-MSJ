@@ -781,7 +781,7 @@ class AutoTrader:
             return sync_block
         if position.position_state == PositionLifecycle.RISK_BLOCKED.value or position.danger_state:
             return "risk_blocked"
-        if position.position_state == PositionLifecycle.REVIEW_REQUIRED.value or position.needs_review:
+        if self.review_required_block_reason(position, action):
             return "review_required"
         partial = self.partial_order_block_reason(position)
         if partial:
@@ -802,6 +802,15 @@ class AutoTrader:
             cooldown = self.order_cooldown_reason(position)
             if cooldown:
                 return cooldown
+        return ""
+
+    def review_required_block_reason(self, position: PositionState, action) -> str:
+        if not (position.position_state == PositionLifecycle.REVIEW_REQUIRED.value or position.needs_review):
+            return ""
+        if action.side is OrderSide.BUY:
+            return "review_required"
+        if action.side is OrderSide.SELL and action.sell_reason == SellReason.CLEANUP_SELL.value:
+            return "review_required"
         return ""
 
     def log_pre_request_block(self, position: PositionState, reason: str) -> None:

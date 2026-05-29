@@ -208,7 +208,6 @@ def test_final_quote_rechecks_sync_review_and_risk_block_states(tmp_path, monkey
     _force_trade_window(monkeypatch)
     cases = [
         (PositionState(code="005930", name="Test", sync_status=PositionLifecycle.SYNC_REQUIRED.value), "sync_required"),
-        (PositionState(code="005930", name="Test", position_state=PositionLifecycle.REVIEW_REQUIRED.value, needs_review=True), "review_required"),
         (PositionState(code="005930", name="Test", position_state=PositionLifecycle.RISK_BLOCKED.value, danger_state=True), "risk_blocked"),
     ]
     for position, expected in cases:
@@ -222,6 +221,44 @@ def test_final_quote_rechecks_sync_review_and_risk_block_states(tmp_path, monkey
         bot.evaluate(position, AccountSnapshot(1_000_000, 1_000_000, 0, 0, ()), RiskDecision(True))
 
         assert bot.store.load_positions()["005930"].skip_reason == expected
+
+
+def test_pre_request_allows_review_required_profit_take_sell(tmp_path) -> None:
+    bot = trader(tmp_path)
+    position = PositionState(code="005930", name="Test", position_state=PositionLifecycle.REVIEW_REQUIRED.value, needs_review=True)
+    action = StrategyAction(OrderSide.SELL, 0, 1, "sell_profitable_lot", "LOT-1", sell_reason=SellReason.PROFIT_TAKE.value)
+
+    assert bot.pre_request_block_reason(position, action) == ""
+
+
+def test_pre_request_blocks_review_required_buy_and_cleanup_sell(tmp_path) -> None:
+    bot = trader(tmp_path)
+    position = PositionState(code="005930", name="Test", position_state=PositionLifecycle.REVIEW_REQUIRED.value, needs_review=True)
+    buy = StrategyAction(OrderSide.BUY, 30_000, None, "add_buy_drop_4%")
+    cleanup = StrategyAction(OrderSide.SELL, 0, 1, "cleanup_sell_lot", "LOT-1", sell_reason=SellReason.CLEANUP_SELL.value)
+
+    assert bot.pre_request_block_reason(position, buy) == "review_required"
+    assert bot.pre_request_block_reason(position, cleanup) == "review_required"
+
+
+def test_pre_request_blocks_risk_blocked_buy_and_sell_conservatively(tmp_path) -> None:
+    bot = trader(tmp_path)
+    position = PositionState(code="005930", name="Test", position_state=PositionLifecycle.RISK_BLOCKED.value, danger_state=True)
+    buy = StrategyAction(OrderSide.BUY, 30_000, None, "add_buy_drop_4%")
+    sell = StrategyAction(OrderSide.SELL, 0, 1, "sell_profitable_lot", "LOT-1", sell_reason=SellReason.PROFIT_TAKE.value)
+
+    assert bot.pre_request_block_reason(position, buy) == "risk_blocked"
+    assert bot.pre_request_block_reason(position, sell) == "risk_blocked"
+
+
+def test_pre_request_blocks_sync_required_buy_and_sell(tmp_path) -> None:
+    bot = trader(tmp_path)
+    position = PositionState(code="005930", name="Test", sync_status=PositionLifecycle.SYNC_REQUIRED.value)
+    buy = StrategyAction(OrderSide.BUY, 30_000, None, "add_buy_drop_4%")
+    sell = StrategyAction(OrderSide.SELL, 0, 1, "sell_profitable_lot", "LOT-1", sell_reason=SellReason.PROFIT_TAKE.value)
+
+    assert bot.pre_request_block_reason(position, buy) == "sync_required"
+    assert bot.pre_request_block_reason(position, sell) == "sync_required"
 
 
 def test_no_fill_result_does_not_change_lots_or_positions(tmp_path, monkeypatch) -> None:
