@@ -25,7 +25,7 @@ if str(SRC) not in sys.path:
 from kis_msj.config import config_hash, load_config  # noqa: E402
 from kis_msj.kis_client import KisClient  # noqa: E402
 from kis_msj.lot_manager import LotManager  # noqa: E402
-from kis_msj.models import OrderSide, PositionLifecycle, TradeFill  # noqa: E402
+from kis_msj.models import OrderResult, OrderSide, OrderStatus, PositionLifecycle, TradeFill  # noqa: E402
 from kis_msj.position_manager import PositionManager  # noqa: E402
 from kis_msj.storage import StateStore  # noqa: E402
 
@@ -254,6 +254,7 @@ def _execute_repair(config: Any, store: StateStore, code: str, order_no: str, ca
     )
     inserted = store.record_fill(fill)
     if not inserted:
+        _mark_repaired_order(store, order_no)
         return {"record_fill_inserted": False, "apply_fill_called": False, "sync_cleared": False, "result": "duplicate_or_existing_fill"}
 
     lot_manager = LotManager(config.strategy, store.load_lots())
@@ -273,6 +274,7 @@ def _execute_repair(config: Any, store: StateStore, code: str, order_no: str, ca
         updated.skip_reason = ""
     store.save_position(updated)
     store.save_lots(lot_manager.lots.values())
+    _mark_repaired_order(store, order_no)
     return {
         "record_fill_inserted": True,
         "apply_fill_called": True,
@@ -283,6 +285,18 @@ def _execute_repair(config: Any, store: StateStore, code: str, order_no: str, ca
         "sync_cleared": sync_cleared,
         "result": "repaired" if sync_cleared else "fill_applied_but_still_mismatch",
     }
+
+
+def _mark_repaired_order(store: StateStore, order_no: str) -> None:
+    order = store.find_order(order_no)
+    if order is None:
+        return
+    filled_quantity = store.filled_quantity_for_order(order_no)
+    if filled_quantity <= 0:
+        return
+    status = OrderStatus.FILLED_AFTER_CANCEL_REQUEST if filled_quantity >= order.request.quantity else OrderStatus.CANCELED_AFTER_PARTIAL_FILL
+    store.record_order(OrderResult(order.request, order.order_id, status, "missing_fill_repair"))
+    store.mark_order_cancel_check(order_no, cancel_requested=True, filled_after_cancel_request=True, post_cancel_execution_checked=True)
 
 
 def _order_date(before: dict[str, Any]) -> date:

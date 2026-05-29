@@ -2,7 +2,7 @@ from datetime import datetime
 
 from kis_msj.config import BotConfig, OrderConfig, RiskConfig, StockConfig, StrategyConfig
 from kis_msj.main import AutoTrader
-from kis_msj.models import AccountSnapshot, OrderRequest, OrderResult, OrderSide, OrderStatus, PositionLifecycle, PositionState, ReentryType, SellReason, TradeFill
+from kis_msj.models import AccountSnapshot, OrderRequest, OrderResult, OrderSide, OrderStatus, PositionLifecycle, PositionState, Quote, ReentryType, SellReason, TradeFill
 from kis_msj.risk_manager import RiskDecision
 from kis_msj.strategy import StrategyAction
 
@@ -31,6 +31,20 @@ def test_log_symbol_decision_handles_missing_snapshot(tmp_path) -> None:
     position = PositionState(code="005930", name="Test")
 
     bot.log_symbol_decision(position, 10000, None, RiskDecision(True), RiskDecision(True), "NONE")
+
+
+def test_evaluate_clears_stale_skip_reason_when_no_current_block(tmp_path) -> None:
+    bot = trader(tmp_path)
+    position = PositionState(code="005930", name="Test", skip_reason="data_mismatch")
+    bot.position_manager.positions[position.code] = position
+    bot.price_sampler.sample = lambda code, name: (Quote(code, 10000, datetime.now(), name),)
+    bot.price_sampler.stable = lambda samples, max_volatility: (True, "")
+    bot.strategy.decide = lambda position, current_price, snapshot, account_risk, symbol_risk: None
+
+    bot.evaluate(position, AccountSnapshot(1_000_000, 1_000_000, 0, 0, ()), RiskDecision(True))
+
+    assert position.skip_reason == ""
+    assert bot.store.load_positions()[position.code].skip_reason == ""
 
 
 def test_cleanup_sell_blocked_when_requested_buy_exists(tmp_path) -> None:

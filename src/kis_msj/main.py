@@ -391,8 +391,10 @@ class AutoTrader:
         action = self.strategy.decide(position, current_price, snapshot, account_risk, symbol_risk)
         portfolio_preview = self.portfolio_buy_block_reason(position, action) if action else ""
         final_block_reason = self.pre_request_block_reason(position, action, portfolio_preview) if action else ""
-        if portfolio_preview or final_block_reason:
-            position.skip_reason = final_block_reason or portfolio_preview
+        next_skip_reason = final_block_reason or portfolio_preview
+        if position.skip_reason != next_skip_reason:
+            position.skip_reason = next_skip_reason
+            self.store.save_position(position)
         self.log_symbol_decision(
             position,
             current_price,
