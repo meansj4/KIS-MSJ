@@ -244,6 +244,8 @@ class BotConfig:
     storage_path: str = str(PROJECT_ROOT / "data" / "lot_auto_trader_state.sqlite3")
     log_path: str = str(PROJECT_ROOT / "logs" / "lot_auto_trader.log")
     loop_interval_seconds: float = 15.0
+    loop_profiling_enabled: bool = True
+    loop_interval_warning_min_seconds: float = 60.0
     max_loop_count: int | None = None
     ui_manual_trading_enabled: bool = False
     run_id: str = ""
@@ -269,6 +271,8 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> BotConfig:
         storage_path=str(raw.get("storage_path", base.storage_path)),
         log_path=str(raw.get("log_path", base.log_path)),
         loop_interval_seconds=float(raw.get("loop_interval_seconds", base.loop_interval_seconds)),
+        loop_profiling_enabled=bool(raw.get("loop_profiling_enabled", base.loop_profiling_enabled)),
+        loop_interval_warning_min_seconds=float(raw.get("loop_interval_warning_min_seconds", base.loop_interval_warning_min_seconds)),
         max_loop_count=raw.get("max_loop_count", base.max_loop_count),
         ui_manual_trading_enabled=bool(raw.get("ui_manual_trading_enabled", base.ui_manual_trading_enabled)),
         run_id=str(raw.get("run_id", base.run_id)),

@@ -70,6 +70,7 @@ class AutoTrader:
         self._loop_id = 0
         self.last_loop_profile: dict[str, object] = {}
         self._active_loop_profile: LoopProfile | None = None
+        self._last_loop_interval_warning_at = 0.0
 
     def reload_config(self, config: BotConfig, *, use_mock_client: bool = False) -> None:
         self.__init__(config, use_mock_client=use_mock_client)
@@ -98,61 +99,66 @@ class AutoTrader:
 
     def run_once(self) -> str:
         self._loop_id += 1
-        profile = LoopProfile(
-            loop_id=self._loop_id,
-            symbols_total=len(self.config.stocks),
-            loop_interval_seconds=self.config.loop_interval_seconds,
-            run_id=self.run_id,
-            experiment_name=self.experiment_name,
-            active_profile=self.config.risk.profile,
+        profile = (
+            LoopProfile(
+                loop_id=self._loop_id,
+                symbols_total=len(self.config.stocks),
+                loop_interval_seconds=self.config.loop_interval_seconds,
+                run_id=self.run_id,
+                experiment_name=self.experiment_name,
+                active_profile=self.config.risk.profile,
+            )
+            if self.config.loop_profiling_enabled
+            else None
         )
         status = "ok"
         try:
             self._active_loop_profile = profile
-            with profile.stage("upstream_watch"):
+            with profile.stage("upstream_watch") if profile else _null_stage():
                 self.upstream_watcher.tick()
-            with profile.stage("runtime_control"):
+            with profile.stage("runtime_control") if profile else _null_stage():
                 interrupt = self.runtime_interrupt_reason("after_upstream_tick")
             if interrupt:
                 status = interrupt
                 return interrupt
-            with profile.stage("startup_reconciliation"):
+            with profile.stage("startup_reconciliation") if profile else _null_stage():
                 self.reconcile_recent_executions_on_startup()
-            with profile.stage("runtime_control"):
+            with profile.stage("runtime_control") if profile else _null_stage():
                 interrupt = self.runtime_interrupt_reason("after_startup_reconciliation")
             if interrupt:
                 status = interrupt
                 return interrupt
-            with profile.stage("open_order_reconciliation"):
+            with profile.stage("open_order_reconciliation") if profile else _null_stage():
                 self.reconcile_open_orders()
-            with profile.stage("runtime_control"):
+            with profile.stage("runtime_control") if profile else _null_stage():
                 interrupt = self.runtime_interrupt_reason("after_open_order_reconciliation")
             if interrupt:
                 status = interrupt
                 return interrupt
-            with profile.stage("account_sync"):
+            with profile.stage("account_sync") if profile else _null_stage():
                 snapshot = self.startup_sync()
-            with profile.stage("risk_summary"):
+            with profile.stage("risk_summary") if profile else _null_stage():
                 account_risk = self.risk_manager.account_buy_allowed(snapshot, self.position_manager.positions)
-            with profile.stage("manual_request"):
+            with profile.stage("manual_request") if profile else _null_stage():
                 self.process_manual_order_requests(snapshot, account_risk)
             for stock in self.config.stocks:
-                with profile.stage("runtime_control"):
+                with profile.stage("runtime_control") if profile else _null_stage():
                     interrupt = self.runtime_interrupt_reason(f"before_symbol_{stock.code}")
                 if interrupt:
                     status = interrupt
                     return interrupt
                 symbol_start = time.perf_counter()
                 try:
-                    with profile.stage("manual_request"):
+                    with profile.stage("manual_request") if profile else _null_stage():
                         self.process_manual_order_requests(snapshot, account_risk)
-                    with profile.stage("runtime_control"):
+                    with profile.stage("runtime_control") if profile else _null_stage():
                         interrupt = self.runtime_interrupt_reason(f"after_manual_requests_{stock.code}")
                     if interrupt:
                         status = interrupt
                         return interrupt
                     if not stock.enabled:
-                        profile.symbols_skipped += 1
+                        if profile:
+                            profile.symbols_skipped += 1
                         continue
                     position = self.position_manager.get(stock.code, stock.name)
                     if stock.danger_state:
@@ -160,9 +166,11 @@ class AutoTrader:
                         position.position_state = PositionLifecycle.RISK_BLOCKED.value
                         position.auto_buy_enabled = False
                     self.evaluate(position, snapshot, account_risk)
-                    profile.add_symbol(stock.code, (time.perf_counter() - symbol_start) * 1000.0)
+                    if profile:
+                        profile.add_symbol(stock.code, (time.perf_counter() - symbol_start) * 1000.0)
                 except Exception as error:  # noqa: BLE001
-                    profile.add_symbol(stock.code, (time.perf_counter() - symbol_start) * 1000.0)
+                    if profile:
+                        profile.add_symbol(stock.code, (time.perf_counter() - symbol_start) * 1000.0)
                     if self._mark_symbol_blocked_for_kis_order_error(stock.code, stock.name, error):
                         continue
                     self.logger.exception(
@@ -173,27 +181,38 @@ class AutoTrader:
                         error,
                     )
                     continue
-                with profile.stage("runtime_control"):
+                with profile.stage("runtime_control") if profile else _null_stage():
                     interrupt = self.runtime_interrupt_reason(f"after_symbol_{stock.code}")
                 if interrupt:
                     status = interrupt
                     return interrupt
-            with profile.stage("db"):
+            with profile.stage("db") if profile else _null_stage():
                 self.store.save_positions(self.position_manager.positions.values())
                 self.store.save_lots(self.lot_manager.lots.values())
             return ""
         finally:
             self._active_loop_profile = None
-            summary = profile.finish(status)
-            self.last_loop_profile = summary
-            self.logger.info(key_value_line("loop_profile", summary))
-            if summary["loop_over_interval"]:
+            if profile is not None:
+                summary = profile.finish(status)
+                self.last_loop_profile = summary
+                self.logger.info(key_value_line("loop_profile", summary))
+            else:
+                summary = {}
+            if summary.get("loop_over_interval") and self._should_log_loop_interval_warning():
                 self.logger.warning(
                     "loop_duration_exceeded_interval loop_id=%s loop_duration_ms=%s loop_interval_seconds=%s",
                     summary["loop_id"],
                     summary["loop_duration_ms"],
                     summary["loop_interval_seconds"],
                 )
+
+    def _should_log_loop_interval_warning(self) -> bool:
+        now = time.monotonic()
+        minimum = max(0.0, self.config.loop_interval_warning_min_seconds)
+        if self._last_loop_interval_warning_at and now - self._last_loop_interval_warning_at < minimum:
+            return False
+        self._last_loop_interval_warning_at = now
+        return True
 
     def _mark_symbol_blocked_for_kis_order_error(self, code: str, name: str, error: Exception) -> bool:
         message = str(error)
@@ -438,14 +457,13 @@ class AutoTrader:
             return
         if profile:
             with profile.stage("quote_fetch"):
-                samples = self.price_sampler.sample(position.code, position.name)
-                stable, stable_reason = self.price_sampler.stable(samples, self.config.risk.max_price_sample_volatility_pct)
+                scan_quote = self.client.quote(position.code, name=position.name)
         else:
-            samples = self.price_sampler.sample(position.code, position.name)
-            stable, stable_reason = self.price_sampler.stable(samples, self.config.risk.max_price_sample_volatility_pct)
-        current_price = samples[-1].price if samples else 0
-        if not stable:
-            self.logger.info("trade_blocked code=%s price=%s reason=%s", position.code, current_price, stable_reason)
+            scan_quote = self.client.quote(position.code, name=position.name)
+        current_price = scan_quote.price
+        scan_samples = (scan_quote,)
+        if current_price <= 0:
+            self.logger.info("trade_blocked code=%s price=%s reason=current_price_lookup_failed", position.code, current_price)
             return
         if profile:
             with profile.stage("lot_manager"):
@@ -461,9 +479,45 @@ class AutoTrader:
         with profile.stage("strategy_decision") if profile else _null_stage():
             symbol_risk = self.risk_manager.symbol_buy_allowed(position)
             action = self.strategy.decide(position, current_price, snapshot, account_risk, symbol_risk)
-        with profile.stage("order_guard") if profile else _null_stage():
-            portfolio_preview = self.portfolio_buy_block_reason(position, action) if action else ""
-            final_block_reason = self.pre_request_block_reason(position, action, portfolio_preview) if action else ""
+        portfolio_preview = ""
+        final_block_reason = ""
+        action_created = bool(action)
+        final_samples = scan_samples
+        if action is not None:
+            with profile.stage("quote_fetch") if profile else _null_stage():
+                stable_samples = self.price_sampler.sample(position.code, position.name)
+                stable, stable_reason = self.price_sampler.stable(stable_samples, self.config.risk.max_price_sample_volatility_pct)
+            final_samples = stable_samples
+            stable_price = stable_samples[-1].price if stable_samples else current_price
+            if not stable:
+                final_block_reason = stable_reason
+                current_price = stable_price
+            else:
+                with profile.stage("quote_fetch") if profile else _null_stage():
+                    final_quote = self.client.quote(position.code, name=position.name)
+                final_samples = (*stable_samples, final_quote)
+                current_price = final_quote.price
+                if current_price <= 0:
+                    final_block_reason = "final_quote_missing"
+                else:
+                    with profile.stage("lot_manager") if profile else _null_stage():
+                        position = self.position_manager.refresh_from_lots(position.code, current_price)
+                    with profile.stage("strategy_decision") if profile else _null_stage():
+                        final_account_risk = self.risk_manager.account_buy_allowed(snapshot, self.position_manager.positions)
+                        final_symbol_risk = self.risk_manager.symbol_buy_allowed(position)
+                        final_action = self.strategy.decide(position, current_price, snapshot, final_account_risk, final_symbol_risk)
+                    if final_action is None:
+                        final_block_reason = "final_quote_action_cleared"
+                    elif final_action.side is not action.side:
+                        final_block_reason = "final_quote_action_changed"
+                    else:
+                        action = final_action
+                        account_risk = final_account_risk
+                        symbol_risk = final_symbol_risk
+            with profile.stage("order_guard") if profile else _null_stage():
+                portfolio_preview = self.portfolio_buy_block_reason(position, action) if action and not final_block_reason else ""
+                guard_reason = self.pre_request_block_reason(position, action, portfolio_preview) if action and not final_block_reason else ""
+                final_block_reason = final_block_reason or guard_reason
         next_skip_reason = final_block_reason or portfolio_preview
         if position.skip_reason != next_skip_reason:
             position.skip_reason = next_skip_reason
@@ -482,8 +536,8 @@ class AutoTrader:
                 action.reason if action else "NONE",
                 portfolio_preview,
                 final_block_reason,
-                bool(action),
-                samples=samples,
+                action_created,
+                samples=final_samples,
             )
         if action is None:
             return
@@ -725,6 +779,10 @@ class AutoTrader:
         sync_block = self.sync_required_block_reason(position)
         if sync_block:
             return sync_block
+        if position.position_state == PositionLifecycle.RISK_BLOCKED.value or position.danger_state:
+            return "risk_blocked"
+        if position.position_state == PositionLifecycle.REVIEW_REQUIRED.value or position.needs_review:
+            return "review_required"
         partial = self.partial_order_block_reason(position)
         if partial:
             return partial

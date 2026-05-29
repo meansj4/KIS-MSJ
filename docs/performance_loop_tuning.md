@@ -80,6 +80,38 @@ Projected 120-symbol current-policy loop:
 
 This projection is deterministic because the sampler sleeps between samples: 5 samples create 4 sleeps, so `4 * 2s = 8s` per evaluated symbol.
 
+## 2026-05-29 Sampling Optimization
+
+The auto loop no longer performs 5-sample stability checks for every enabled symbol.
+
+Current flow:
+
+1. Scan each enabled symbol with one quote.
+2. Build the strategy action candidate from that scan quote.
+3. If there is no action candidate, skip stability sampling.
+4. If there is a BUY/SELL candidate, perform the configured stability sampling.
+5. Fetch one final quote immediately before order request construction.
+6. Refresh lots/position, account risk, symbol risk, strategy action, runtime guard, open-order guard, and pre-request guards on the final quote path.
+7. Build quantity and limit price from the final quote.
+8. Apply fills only after `record_fill()` succeeds, unchanged from the previous safety rule.
+
+Safety guards intentionally left unchanged:
+
+- startup recent execution reconciliation
+- open-order reconciliation
+- post-cancel execution check
+- fill dedupe
+- `SYNC_REQUIRED` handling
+
+Post-change mock benchmark with current `2s` sampling interval, 10 symbols:
+
+- loop: `43.03s`
+- average symbol: `4.07s`
+- quote fetch: `40.01s`
+- interpretation: only action candidates pay the 5-sample cost; non-candidate symbols use one quote.
+
+The actual loop duration now depends heavily on how many symbols produce BUY/SELL candidates in that loop.
+
 ## Loop Interval
 
 Current config:
@@ -134,3 +166,5 @@ Current 5-sample/2-second policy:
 - lower bound without changing sampling: still about `16 minutes`
 
 To get a safe live loop near `30-60s`, the sampling policy must change. A safer path is to use one fresh quote for normal scanning and reserve multi-sample volatility confirmation for symbols that are about to submit an order. Keep final open-order, runtime, risk, and reconciliation guards intact.
+
+That safer path has now been implemented for the automatic loop. Manual order request processing still uses its own stability check path.

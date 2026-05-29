@@ -398,6 +398,8 @@
   "storage_path": "data/lot_auto_trader_state.sqlite3",
   "log_path": "logs/lot_auto_trader.log",
   "loop_interval_seconds": 3,
+  "loop_profiling_enabled": true,
+  "loop_interval_warning_min_seconds": 60,
   "max_loop_count": 1,
   "ui_manual_trading_enabled": false,
   "_example_note": "Current expansion_100_safe-compatible example. Use config/lot_auto_trader.json for the live candidate list."
