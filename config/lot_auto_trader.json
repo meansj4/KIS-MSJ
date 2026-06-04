@@ -2466,7 +2466,11 @@
     "include_previous_day_for_open_orders": true,
     "enable_execution_raw_log": false,
     "reconcile_recent_executions_on_startup": true,
-    "startup_execution_lookup_days": 1
+    "startup_execution_lookup_days": 1,
+    "account_snapshot_min_interval_seconds": 30,
+    "account_snapshot_rate_limit_cooldown_seconds": 3,
+    "kis_min_request_interval_seconds": 0.25,
+    "kis_balance_page_interval_seconds": 1.0
   },
   "market_hours": {
     "open_time": "09:00",
@@ -2487,7 +2491,7 @@
   },
   "storage_path": "C:\\MSJ\\KIS-MSJ\\data\\lot_auto_trader_real_test.sqlite3",
   "log_path": "C:\\MSJ\\KIS-MSJ\\logs\\lot_auto_trader.log",
-  "loop_interval_seconds": 3,
+  "loop_interval_seconds": 15,
   "loop_profiling_enabled": true,
   "loop_interval_warning_min_seconds": 60,
   "max_loop_count": null,

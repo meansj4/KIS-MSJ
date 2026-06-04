@@ -34,6 +34,73 @@ def test_log_symbol_decision_handles_missing_snapshot(tmp_path) -> None:
     bot.log_symbol_decision(position, 10000, None, RiskDecision(True), RiskDecision(True), "NONE")
 
 
+def test_startup_sync_reuses_recent_account_snapshot(tmp_path) -> None:
+    config = BotConfig(
+        order=OrderConfig(live_trading=True, account_snapshot_min_interval_seconds=60),
+        storage_path=str(tmp_path / "state.sqlite3"),
+        log_path=str(tmp_path / "trader.log"),
+    )
+    bot = AutoTrader(config, use_mock_client=True)
+    snapshot = AccountSnapshot(1_000_000, 1_000_000, 0, 0, ())
+    calls = {"count": 0}
+
+    def account_snapshot():
+        calls["count"] += 1
+        return snapshot
+
+    bot.client.account_snapshot = account_snapshot
+
+    assert bot.startup_sync() == snapshot
+    assert bot.startup_sync() == snapshot
+    assert calls["count"] == 1
+
+
+def test_run_once_skips_loop_when_initial_account_snapshot_is_rate_limited(tmp_path, monkeypatch) -> None:
+    config = BotConfig(
+        order=OrderConfig(live_trading=True, account_snapshot_rate_limit_cooldown_seconds=90),
+        storage_path=str(tmp_path / "state.sqlite3"),
+        log_path=str(tmp_path / "trader.log"),
+    )
+    bot = AutoTrader(config, use_mock_client=True)
+    calls = {"count": 0}
+
+    def account_snapshot():
+        calls["count"] += 1
+        raise RuntimeError('{"msg_cd":"EGW00201","msg1":"rate limit"}')
+
+    bot.client.account_snapshot = account_snapshot
+    monkeypatch.setattr(trader_main, "load_runtime_control", lambda: trader_main.RuntimeControl())
+
+    assert bot.run_once() == "account_sync_rate_limited"
+    assert bot.run_once() == "account_sync_rate_limited"
+    assert calls["count"] == 1
+
+
+def test_fill_application_invalidates_account_snapshot_cache(tmp_path) -> None:
+    config = BotConfig(
+        order=OrderConfig(live_trading=True, account_snapshot_min_interval_seconds=60),
+        storage_path=str(tmp_path / "state.sqlite3"),
+        log_path=str(tmp_path / "trader.log"),
+    )
+    bot = AutoTrader(config, use_mock_client=True)
+    snapshots = [
+        AccountSnapshot(1_000_000, 1_000_000, 0, 0, ()),
+        AccountSnapshot(990_000, 1_000_000, 0, 0, ()),
+    ]
+    calls = {"count": 0}
+
+    def account_snapshot():
+        calls["count"] += 1
+        return snapshots[min(calls["count"] - 1, len(snapshots) - 1)]
+
+    bot.client.account_snapshot = account_snapshot
+    assert bot.startup_sync().cash_available == 1_000_000
+    bot.apply_reconciled_fill(TradeFill("005930", "Test", OrderSide.BUY, 1, 10000, "BUY-1", datetime.now()))
+
+    assert bot.startup_sync().cash_available == 990_000
+    assert calls["count"] == 2
+
+
 def test_evaluate_clears_stale_skip_reason_when_no_current_block(tmp_path) -> None:
     bot = trader(tmp_path)
     position = PositionState(code="005930", name="Test", skip_reason="data_mismatch")

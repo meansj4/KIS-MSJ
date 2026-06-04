@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import KisAccountConfig
-from .domestic_quote import fetch_current_quote, get_access_token, is_rate_limit_error, load_credentials
+from .domestic_quote import fetch_current_quote, get_access_token, is_rate_limit_error, load_credentials, set_kis_min_request_interval, throttle_kis_request
 from .models import AccountSnapshot, BalanceItem, OrderRequest, OrderResult, OrderSide, OrderStatus, Quote, TradeFill
 
 
@@ -68,7 +68,15 @@ def _is_transient_http_status(status_code: int | None) -> bool:
 
 
 class KisClient:
-    def __init__(self, account_config: KisAccountConfig | None = None, *, enable_execution_raw_log: bool = False) -> None:
+    def __init__(
+        self,
+        account_config: KisAccountConfig | None = None,
+        *,
+        enable_execution_raw_log: bool = False,
+        min_request_interval_seconds: float = 0.25,
+        balance_page_interval_seconds: float = 1.0,
+    ) -> None:
+        set_kis_min_request_interval(min_request_interval_seconds)
         self.credentials = load_credentials()
         self.access_token = get_access_token(self.credentials)
         self.account_config = account_config or KisAccountConfig()
@@ -76,6 +84,7 @@ class KisClient:
         self.account_product_code = os.environ.get(self.account_config.account_product_code_env, "").strip()
         self.consecutive_errors = 0
         self.enable_execution_raw_log = enable_execution_raw_log
+        self.balance_page_interval_seconds = max(0.0, balance_page_interval_seconds)
         self.logger = logging.getLogger("kis_msj.kis_client")
 
     @property
@@ -121,6 +130,8 @@ class KisClient:
             seen_tokens.add(token)
             params = self._balance_params(next_fk, next_nk)
             continuation = "N"
+            if self.balance_page_interval_seconds:
+                time.sleep(self.balance_page_interval_seconds)
         else:
             self.logger.warning("account_snapshot pagination stopped reason=max_pages pages=%s", len(pages))
         return pages
@@ -267,6 +278,7 @@ class KisClient:
         request = urllib.request.Request(f"{self.credentials.base_url}{path}{query}", data=json.dumps(body).encode("utf-8") if body is not None else None, headers=headers, method=method)
         for attempt in range(3):
             try:
+                throttle_kis_request()
                 with urllib.request.urlopen(request, timeout=20) as response:
                     payload = json.loads(response.read().decode("utf-8"))
                 if payload.get("rt_cd") != "0":
@@ -310,6 +322,7 @@ class KisClient:
         headers = {"Content-Type": "application/json; charset=utf-8", "appkey": self.credentials.app_key, "appsecret": self.credentials.app_secret}
         request = urllib.request.Request(f"{self.credentials.base_url}{HASHKEY_PATH}", data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
         try:
+            throttle_kis_request()
             with urllib.request.urlopen(request, timeout=20) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as error:

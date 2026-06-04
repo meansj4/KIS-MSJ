@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Sequence
 
 from .config import DEFAULT_CONFIG_PATH, BotConfig, config_hash, config_to_dict, load_config, write_default_config
+from .domestic_quote import is_rate_limit_error
 from .kis_client import KisApiError, KisClient, MockKisClient
 from .logger import configure_trade_logger, log_decision
 from .lot_manager import LotManager
@@ -61,12 +62,24 @@ class AutoTrader:
         self.strategy = LotGridStrategy(config, self.lot_manager)
         self.notifier = LogNotifier(self.logger)
         self.upstream_watcher = UpstreamWatcher(config.upstream_watch, self.notifier)
-        self.client = MockKisClient(DEFAULT_QUOTE_CSV) if use_mock_client or not config.order.live_trading else KisClient(config.kis_account, enable_execution_raw_log=config.order.enable_execution_raw_log)
+        self.client = (
+            MockKisClient(DEFAULT_QUOTE_CSV)
+            if use_mock_client or not config.order.live_trading
+            else KisClient(
+                config.kis_account,
+                enable_execution_raw_log=config.order.enable_execution_raw_log,
+                min_request_interval_seconds=config.order.kis_min_request_interval_seconds,
+                balance_page_interval_seconds=config.order.kis_balance_page_interval_seconds,
+            )
+        )
         if hasattr(self.client, "logger"):
             self.client.logger = self.logger
         self.price_sampler = PriceSampler(self.client, config.order.price_sample_count, config.order.price_sample_interval_seconds)
         self.order_manager = OrderManager(config, self.client, self.store, self.logger)
         self._startup_recent_executions_reconciled = False
+        self._last_account_snapshot: AccountSnapshot | None = None
+        self._last_account_snapshot_at = 0.0
+        self._account_snapshot_rate_limited_until = 0.0
         self._loop_id = 0
         self.last_loop_profile: dict[str, object] = {}
         self._active_loop_profile: LoopProfile | None = None
@@ -76,26 +89,72 @@ class AutoTrader:
         self.__init__(config, use_mock_client=use_mock_client)
 
     def startup_sync(self) -> AccountSnapshot:
-        snapshot = self.client.account_snapshot()
+        now = time.monotonic()
+        if self.config.order.live_trading and now < self._account_snapshot_rate_limited_until:
+            retry_after = self._account_snapshot_rate_limited_until - now
+            raise RuntimeError(f"KIS account snapshot rate limited; retry_after_seconds={retry_after:.1f} msg_cd=EGW00201")
+        snapshot_age = time.monotonic() - self._last_account_snapshot_at if self._last_account_snapshot is not None else None
+        snapshot_from_rate_limit_cache = False
+        if (
+            self.config.order.live_trading
+            and snapshot_age is not None
+            and snapshot_age < self.config.order.account_snapshot_min_interval_seconds
+        ):
+            snapshot = self._last_account_snapshot
+            self.logger.info(
+                "account_snapshot_cached age_seconds=%.2f min_interval_seconds=%s",
+                snapshot_age,
+                self.config.order.account_snapshot_min_interval_seconds,
+            )
+        else:
+            try:
+                snapshot = self.client.account_snapshot()
+            except RuntimeError as error:
+                if is_rate_limit_error(error):
+                    self._account_snapshot_rate_limited_until = time.monotonic() + max(1, self.config.order.account_snapshot_rate_limit_cooldown_seconds)
+                if self._last_account_snapshot is not None and is_rate_limit_error(error):
+                    snapshot = self._last_account_snapshot
+                    snapshot_from_rate_limit_cache = True
+                    self.logger.warning(
+                        "account_snapshot_rate_limited_using_cache age_seconds=%.2f error=%s",
+                        time.monotonic() - self._last_account_snapshot_at,
+                        error,
+                    )
+                else:
+                    raise
+            else:
+                self._last_account_snapshot = snapshot
+                self._last_account_snapshot_at = time.monotonic()
+                self._account_snapshot_rate_limited_until = 0.0
         if self.config.order.live_trading:
             self.position_manager.sync_account(snapshot)
             self.risk_manager.data_mismatch_detected = self.position_manager.account_mismatch_detected
             if self.position_manager.account_mismatch_detected:
                 self.notifier.notify("SYNC_REQUIRED", "Lot quantity differs from KIS account balance. Trading is paused for mismatched symbols.")
-            try:
-                open_orders = self.client.open_orders()
-            except RuntimeError as error:
-                if getattr(self.client, "is_demo", False) and "90000000" in str(error):
-                    self.logger.warning("open_orders skipped reason=demo_api_unsupported")
-                    open_orders = ()
-                else:
-                    raise
-            if open_orders:
-                self.logger.warning("open_orders count=%s buy_orders_blocked=true", len(open_orders))
-                self.risk_manager.data_mismatch_detected = True
+            if snapshot_from_rate_limit_cache:
+                self.logger.warning("open_orders skipped reason=account_snapshot_rate_limited_using_cache")
+            else:
+                try:
+                    open_orders = self.client.open_orders()
+                except RuntimeError as error:
+                    if getattr(self.client, "is_demo", False) and "90000000" in str(error):
+                        self.logger.warning("open_orders skipped reason=demo_api_unsupported")
+                        open_orders = ()
+                    else:
+                        raise
+                if open_orders:
+                    self.logger.warning("open_orders count=%s buy_orders_blocked=true", len(open_orders))
+                    self.risk_manager.data_mismatch_detected = True
         self.store.save_positions(self.position_manager.positions.values())
         self.store.save_lots(self.lot_manager.lots.values())
         return snapshot
+
+    def invalidate_account_snapshot_cache(self, reason: str) -> None:
+        if self._last_account_snapshot is None:
+            return
+        self._last_account_snapshot = None
+        self._last_account_snapshot_at = 0.0
+        self.logger.info("account_snapshot_cache_invalidated reason=%s", reason)
 
     def run_once(self) -> str:
         self._loop_id += 1
@@ -136,7 +195,15 @@ class AutoTrader:
                 status = interrupt
                 return interrupt
             with profile.stage("account_sync") if profile else _null_stage():
-                snapshot = self.startup_sync()
+                try:
+                    snapshot = self.startup_sync()
+                except RuntimeError as error:
+                    if is_rate_limit_error(error):
+                        status = "account_sync_rate_limited"
+                        self.risk_manager.data_mismatch_detected = True
+                        self.logger.warning("account_sync_rate_limited skip_loop=true error=%s", error)
+                        return status
+                    raise
             with profile.stage("risk_summary") if profile else _null_stage():
                 account_risk = self.risk_manager.account_buy_allowed(snapshot, self.position_manager.positions)
             with profile.stage("manual_request") if profile else _null_stage():
@@ -309,6 +376,7 @@ class AutoTrader:
                 )
                 if fill is None:
                     continue
+                self.invalidate_account_snapshot_cache("manual_fill_applied")
                 updated = self.position_manager.apply_fill(fill)
                 self.store.save_position(updated)
                 self.store.save_lots(self.lot_manager.lots.values())
@@ -436,6 +504,7 @@ class AutoTrader:
             self.apply_reconciled_fill(fill)
 
     def apply_reconciled_fill(self, fill) -> None:
+        self.invalidate_account_snapshot_cache("reconciled_fill_applied")
         updated = self.position_manager.apply_fill(fill)
         self.store.save_position(updated)
         self.store.save_lots(self.lot_manager.lots.values())
@@ -559,6 +628,7 @@ class AutoTrader:
         if fill is None:
             self.logger.info("order_not_filled code=%s order_id=%s status=%s", position.code, result.order_id, result.status.value)
             return
+        self.invalidate_account_snapshot_cache("auto_fill_applied")
         updated = self.position_manager.apply_fill(fill)
         self.store.save_position(updated)
         self.store.save_lots(self.lot_manager.lots.values())

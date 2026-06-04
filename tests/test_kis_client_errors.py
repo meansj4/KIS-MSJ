@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from kis_msj.config import KisAccountConfig
+from kis_msj.domestic_quote import is_rate_limit_error
 from kis_msj.kis_client import BALANCE_PATH, DAILY_FILL_PATH, KisApiError, KisClient
 from kis_msj.models import OrderSide
 
@@ -22,6 +23,7 @@ def _client() -> KisClient:
     client.logger = logging.getLogger("kis_msj.kis_client")
     client.account_number = "12345678"
     client.account_product_code = "01"
+    client.balance_page_interval_seconds = 1.0
     return client
 
 
@@ -81,6 +83,12 @@ def test_kis_business_error_includes_endpoint_details(monkeypatch: pytest.Monkey
     assert "APBK0919" in message
 
 
+def test_korean_ledger_rate_limit_message_is_retryable() -> None:
+    error = RuntimeError('{"msg_cd":"EGW00201","msg1":"원장에서 허용 가능한 초당 거래건수를 초과하였습니다."}')
+
+    assert is_rate_limit_error(error)
+
+
 def test_executions_logs_masked_raw_fields_when_enabled(caplog: pytest.LogCaptureFixture) -> None:
     client = _client()
     client.enable_execution_raw_log = True
@@ -138,9 +146,10 @@ def test_executions_does_not_log_raw_fields_when_disabled(caplog: pytest.LogCapt
     assert not caplog.messages
 
 
-def test_account_snapshot_reads_all_balance_pages() -> None:
+def test_account_snapshot_reads_all_balance_pages(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _client()
     calls = []
+    sleeps = []
 
     def response(method, path, *, params=None, body=None, tr_id="", tr_cont=""):  # noqa: ANN001, ANN202
         calls.append({"params": dict(params or {}), "tr_cont": tr_cont})
@@ -163,12 +172,15 @@ def test_account_snapshot_reads_all_balance_pages() -> None:
         }
 
     client._request = response
+    client.balance_page_interval_seconds = 1.0
+    monkeypatch.setattr("kis_msj.kis_client.time.sleep", lambda seconds: sleeps.append(seconds))
 
     snapshot = client.account_snapshot()
 
     assert [item.code for item in snapshot.positions] == ["005930", "000660"]
     assert len(calls) == 2
     assert calls[0]["tr_cont"] == ""
+    assert sleeps == [1.0]
 
 
 def test_balance_snapshot_rows_reads_all_balance_pages() -> None:

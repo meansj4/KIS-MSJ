@@ -7,6 +7,7 @@ import csv
 import json
 import os
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -33,6 +34,7 @@ QUOTE_TR_ID = "FHKST01010100"
 DEFAULT_SLEEP_SECONDS = 0.35
 DEFAULT_MAX_RETRIES = 5
 DEFAULT_RETRY_BASE_SECONDS = 2.0
+DEFAULT_MIN_REQUEST_INTERVAL_SECONDS = 0.25
 
 QUOTE_COLUMNS = (
     "short_code",
@@ -48,6 +50,29 @@ QUOTE_COLUMNS = (
     "raw_stck_prpr",
     "raw_acml_vol",
 )
+
+_REQUEST_THROTTLE_LOCK = threading.Lock()
+_LAST_REQUEST_AT = 0.0
+_MIN_REQUEST_INTERVAL_SECONDS = DEFAULT_MIN_REQUEST_INTERVAL_SECONDS
+
+
+def set_kis_min_request_interval(seconds: float) -> None:
+    global _MIN_REQUEST_INTERVAL_SECONDS
+    _MIN_REQUEST_INTERVAL_SECONDS = max(0.0, float(seconds))
+
+
+def throttle_kis_request() -> None:
+    """Process-local throttle for KIS HTTP calls."""
+
+    global _LAST_REQUEST_AT
+    minimum = _MIN_REQUEST_INTERVAL_SECONDS
+    if minimum <= 0:
+        return
+    with _REQUEST_THROTTLE_LOCK:
+        elapsed = time.monotonic() - _LAST_REQUEST_AT
+        if elapsed < minimum:
+            time.sleep(minimum - elapsed)
+        _LAST_REQUEST_AT = time.monotonic()
 
 
 @dataclass(frozen=True)
@@ -107,6 +132,7 @@ def _post_json(url: str, payload: dict[str, Any], headers: dict[str, str]) -> di
         method="POST",
     )
     try:
+        throttle_kis_request()
         with urllib.request.urlopen(request, timeout=20) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
@@ -117,6 +143,7 @@ def _post_json(url: str, payload: dict[str, Any], headers: dict[str, str]) -> di
 def _get_json(url: str, headers: dict[str, str]) -> dict[str, Any]:
     request = urllib.request.Request(url, headers=headers, method="GET")
     try:
+        throttle_kis_request()
         with urllib.request.urlopen(request, timeout=20) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
@@ -134,6 +161,10 @@ def is_rate_limit_error(error: RuntimeError) -> bool:
         "limit",
         "초당",
         "거래건수",
+        "초당",
+        "거래건수",
+        "허용 가능한",
+        "egw00201",
         "egw",
         "429",
     )

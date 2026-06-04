@@ -1,14 +1,14 @@
 {
-  "bot_paused": true,
+  "bot_paused": false,
   "config_reload_requested": false,
   "config_reload_requested_at": "",
-  "all_orders_paused": true,
+  "all_orders_paused": false,
   "buy_paused": false,
   "sell_paused": false,
   "cleanup_paused": false,
   "reentry_paused": false,
-  "reason": "nexteel_sync_repair",
-  "updated_at": "2026-06-04T11:24:20",
+  "reason": "rate_limit_patch_released",
+  "updated_at": "2026-06-04T12:14:58",
   "updated_by": "codex",
   "expires_at": ""
 }

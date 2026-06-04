@@ -198,6 +198,10 @@ class OrderConfig:
     enable_execution_raw_log: bool = False
     reconcile_recent_executions_on_startup: bool = True
     startup_execution_lookup_days: int = 1
+    account_snapshot_min_interval_seconds: int = 30
+    account_snapshot_rate_limit_cooldown_seconds: int = 3
+    kis_min_request_interval_seconds: float = 0.25
+    kis_balance_page_interval_seconds: float = 1.0
 
 
 @dataclass(frozen=True)
