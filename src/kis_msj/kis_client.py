@@ -395,10 +395,10 @@ def _load_prices(path: Path) -> dict[str, int]:
 
 
 def _execution_id(row: dict[str, Any], order_id: str) -> str:
-    for key in ("exec_no", "ccld_no", "cnfm_no", "odno_seq", "ord_seq", "orgn_odno", "odno"):
+    for key in ("exec_no", "ccld_no", "cnfm_no", "odno_seq", "ord_seq", "orgn_odno"):
         value = str(row.get(key) or "").strip()
         if value:
-            return f"EXEC:{value}" if key != "odno" else ""
+            return f"EXEC:{value}"
     code = str(row.get("pdno") or "").zfill(6)
     quantity = str(row.get("tot_ccld_qty") or row.get("ccld_qty") or "").strip()
     price = str(_first_value(row, ("avg_prvs", "avg_pric", "ccld_unpr", "ord_unpr")) or "").strip()

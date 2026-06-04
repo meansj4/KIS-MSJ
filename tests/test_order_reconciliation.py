@@ -3,6 +3,7 @@ import sqlite3
 import logging
 
 from kis_msj.config import BotConfig, OrderConfig
+from kis_msj.kis_client import _execution_id
 from kis_msj.models import OrderRequest, OrderResult, OrderSide, OrderStatus, TradeFill
 from kis_msj.order_manager import OrderManager
 from kis_msj.storage import StateStore
@@ -202,6 +203,37 @@ def test_fill_without_execution_id_distinguishes_different_fill_times(tmp_path) 
 
     assert store.record_fill(first)
     assert store.record_fill(second)
+
+
+def test_kis_order_number_only_execution_uses_aggregate_dedupe_key() -> None:
+    row = {
+        "odno": "0008609600",
+        "pdno": "092790",
+        "tot_ccld_qty": "3",
+        "avg_prvs": "14150",
+        "ord_tmd": "091420",
+    }
+
+    assert _execution_id(row, "0008609600").startswith("AGG:0008609600:092790:3:14150:091420")
+
+
+def test_aggregate_execution_reconcile_records_only_delta_quantity(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    result = order(code="092790", side=OrderSide.SELL, quantity=3, lot_id="LOT-1")
+    store.record_order(result)
+    filled_at = datetime.now().replace(microsecond=0)
+    first = TradeFill("092790", "Nexteel", OrderSide.SELL, 1, 14150, "000001", filled_at, "LOT-1", "AGG:000001:092790:1:14150:091420")
+    cumulative = TradeFill("092790", "Nexteel", OrderSide.SELL, 3, 14150, "000001", filled_at, "LOT-1", "AGG:000001:092790:3:14150:091420")
+    assert store.record_fill(first)
+    client = ReconcileClient((cumulative,))
+    manager = OrderManager(BotConfig(order=OrderConfig(limit_order_timeout_seconds=999)), client, store, logging.getLogger("test"))
+
+    fills = manager.reconcile_open_orders()
+
+    assert len(fills) == 1
+    assert fills[0].quantity == 2
+    assert store.filled_quantity_for_order("000001") == 3
+    assert store.find_order("000001").status is OrderStatus.FILLED
 
 
 def test_existing_db_is_backed_up_before_schema_migration(tmp_path) -> None:

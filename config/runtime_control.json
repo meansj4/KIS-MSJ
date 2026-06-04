@@ -1,14 +1,14 @@
 {
-  "bot_paused": false,
+  "bot_paused": true,
   "config_reload_requested": false,
   "config_reload_requested_at": "",
-  "all_orders_paused": false,
+  "all_orders_paused": true,
   "buy_paused": false,
   "sell_paused": false,
-  "cleanup_paused": true,
+  "cleanup_paused": false,
   "reentry_paused": false,
-  "reason": "ui_start_loop",
-  "updated_at": "2026-05-27T09:41:48",
-  "updated_by": "local_ui",
+  "reason": "nexteel_sync_repair",
+  "updated_at": "2026-06-04T11:24:20",
+  "updated_by": "codex",
   "expires_at": ""
 }
