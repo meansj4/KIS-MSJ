@@ -355,6 +355,21 @@ def test_duplicate_fill_dedupe_applies_position_once(tmp_path) -> None:
     assert sum(lot.remaining_quantity for lot in bot.lot_manager.open_lots("005930")) == 3
 
 
+def test_buy_lot_id_collision_keeps_both_partial_delta_lots(tmp_path) -> None:
+    bot = trader(tmp_path)
+    filled_at = datetime.now().replace(microsecond=0)
+    first = TradeFill("005930", "Test", OrderSide.BUY, 3, 10000, "ORDER-1", filled_at, execution_id="AGG:ORDER-1:005930:3:10000:091000")
+    delta = TradeFill("005930", "Test", OrderSide.BUY, 1, 10000, "ORDER-1", filled_at, execution_id="AGG:ORDER-1:005930:4:10000:091000:delta:3->4")
+
+    bot.position_manager.apply_fill(first)
+    bot.position_manager.apply_fill(delta)
+
+    lots = bot.lot_manager.open_lots("005930")
+    assert len(lots) == 2
+    assert sorted(lot.remaining_quantity for lot in lots) == [1, 3]
+    assert sum(lot.remaining_quantity for lot in lots) == 4
+
+
 def test_cleanup_sell_blocked_when_requested_buy_exists(tmp_path) -> None:
     bot = trader(tmp_path)
     request = OrderRequest("005930", "Test", OrderSide.BUY, 1, 10000, "test")

@@ -141,7 +141,7 @@ class LotManager:
     def create_buy_lot(self, fill: TradeFill) -> LotState:
         exposure_after = self.cumulative_invested_amount(fill.code) + fill.quantity * fill.price
         target_pct = self.target_profit_pct(exposure_after)
-        lot_id = fill.lot_id or f"{fill.code}-{fill.filled_at.strftime('%Y%m%d%H%M%S%f')}"
+        lot_id = fill.lot_id or self._new_buy_lot_id(fill)
         lot = LotState(
             lot_id=lot_id,
             code=fill.code,
@@ -157,6 +157,20 @@ class LotManager:
         )
         self.lots[lot.lot_id] = lot
         return lot
+
+    def _new_buy_lot_id(self, fill: TradeFill) -> str:
+        base = f"{fill.code}-{fill.filled_at.strftime('%Y%m%d%H%M%S%f')}"
+        if base not in self.lots:
+            return base
+        suffix_source = fill.execution_id or f"{fill.order_id}-{fill.quantity}-{fill.price}"
+        suffix = "".join(char if char.isalnum() else "-" for char in suffix_source).strip("-")
+        candidate = f"{base}-{suffix}" if suffix else f"{base}-dup"
+        if candidate not in self.lots:
+            return candidate
+        counter = 2
+        while f"{candidate}-{counter}" in self.lots:
+            counter += 1
+        return f"{candidate}-{counter}"
 
     def apply_sell_fill(self, fill: TradeFill) -> LotState:
         if not fill.lot_id or fill.lot_id not in self.lots:
