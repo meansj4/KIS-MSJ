@@ -15,7 +15,7 @@
 
 > 2026-05-29 SELL LOT priority update: when multiple OPEN LOTs satisfy the same SELL condition for a symbol, the selected LOT is now the oldest valid `buy_filled_at` first. `PROFIT_TAKE` ties keep higher profit rate/larger exposure/larger quantity/`lot_id` ordering; `CLEANUP_SELL` ties use lower expected loss/lower profit rate/`lot_id`. This can sell an older lower-profit LOT before a newer higher-profit LOT, but does not change SELL eligibility, target calculation, risk/open-order/runtime guards, reconciliation, manual request routing, or fill-driven DB updates.
 
-> 2026-06-08 strategy update: add-buy reference VWAP/median/reference now excludes OPEN LOTs at `<= -15%` unrealized return and falls back to current price when all reference lots are excluded. `max_lots_per_symbol_default` is 12 with explicit 11~12 bands. Max-lots reached blocks BUY only and no longer creates REVIEW_REQUIRED by itself. Age-decayed negative target loss exits are classified as `AUTO_DECAY_CLEANUP_SELL`.
+> 2026-06-08 strategy update: add-buy reference VWAP/median/reference uses all OPEN LOTs and excludes only CLOSED lots or lots with `remaining_quantity <= 0`; the earlier `<= -15%` reference exclusion/current-price fallback direction is rolled back. `max_lots_per_symbol_default` is 12 with explicit 11~12 bands. Max-lots reached blocks BUY only and no longer creates REVIEW_REQUIRED by itself. Age-decayed negative target loss exits are classified as `AUTO_DECAY_CLEANUP_SELL`.
 
 > 2026-05-29 hourly log storage update: the configured `log_path` remains the compatibility anchor, but new bot/UI audit records are written under its parent as KST `YYMMDD/HH.log` files, for example `logs/260529/09.log`. Rollover is handled per logging record, not by cutting files, so multiline records stay intact. Existing root `logs/*.log` files are preserved and the Logs UI/API tails both legacy and hourly files.
 
@@ -331,11 +331,12 @@ cycle lock 원칙:
 
 | OPEN LOT 수 | 하락 조건 | 추가 LOT |
 | --- | ---: | ---: |
-| 1~2 | -4.0% | 1 |
+| 1~2 | -3.0% | 1 |
 | 3~4 | -6.0% | 1 |
-| 5~6 | -8.0% | 1 |
-| 7~8 | -10.0% | 1 |
-| 9~10 | -12.0% | 1 |
+| 5~6 | -9.0% | 1 |
+| 7~8 | -12.0% | 1 |
+| 9~10 | -15.0% | 1 |
+| 11~12 | -18.0% | 1 |
 
 current_open_lot_count는 반드시 OPEN LOT 기준이다. 즉 `remaining_quantity > 0`이고 `status != CLOSED`인 LOT만 센다. 9 LOT 보유 상태에서 1 LOT 추가는 허용되어 10 LOT까지 갈 수 있지만, 10 LOT 상태에서는 추가매수 차단이다.
 
@@ -804,7 +805,7 @@ Config 저장 UX는 backup, validation, diff, atomic write, round-trip verify, c
 | 범주 | 검증 내용 |
 | --- | --- |
 | LOT sizing | 가격대별 band, cycle lock, migration, manual preview mismatch |
-| add buy lot bands | 1~2/3~4/5~6/7~8/9~10 LOT band, 9->10 허용, 10 차단 |
+| add buy lot bands | 1~2/3~4/5~6/7~8/9~10/11~12 LOT band, 11->12 허용, 12 차단 |
 | target profit dynamic | 현재 OPEN LOT 수 기준 target, 일부 매도 후 target 재계산 |
 | REVIEW_REQUIRED | 진입, recheck, acknowledge, sync mismatch 시 SYNC_REQUIRED |
 | manual order requests | UI/API request 생성, guard, Bot Core 소비, fill 전 positions 불변 |
@@ -1350,12 +1351,12 @@ DB 초기화 버튼이 비활성인 대표 원인:
 
 | LOT 구간 | drop_rate | add_lot_count | 변경 영향 |
 | --- | ---: | ---: | --- |
-| 1~2 | 4% | 1 | 초반 물타기 간격 |
+| 1~2 | 3% | 1 | 초반 물타기 간격 |
 | 3~4 | 6% | 1 | 중간 노출 조절 |
-| 5~6 | 8% | 1 | 보수화 |
-| 7~8 | 10% | 1 | 더 보수화 |
-| 9~10 | 12% | 1 | 고노출 추가매수 구간 |
-| 11~12 | 14% | 1 | 마지막 자동 추가매수 구간 |
+| 5~6 | 9% | 1 | 보수화 |
+| 7~8 | 12% | 1 | 더 보수화 |
+| 9~10 | 15% | 1 | 고노출 추가매수 구간 |
+| 11~12 | 18% | 1 | 마지막 자동 추가매수 구간 |
 
 ### target_profit_lot_bands
 
@@ -1366,7 +1367,7 @@ DB 초기화 버튼이 비활성인 대표 원인:
 | 5~6 | 4% | 기존 LOT도 동적 적용 |
 | 7~8 | 3% | 포지션 축소 우선 |
 | 9~10 | 2% | 고노출 구간 회전 우선 |
-| 11~12 | 10% | 최상단 LOT 구간, 깊은 물타기 이후 더 높은 회복 목표 |
+| 11~12 | 1% | 최상단 LOT 구간 회전 우선 |
 
 ### order 위험 설정
 

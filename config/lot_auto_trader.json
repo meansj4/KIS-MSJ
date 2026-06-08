@@ -2300,8 +2300,6 @@
     "cleanup_buy_cooldown_days": 3,
     "cleanup_reentry_cooldown_days": 5,
     "cleanup_auto_return_to_wait_reentry": false,
-    "reference_exclusion_enabled": true,
-    "reference_exclusion_loss_rate": -0.15,
     "stale_lot_loss_rate": -0.15,
     "stale_lot_min_age_weeks": 8,
     "stale_lot_price_gap_rate": -0.1,
@@ -2377,7 +2375,7 @@
       {
         "min_lots": 1,
         "max_lots": 2,
-        "drop_rate": 0.04,
+        "drop_rate": 0.03,
         "add_lot_count": 1
       },
       {
@@ -2389,25 +2387,25 @@
       {
         "min_lots": 5,
         "max_lots": 6,
-        "drop_rate": 0.08,
+        "drop_rate": 0.09,
         "add_lot_count": 1
       },
       {
         "min_lots": 7,
         "max_lots": 8,
-        "drop_rate": 0.1,
+        "drop_rate": 0.12,
         "add_lot_count": 1
       },
       {
         "min_lots": 9,
         "max_lots": 10,
-        "drop_rate": 0.12,
+        "drop_rate": 0.15,
         "add_lot_count": 1
       },
       {
         "min_lots": 11,
         "max_lots": 12,
-        "drop_rate": 0.14,
+        "drop_rate": 0.18,
         "add_lot_count": 1
       }
     ],
@@ -2440,7 +2438,7 @@
       {
         "min_lots": 11,
         "max_lots": 12,
-        "target_profit_rate": 0.1
+        "target_profit_rate": 0.01
       }
     ],
     "max_lots_per_symbol_default": 12,

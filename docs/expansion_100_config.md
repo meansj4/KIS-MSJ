@@ -38,12 +38,12 @@ LOT sizing은 `cycle_locked_by_entry_price` 방식입니다. 최초 진입 시 �
 
 | 현재 OPEN LOT 수 | 추가매수 하락률 | 추가 LOT |
 |---|---:|---:|
-| 1~2 | 4% | 1 |
+| 1~2 | 3% | 1 |
 | 3~4 | 6% | 1 |
-| 5~6 | 8% | 1 |
-| 7~8 | 10% | 1 |
-| 9~10 | 12% | 1 |
-| 11~12 | 14% | 1 |
+| 5~6 | 9% | 1 |
+| 7~8 | 12% | 1 |
+| 9~10 | 15% | 1 |
+| 11~12 | 18% | 1 |
 
 `max_lots_per_symbol_default=12`가 기본입니다. 가격대 band에 `max_lots`가 있으면 그 값을 우선합니다. 최대 LOT 수 도달은 BUY만 차단하며, 이 사유만으로 `REVIEW_REQUIRED`를 새로 만들지 않습니다.
 
@@ -58,11 +58,11 @@ LOT sizing은 `cycle_locked_by_entry_price` 방식입니다. 최초 진입 시 �
 | 5~6 | 4% |
 | 7~8 | 3% |
 | 9~10 | 2% |
-| 11~12 | 10% |
+| 11~12 | 1% |
 
 이후 LOT age decay가 적용됩니다. PROFIT_TAKE와 CLEANUP_SELL 분류는 target이 아니라 실제 손익 기준입니다. 단, age decay 후 `effective_target_profit_rate < 0`이고 LOT 현재 수익률이 그 target 이상이면 손실이어도 `AUTO_DECAY_CLEANUP_SELL` 자동 SELL 후보가 됩니다.
 
-추가매수 reference 계산은 기본적으로 현재 손익률 `<= -15%`인 OPEN LOT을 VWAP/median/reference에서 제외합니다. 모든 OPEN LOT이 제외되면 해당 루프의 reference는 current price로 fallback됩니다.
+추가매수 reference 계산은 OPEN LOT 전체 기준입니다. CLOSED LOT과 `remaining_quantity <= 0` LOT만 제외하며, `-15%` 이하 손실 OPEN LOT도 VWAP/median/reference에 포함합니다. current price fallback은 사용하지 않습니다.
 
 ## 초기 확장 운용 권장값
 

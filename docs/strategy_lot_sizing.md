@@ -5,7 +5,7 @@
 
 > 2026-05-29 SELL LOT priority update: when multiple OPEN LOTs in the same symbol satisfy a SELL condition, the bot now sells the oldest matching LOT first by `buy_filled_at`. `PROFIT_TAKE` ties use higher profit rate, larger open amount, larger remaining quantity, then `lot_id`; `CLEANUP_SELL` ties use lower expected loss, lower profit rate, then `lot_id`. Missing or unparsable `buy_filled_at` values sort after valid timestamps. This only changes which already-eligible LOT is selected; guards, cleanup eligibility, fill dedupe, and fill-driven lots/positions updates are unchanged.
 
-> 2026-06-08 update: add-buy reference price now excludes OPEN LOTs whose current unrealized return is `<= -15%` from VWAP/median/reference calculations. If every OPEN LOT is excluded, the reference falls back to current price for that loop. Max LOTs per symbol default is now 12, with explicit 11~12 add-buy and target-profit bands. Age-decayed negative target cleanup uses `AUTO_DECAY_CLEANUP_SELL`.
+> 2026-06-08 update: add-buy reference price uses all OPEN LOTs, excluding only CLOSED lots or lots with `remaining_quantity <= 0`. Max LOTs per symbol default is 12, with explicit 11~12 bands. Age-decayed negative target cleanup uses `AUTO_DECAY_CLEANUP_SELL`.
 
 
 이 문서는 KIS LOT 자동거래 봇의 `cycle_locked_by_entry_price` LOT sizing 정책을 설명합니다.
@@ -60,24 +60,24 @@ positions에는 아래 값이 저장됩니다.
 
 LOT sizing 모드에서는 기존 절대금액 기준 `exposure_buy_bands` 대신 `add_buy_lot_bands`를 우선 사용합니다.
 
-- 1~2 LOT: 기준가 대비 4% 하락 시 1 LOT 추가
+- 1~2 LOT: 기준가 대비 3% 하락 시 1 LOT 추가
 - 3~4 LOT: 기준가 대비 6% 하락 시 1 LOT 추가
-- 5~6 LOT: 기준가 대비 8% 하락 시 1 LOT 추가
-- 7~8 LOT: 기준가 대비 10% 하락 시 1 LOT 추가
-- 9~10 LOT: 기준가 대비 12% 하락 시 1 LOT 추가
-- 11~12 LOT: 기준가 대비 14% 하락 시 1 LOT 추가
+- 5~6 LOT: 기준가 대비 9% 하락 시 1 LOT 추가
+- 7~8 LOT: 기준가 대비 12% 하락 시 1 LOT 추가
+- 9~10 LOT: 기준가 대비 15% 하락 시 1 LOT 추가
+- 11~12 LOT: 기준가 대비 18% 하락 시 1 LOT 추가
 
 추가매수 금액은 `lot_unit_amount * add_lot_count`입니다. OPEN LOT 수는 `remaining_quantity > 0`이고 `status != CLOSED`인 LOT만 계산합니다.
 
-## 추가매수 reference 제외
+## 추가매수 reference 계산
 
-추가매수 기준가(`reference_buy_price`)는 OPEN LOT의 VWAP과 median을 이용하지만, 기본 설정에서는 현재가 기준 손익률이 `reference_exclusion_loss_rate=-0.15` 이하인 OPEN LOT을 제외합니다.
+추가매수 기준가(`reference_buy_price`)는 OPEN LOT 전체의 VWAP과 median을 이용합니다.
 
-- 포함: `lot_unrealized_pnl_rate > -15%`
-- 제외: `lot_unrealized_pnl_rate <= -15%`
+- 포함: `status != CLOSED`이고 `remaining_quantity > 0`인 OPEN LOT
+- 제외: CLOSED LOT, `remaining_quantity <= 0` LOT
 - 적용 대상: `open_lot_vwap_buy_price`, `median_open_buy_price`, `reference_buy_price`
-- 모든 OPEN LOT이 제외되면 해당 루프의 reference는 `current_price`로 fallback됩니다.
-- 이 fallback은 추가매수 기준가만 바꾸며, `cycle_locked_by_entry_price` sizing lock은 유지합니다.
+- `-15%` 이하 손실 LOT도 OPEN이고 잔여수량이 있으면 reference 계산에 포함합니다.
+- `current_price` fallback은 사용하지 않습니다.
 
 ## Target profit LOT band
 
@@ -90,7 +90,7 @@ LOT sizing 모드에서는 매도 목표수익률도 현재 OPEN LOT 수 기준�
 - 5~6 LOT: 4%
 - 7~8 LOT: 3%
 - 9~10 LOT: 2%
-- 11~12 LOT: 10%
+- 11~12 LOT: 1%
 
 LOT을 살 때 저장된 `base_target_profit_rate`는 과거 데이터 호환과 로그 참고용입니다. 실제 SELL 판단은 매도 판단 시점의 현재 OPEN LOT 수 구간에서 `current_base_target_profit_rate`를 계산해 사용합니다.
 
@@ -121,11 +121,6 @@ Decision log에는 아래 값이 남습니다.
 - `lot_age_weeks`
 - `age_decay_rate`
 - `reference_exclusion_enabled`
-- `reference_exclusion_threshold`
-- `reference_excluded_lot_count`
-- `open_lot_vwap_raw_all_lots`
-- `open_lot_vwap_reference_eligible_only`
-- `reference_fallback_to_current_price`
 - `max_lots_reached`
 - `max_lots_buy_blocked`
 - `decay_cleanup_eligible`

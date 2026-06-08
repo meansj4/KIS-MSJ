@@ -471,13 +471,15 @@ def test_minus_mode_add_buy_uses_min_vwap_median_not_lowest_extreme() -> None:
     assert context.open_lot_vwap_raw_all_lots == 9636
     assert context.median_open_buy_price_raw_all_lots == 8000
     assert context.reference_buy_price_before_exclusion == 8000
-    assert context.open_lot_vwap_buy_price == 6000
-    assert context.median_open_buy_price == 6000
-    assert context.reference_buy_price == 6000
+    assert context.open_lot_vwap_buy_price == 9636
+    assert context.median_open_buy_price == 8000
+    assert context.reference_buy_price == 8000
     assert context.reference_buy_source == "min_vwap_median_for_minus"
-    assert context.reference_excluded_lot_count == 1
-    assert context.reference_eligible_lot_count == 1
-    assert action is None or action.side is not OrderSide.SELL
+    assert context.reference_exclusion_enabled is False
+    assert context.reference_excluded_lot_count == 0
+    assert context.reference_eligible_lot_count == 2
+    assert action is not None
+    assert action.side is OrderSide.BUY
 
 
 def test_plus_mode_add_buy_uses_max_vwap_median_not_highest_extreme() -> None:
@@ -494,15 +496,18 @@ def test_plus_mode_add_buy_uses_max_vwap_median_not_highest_extreme() -> None:
     assert context.open_lot_vwap_raw_all_lots == 5455
     assert context.median_open_buy_price_raw_all_lots == 7500
     assert context.reference_buy_price_before_exclusion == 7500
-    assert context.open_lot_vwap_buy_price == 5000
-    assert context.median_open_buy_price == 5000
-    assert context.reference_buy_price == 5000
+    assert context.open_lot_vwap_buy_price == 5455
+    assert context.median_open_buy_price == 7500
+    assert context.reference_buy_price == 7500
     assert context.reference_buy_source == "max_vwap_median_for_plus"
-    assert context.reference_excluded_lot_count == 1
-    assert action is None or action.side is not OrderSide.SELL
+    assert context.reference_exclusion_enabled is False
+    assert context.reference_excluded_lot_count == 0
+    assert context.reference_eligible_lot_count == 2
+    assert action is not None
+    assert action.reason == "add_buy_drop_4%"
 
 
-def test_reference_exclusion_boundary_and_eligible_vwap_median() -> None:
+def test_reference_calculation_includes_minus_fifteen_and_deeper_open_lots() -> None:
     _, lots, positions, strategy, _, _ = setup_strategy()
     include = add_lot(positions, "005930", 9988, 1)
     exact = add_lot(positions, "005930", 10000, 1)
@@ -521,15 +526,18 @@ def test_reference_exclusion_boundary_and_eligible_vwap_median() -> None:
     assert exact.profit_pct_at(8500) / 100.0 == pytest.approx(-0.15)
     assert deep.profit_pct_at(8500) / 100.0 < -0.15
     assert context.reference_total_open_lot_count == 3
-    assert context.reference_excluded_lot_count == 2
-    assert context.reference_eligible_lot_count == 1
-    assert context.excluded_lot_ids == f"{exact.lot_id};{deep.lot_id}"
-    assert context.open_lot_vwap_reference_eligible_only == 9988
-    assert context.median_open_buy_price_reference_eligible_only == 9988
-    assert context.reference_buy_price_after_exclusion == 9988
+    assert context.reference_exclusion_enabled is False
+    assert context.reference_excluded_lot_count == 0
+    assert context.reference_eligible_lot_count == 3
+    assert context.excluded_lot_ids == "NONE"
+    assert context.open_lot_vwap_buy_price == 10663
+    assert context.median_open_buy_price == 10000
+    assert context.open_lot_vwap_reference_eligible_only == 10663
+    assert context.median_open_buy_price_reference_eligible_only == 10000
+    assert context.reference_buy_price_after_exclusion == 10000
 
 
-def test_reference_exclusion_all_excluded_falls_back_to_current_price_and_blocks_extra_buy() -> None:
+def test_reference_calculation_does_not_fallback_to_current_price_when_all_lots_are_deep_loss() -> None:
     _, _, positions, strategy, risk, snapshot = setup_strategy()
     add_lot(positions, "005930", 10000, 1)
     add_lot(positions, "005930", 12000, 1)
@@ -539,15 +547,16 @@ def test_reference_exclusion_all_excluded_falls_back_to_current_price_and_blocks
     context = strategy.context(position, 8500)
 
     assert context.reference_total_open_lot_count == 2
-    assert context.reference_excluded_lot_count == 2
-    assert context.reference_eligible_lot_count == 0
-    assert context.reference_fallback_to_current_price
-    assert context.open_lot_vwap_reference_eligible_only == 8500
-    assert context.median_open_buy_price_reference_eligible_only == 8500
-    assert context.reference_buy_price == 8500
-    assert context.reference_buy_source == "current_price_fallback_all_reference_lots_excluded"
-    assert context.buy_condition_met is False
-    assert action is None
+    assert context.reference_exclusion_enabled is False
+    assert context.reference_excluded_lot_count == 0
+    assert context.reference_eligible_lot_count == 2
+    assert not context.reference_fallback_to_current_price
+    assert context.open_lot_vwap_reference_eligible_only == 11000
+    assert context.median_open_buy_price_reference_eligible_only == 11000
+    assert context.reference_buy_price == 11000
+    assert context.reference_buy_source == "min_vwap_median_for_minus"
+    assert context.buy_condition_met
+    assert action is None or action.side is not OrderSide.SELL
 
 
 def test_plus_mode_sells_profitable_lot_even_if_highest_lot_is_below_target() -> None:
@@ -951,27 +960,29 @@ def test_lot_sizing_lot_count_bands_and_max_lots_block() -> None:
 
     for _ in range(9):
         add_lot(positions, "000660", 10100, 1)
-    position_9 = positions.refresh_from_lots("000660", 8700)
-    allowed_10th = strategy.decide(position_9, 8700, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position_9))
+    position_9 = positions.refresh_from_lots("000660", 8500)
+    allowed_10th = strategy.decide(position_9, 8500, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position_9))
 
     assert allowed_10th is not None
-    assert strategy.context(position_9, 8700).current_open_lot_count == 9
-    assert strategy.context(position_9, 8700).add_buy_lot_band == "9-10"
+    assert allowed_10th.reason == "add_buy_drop_15%"
+    assert strategy.context(position_9, 8500).current_open_lot_count == 9
+    assert strategy.context(position_9, 8500).add_buy_lot_band == "9-10"
 
     for _ in range(7):
         add_lot(positions, "005930", 10100, 1)
-    position = positions.refresh_from_lots("005930", 8700)
-    allowed_11th = strategy.decide(position, 8700, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    position = positions.refresh_from_lots("005930", 8500)
+    allowed_11th = strategy.decide(position, 8500, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
 
     assert allowed_11th is not None
-    assert strategy.context(position, 8700).current_open_lot_count == 10
-    assert strategy.context(position, 8700).add_buy_lot_band == "9-10"
+    assert allowed_11th.reason == "add_buy_drop_15%"
+    assert strategy.context(position, 8500).current_open_lot_count == 10
+    assert strategy.context(position, 8500).add_buy_lot_band == "9-10"
 
     for _ in range(2):
         add_lot(positions, "005930", 10100, 1)
-    position = positions.refresh_from_lots("005930", 8700)
-    blocked = strategy.decide(position, 8700, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
-    blocked_context = strategy.context(position, 8700)
+    position = positions.refresh_from_lots("005930", 8200)
+    blocked = strategy.decide(position, 8200, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    blocked_context = strategy.context(position, 8200)
 
     assert blocked is None
     assert position.skip_reason == "max_lots_per_symbol_reached"
@@ -987,6 +998,33 @@ def test_lot_sizing_lot_count_bands_and_max_lots_block() -> None:
     assert sell.side is OrderSide.SELL
 
 
+@pytest.mark.parametrize(
+    ("open_count", "current_price", "expected_band", "expected_reason"),
+    (
+        (1, 9700, "1-2", "add_buy_drop_3%"),
+        (3, 9400, "3-4", "add_buy_drop_6%"),
+        (5, 9100, "5-6", "add_buy_drop_9%"),
+        (7, 8800, "7-8", "add_buy_drop_12%"),
+        (9, 8500, "9-10", "add_buy_drop_15%"),
+        (11, 8200, "11-12", "add_buy_drop_18%"),
+    ),
+)
+def test_lot_sizing_add_buy_drop_rates_by_lot_count_band(open_count: int, current_price: int, expected_band: str, expected_reason: str) -> None:
+    _, _, positions, strategy, risk, snapshot = setup_strategy(StrategyConfig())
+    for _ in range(open_count):
+        add_lot(positions, "005930", 10100, 1)
+    position = positions.refresh_from_lots("005930", current_price)
+
+    action = strategy.decide(position, current_price, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    context = strategy.context(position, current_price)
+
+    assert context.add_buy_lot_band == expected_band
+    assert context.target_buy_drop_rate == pytest.approx(float(expected_reason.removeprefix("add_buy_drop_").removesuffix("%")) / 100.0)
+    assert action is not None
+    assert action.side is OrderSide.BUY
+    assert action.reason == expected_reason
+
+
 def test_lot_sizing_open_lot_count_excludes_closed_lots_for_max_lot_boundary() -> None:
     _, lots, positions, strategy, risk, snapshot = setup_strategy(StrategyConfig())
     for _ in range(12):
@@ -994,10 +1032,10 @@ def test_lot_sizing_open_lot_count_excludes_closed_lots_for_max_lot_boundary() -
     closed = next(iter(lots.lots.values()))
     closed.remaining_quantity = 0
     closed.status = "CLOSED"
-    position = positions.refresh_from_lots("005930", 8600)
+    position = positions.refresh_from_lots("005930", 8200)
 
-    action = strategy.decide(position, 8600, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
-    context = strategy.context(position, 8600)
+    action = strategy.decide(position, 8200, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    context = strategy.context(position, 8200)
 
     assert context.current_open_lot_count == 11
     assert context.add_buy_lot_band == "11-12"
@@ -1026,16 +1064,16 @@ def test_lot_sizing_after_twelve_to_eleven_re_evaluates_add_buy_capacity() -> No
     assert strategy.decide(position, 8700, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position)) is None
 
     positions.apply_fill(TradeFill("005930", "Test", OrderSide.SELL, 1, 11200, "SELL-1", datetime.now(), created[0].lot_id, sell_reason=SellReason.PROFIT_TAKE.value))
-    position = positions.refresh_from_lots("005930", 8600)
-    action = strategy.decide(position, 8600, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
-    context = strategy.context(position, 8600)
+    position = positions.refresh_from_lots("005930", 8200)
+    action = strategy.decide(position, 8200, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    context = strategy.context(position, 8200)
 
     assert context.current_open_lot_count == 11
     assert context.add_buy_lot_band == "11-12"
     assert not context.max_lots_reached
     assert action is not None
     assert action.side is OrderSide.BUY
-    assert action.reason == "add_buy_drop_14%"
+    assert action.reason == "add_buy_drop_18%"
 
 
 def test_lot_sizing_migrates_existing_open_lot_without_quantity_change() -> None:
@@ -1091,23 +1129,24 @@ def test_target_profit_lot_band_uses_current_six_open_lots_for_old_lot() -> None
     assert action.side is OrderSide.SELL
 
 
-def test_target_profit_lot_band_uses_eleven_twelve_band() -> None:
+@pytest.mark.parametrize("open_count", (11, 12))
+def test_target_profit_lot_band_uses_eleven_twelve_band(open_count: int) -> None:
     _, lots, positions, strategy, risk, snapshot = setup_strategy(StrategyConfig(estimated_fee_tax_pct=0))
-    for _ in range(11):
+    for _ in range(open_count):
         add_lot(positions, "005930", 10000, 1)
-    position = positions.refresh_from_lots("005930", 10900)
-    action_at_nine = strategy.decide(position, 10900, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
-    context_at_nine = strategy.context(position, 10900)
+    position = positions.refresh_from_lots("005930", 10050)
+    action_below_one = strategy.decide(position, 10050, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    context_below_one = strategy.context(position, 10050)
 
-    assert context_at_nine.current_open_lot_count == 11
-    assert context_at_nine.target_profit_lot_band == "11-12"
-    assert context_at_nine.current_base_target_profit_rate == pytest.approx(0.10)
-    assert action_at_nine is None or action_at_nine.side is not OrderSide.SELL
-    assert all(lot.effective_target_profit_rate == pytest.approx(0.10, abs=0.001) for lot in lots.open_lots("005930"))
+    assert context_below_one.current_open_lot_count == open_count
+    assert context_below_one.target_profit_lot_band == "11-12"
+    assert context_below_one.current_base_target_profit_rate == pytest.approx(0.01)
+    assert action_below_one is None or action_below_one.side is not OrderSide.SELL
+    assert all(lot.effective_target_profit_rate == pytest.approx(0.01, abs=0.001) for lot in lots.open_lots("005930"))
 
-    action_at_ten = strategy.decide(position, 11000, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
-    assert action_at_ten is not None
-    assert action_at_ten.side is OrderSide.SELL
+    action_at_one = strategy.decide(position, 10100, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    assert action_at_one is not None
+    assert action_at_one.side is OrderSide.SELL
 
 
 def test_target_profit_recalculates_up_after_partial_lot_sales_reduce_open_count() -> None:
