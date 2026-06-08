@@ -2300,6 +2300,8 @@
     "cleanup_buy_cooldown_days": 3,
     "cleanup_reentry_cooldown_days": 5,
     "cleanup_auto_return_to_wait_reentry": false,
+    "reference_exclusion_enabled": true,
+    "reference_exclusion_loss_rate": -0.15,
     "stale_lot_loss_rate": -0.15,
     "stale_lot_min_age_weeks": 8,
     "stale_lot_price_gap_rate": -0.1,
@@ -2401,6 +2403,12 @@
         "max_lots": 10,
         "drop_rate": 0.12,
         "add_lot_count": 1
+      },
+      {
+        "min_lots": 11,
+        "max_lots": 12,
+        "drop_rate": 0.14,
+        "add_lot_count": 1
       }
     ],
     "target_profit_lot_bands": [
@@ -2428,9 +2436,14 @@
         "min_lots": 9,
         "max_lots": 10,
         "target_profit_rate": 0.02
+      },
+      {
+        "min_lots": 11,
+        "max_lots": 12,
+        "target_profit_rate": 0.1
       }
     ],
-    "max_lots_per_symbol_default": 10,
+    "max_lots_per_symbol_default": 12,
     "high_exposure_partial_sell_pct": 50,
     "estimated_fee_tax_pct": 0.25
   },

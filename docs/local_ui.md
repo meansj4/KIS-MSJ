@@ -34,7 +34,7 @@ The configured `log_path` such as `logs/lot_auto_trader.log` is kept as a compat
 
 ## REVIEW_REQUIRED 처리 가이드
 
-`REVIEW_REQUIRED`는 "자동 로직만으로 계속 매수/정리하기에는 사람이 한 번 봐야 한다"는 상태입니다. 이 상태에서는 신규 BUY와 추가 BUY가 차단되고, 수익권 또는 본전 이상 LOT의 `PROFIT_TAKE` SELL은 허용됩니다. 손실 확정인 `CLEANUP_SELL`은 기본적으로 차단합니다.
+`REVIEW_REQUIRED`는 "자동 로직만으로 계속 매수/정리하기에는 사람이 한 번 봐야 한다"는 상태입니다. 이 상태에서는 신규 BUY와 추가 BUY가 차단되고, 수익권 또는 본전 이상 LOT의 `PROFIT_TAKE` SELL은 허용됩니다. 일반 손실 확정인 `CLEANUP_SELL`은 기본적으로 차단합니다. 단, age decay 후 effective target이 음수로 내려가고 LOT 현재 수익률이 그 target 이상인 `AUTO_DECAY_CLEANUP_SELL`은 SYNC/open order/runtime/risk 같은 hard block이 없으면 SELL 후보가 될 수 있습니다.
 
 UI의 종목 상세와 review API는 아래 정보를 보여줍니다.
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from statistics import median
 
 from .config import BotConfig
 from .lot_manager import LotManager, lot_buy_timestamp
@@ -38,6 +39,20 @@ class StrategyContext:
     median_open_buy_price: int = 0
     reference_buy_price: int = 0
     reference_buy_source: str = ""
+    reference_exclusion_enabled: bool = False
+    reference_exclusion_threshold: float = 0.0
+    reference_total_open_lot_count: int = 0
+    reference_excluded_lot_count: int = 0
+    reference_eligible_lot_count: int = 0
+    excluded_lot_ids: str = "NONE"
+    excluded_lot_return_rates: str = "NONE"
+    open_lot_vwap_raw_all_lots: int = 0
+    median_open_buy_price_raw_all_lots: int = 0
+    open_lot_vwap_reference_eligible_only: int = 0
+    median_open_buy_price_reference_eligible_only: int = 0
+    reference_buy_price_before_exclusion: int = 0
+    reference_buy_price_after_exclusion: int = 0
+    reference_fallback_to_current_price: bool = False
     reference_sell_price: int = 0
     target_buy_drop_rate: float = 0.0
     target_profit_rate: float = 0.0
@@ -91,9 +106,36 @@ class StrategyContext:
     current_base_target_profit_rate: float = 0.0
     target_profit_source: str = ""
     target_profit_lot_band: str = ""
+    active_lot_count_band: str = ""
+    max_lots_reached: bool = False
+    max_lots_buy_blocked: bool = False
+    position_state_after_max_lots_check: str = ""
     effective_target_profit_rate: float = 0.0
     lot_age_weeks: float = 0.0
     age_decay_rate: float = 0.0
+    base_target_profit_rate: float = 0.0
+    age_decay_applied: float = 0.0
+    lot_unrealized_pnl_rate: float = 0.0
+    decay_cleanup_eligible: bool = False
+
+
+@dataclass(frozen=True)
+class ReferencePriceContext:
+    enabled: bool
+    threshold: float
+    total_open_lot_count: int
+    excluded_lot_count: int
+    eligible_lot_count: int
+    excluded_lot_ids: str
+    excluded_lot_return_rates: str
+    raw_vwap: int
+    raw_median: int
+    eligible_vwap: int
+    eligible_median: int
+    before_price: int
+    after_price: int
+    source: str
+    fallback_to_current_price: bool
 
 
 class LotGridStrategy:
@@ -172,7 +214,7 @@ class LotGridStrategy:
             self.ensure_lot_sizing(position, current_price)
             open_lot_count = len(self.lot_manager.open_lots(position.code))
             plan = self.add_buy_lot_plan(open_lot_count)
-            reference_price, _ = self._reference_buy_price(position)
+            reference_price, _ = self._reference_buy_price(position, current_price)
             if not reference_price or not plan:
                 return None
             drop_rate, add_lot_count = plan
@@ -180,7 +222,7 @@ class LotGridStrategy:
             block = self.lot_sizing_buy_block_reason(position, current_price, self.lot_sizing_from_position(position), next_buy_amount=amount, open_lot_count=open_lot_count)
             if block:
                 position.skip_reason = block
-                if block in {"max_lots_per_symbol_reached", "max_symbol_amount_reached", "lot_sizing_missing"}:
+                if block in {"max_symbol_amount_reached", "lot_sizing_missing"}:
                     position.needs_review = True
                     position.review_reason = block
                 return None
@@ -198,7 +240,7 @@ class LotGridStrategy:
             position.position_state = PositionLifecycle.REVIEW_REQUIRED.value
             return None
         plan = self.lot_manager.buy_plan(exposure)
-        reference_price, _ = self._reference_buy_price(position)
+        reference_price, _ = self._reference_buy_price(position, current_price)
         if not reference_price or not plan:
             return None
         drop_pct, amount = plan
@@ -230,11 +272,16 @@ class LotGridStrategy:
             return None
         if sell_reason == SellReason.CLEANUP_SELL.value and not cleanup_allowed:
             return None
-        reason = "cleanup_sell_lot" if sell_reason == SellReason.CLEANUP_SELL.value else "sell_profitable_lot"
+        reason = (
+            "decay_cleanup_sell_lot"
+            if sell_reason == SellReason.AUTO_DECAY_CLEANUP_SELL.value
+            else ("cleanup_sell_lot" if sell_reason == SellReason.CLEANUP_SELL.value else "sell_profitable_lot")
+        )
         return StrategyAction(OrderSide.SELL, 0, quantity, reason, lot.lot_id, lot, sell_reason, cleanup_flag=expected_cleanup_loss > 0)
 
     def _sell_candidate(self, position: PositionState, current_price: int, snapshot: AccountSnapshot) -> tuple[LotState, str, int, bool] | None:
         profit_candidates: list[LotState] = []
+        decay_cleanup_candidates: list[tuple[LotState, int]] = []
         cleanup_candidates: list[tuple[LotState, int, bool]] = []
         budget = self.cleanup_loss_budget(snapshot)
         current_base_rate, _, _ = self.lot_manager.current_target_profit_info(position.code, position.cumulative_invested_amount)
@@ -243,6 +290,10 @@ class LotGridStrategy:
             realized_rate = lot.profit_pct_at(current_price) / 100.0
             quantity = lot.remaining_quantity
             net_pnl = self.calculate_expected_realized_pnl(lot, current_price, quantity)
+            if lot.effective_target_profit_rate < -EPSILON and realized_rate + EPSILON >= lot.effective_target_profit_rate and net_pnl < 0:
+                lot.cleanup_candidate = True
+                decay_cleanup_candidates.append((lot, max(0, -net_pnl)))
+                continue
             if realized_rate + EPSILON < lot.effective_target_profit_rate:
                 continue
             sell_reason = self.classify_sell_reason(lot, current_price, quantity)
@@ -267,6 +318,17 @@ class LotGridStrategy:
                 cleanup_candidates.append((lot, expected_loss, cleanup_allowed))
         if profit_candidates:
             return (self._sort_sell_lots(profit_candidates, current_price)[0], SellReason.PROFIT_TAKE.value, 0, True)
+        if decay_cleanup_candidates:
+            lot, expected_loss = sorted(
+                decay_cleanup_candidates,
+                key=lambda item: (
+                    lot_buy_timestamp(item[0]),
+                    item[1],
+                    item[0].profit_pct_at(current_price),
+                    item[0].lot_id,
+                ),
+            )[0]
+            return (lot, SellReason.AUTO_DECAY_CLEANUP_SELL.value, expected_loss, True)
         allowed_cleanup = [item for item in cleanup_candidates if item[2]]
         if allowed_cleanup:
             lot, expected_loss, cleanup_allowed = sorted(
@@ -306,12 +368,13 @@ class LotGridStrategy:
         exposure = position.cumulative_invested_amount
         lowest = self.lot_manager.lowest_open_buy_lot(position.code)
         highest = self.lot_manager.highest_open_buy_lot(position.code)
-        open_lot_vwap = self.lot_manager.open_lot_vwap_buy_price(position.code)
-        median_open = self.lot_manager.median_open_buy_price(position.code)
+        reference_context = self._reference_buy_context(position, current_price)
+        open_lot_vwap = reference_context.eligible_vwap
+        median_open = reference_context.eligible_median
         current_base_rate, target_profit_lot_band, target_profit_source = self.lot_manager.current_target_profit_info(position.code, exposure)
         target_profit = current_base_rate * 100.0 if exposure > 0 else 0.0
         buy_plan = self.lot_manager.buy_plan(exposure)
-        reference_buy_price, reference_buy_source = self._reference_buy_price(position)
+        reference_buy_price, reference_buy_source = reference_context.after_price, reference_context.source
         reference_sell = self._reference_sell_lot(position)
         profit_take_lots = self.lot_manager.profit_take_lots(position.code, current_price, exposure, target_profit) if exposure > 0 else []
         cleanup_candidate_lots = self.lot_manager.cleanup_candidate_lots(position.code, current_price) if exposure > 0 else []
@@ -328,6 +391,13 @@ class LotGridStrategy:
             sizing = self.ensure_lot_sizing(position, current_price)
         open_lot_count = len(self.lot_manager.open_lots(position.code))
         add_buy_lot_band = self.add_buy_lot_band_label(open_lot_count) if self._lot_sizing_enabled() else ""
+        max_lots = int(sizing.get("max_lots_per_symbol") or position.max_lots_per_symbol or 0) if isinstance(sizing, dict) else int(position.max_lots_per_symbol or 0)
+        max_lots_reached = bool(max_lots and open_lot_count >= max_lots)
+        lot_sizing_skip_reason = self.lot_sizing_buy_block_reason(position, current_price, sizing, next_buy_amount=position.lot_unit_amount or int(sizing.get("lot_unit_amount", 0)), open_lot_count=open_lot_count) if self._lot_sizing_enabled() else ""
+        selected_pnl_rate = (selected_target_lot.profit_pct_at(current_price) / 100.0) if selected_target_lot else 0.0
+        selected_effective_target = selected_target_lot.effective_target_profit_rate if selected_target_lot else 0.0
+        selected_base_target = selected_target_lot.base_target_profit_rate if selected_target_lot else 0.0
+        selected_age_decay = max(0.0, selected_base_target - selected_effective_target)
         return StrategyContext(
             position_state=self._position_state(position),
             pnl_mode=self._pnl_mode(position),
@@ -338,13 +408,27 @@ class LotGridStrategy:
             median_open_buy_price=median_open,
             reference_buy_price=reference_buy_price,
             reference_buy_source=reference_buy_source,
+            reference_exclusion_enabled=reference_context.enabled,
+            reference_exclusion_threshold=reference_context.threshold,
+            reference_total_open_lot_count=reference_context.total_open_lot_count,
+            reference_excluded_lot_count=reference_context.excluded_lot_count,
+            reference_eligible_lot_count=reference_context.eligible_lot_count,
+            excluded_lot_ids=reference_context.excluded_lot_ids,
+            excluded_lot_return_rates=reference_context.excluded_lot_return_rates,
+            open_lot_vwap_raw_all_lots=reference_context.raw_vwap,
+            median_open_buy_price_raw_all_lots=reference_context.raw_median,
+            open_lot_vwap_reference_eligible_only=reference_context.eligible_vwap,
+            median_open_buy_price_reference_eligible_only=reference_context.eligible_median,
+            reference_buy_price_before_exclusion=reference_context.before_price,
+            reference_buy_price_after_exclusion=reference_context.after_price,
+            reference_fallback_to_current_price=reference_context.fallback_to_current_price,
             reference_sell_price=reference_sell.buy_price if reference_sell else 0,
             target_buy_drop_rate=(buy_plan[0] / 100.0) if buy_plan else 0.0,
             target_profit_rate=current_base_rate if exposure > 0 else 0.0,
             buy_condition_met=buy_condition,
             sell_signal_met=self._sell_signal_met(position, current_price, target_profit),
             profitable_lots=";".join(lot.lot_id for lot in profit_take_lots) or "NONE",
-            selected_sell_lot_id=profit_take_lots[0].lot_id if profit_take_lots else "",
+            selected_sell_lot_id=sell_candidate[0].lot_id if sell_candidate else (profit_take_lots[0].lot_id if profit_take_lots else ""),
             reentry_condition_met=normal_reentry or trailing_reentry,
             normal_reentry_condition_met=normal_reentry,
             trailing_reentry_condition_met=trailing_reentry,
@@ -366,7 +450,7 @@ class LotGridStrategy:
             cleanup_candidate=bool(cleanup_candidate_lots),
             cleanup_loss_budget=cleanup_budget,
             expected_cleanup_loss=sell_candidate[2] if sell_candidate else 0,
-            cleanup_allowed=bool(sell_candidate and sell_candidate[1] == SellReason.CLEANUP_SELL.value and sell_candidate[3]),
+            cleanup_allowed=bool(sell_candidate and sell_candidate[1] in {SellReason.CLEANUP_SELL.value, SellReason.AUTO_DECAY_CLEANUP_SELL.value} and sell_candidate[3]),
             cleanup_buy_cooldown_until=position.cleanup_buy_cooldown_until,
             cleanup_reentry_cooldown_until=position.cleanup_reentry_cooldown_until,
             profit_take_lot_count=len(profit_take_lots),
@@ -384,16 +468,24 @@ class LotGridStrategy:
             lot_sizing_locked=bool(position.lot_unit_amount),
             lot_sizing_locked_at=position.lot_sizing_locked_at,
             lot_sizing_mode=position.lot_sizing_mode,
-            lot_sizing_skip_reason=self.lot_sizing_buy_block_reason(position, current_price, sizing, next_buy_amount=position.lot_unit_amount or int(sizing.get("lot_unit_amount", 0)), open_lot_count=open_lot_count) if self._lot_sizing_enabled() else "",
+            lot_sizing_skip_reason=lot_sizing_skip_reason,
             add_buy_lot_band=add_buy_lot_band,
             current_open_lot_count=open_lot_count,
             original_lot_base_target_profit_rate=selected_target_lot.base_target_profit_rate if selected_target_lot else 0.0,
             current_base_target_profit_rate=current_base_rate if exposure > 0 else 0.0,
             target_profit_source=target_profit_source if exposure > 0 else "",
             target_profit_lot_band=target_profit_lot_band if exposure > 0 else "",
-            effective_target_profit_rate=selected_target_lot.effective_target_profit_rate if selected_target_lot else 0.0,
+            active_lot_count_band=target_profit_lot_band if exposure > 0 else add_buy_lot_band,
+            max_lots_reached=max_lots_reached,
+            max_lots_buy_blocked=lot_sizing_skip_reason == "max_lots_per_symbol_reached",
+            position_state_after_max_lots_check=PositionLifecycle.HOLDING.value if max_lots_reached and self.lot_manager.open_lots(position.code) and not position.needs_review else self._position_state(position),
+            effective_target_profit_rate=selected_effective_target,
             lot_age_weeks=selected_target_lot.age_weeks if selected_target_lot else 0.0,
             age_decay_rate=self.config.strategy.age_decay_rate,
+            base_target_profit_rate=selected_base_target,
+            age_decay_applied=selected_age_decay,
+            lot_unrealized_pnl_rate=selected_pnl_rate,
+            decay_cleanup_eligible=bool(sell_candidate and sell_candidate[1] == SellReason.AUTO_DECAY_CLEANUP_SELL.value),
         )
 
     def _position_state(self, position: PositionState) -> str:
@@ -425,17 +517,53 @@ class LotGridStrategy:
             return self.lot_manager.highest_open_buy_lot(position.code)
         return self.lot_manager.lowest_open_buy_lot(position.code)
 
-    def _reference_buy_price(self, position: PositionState) -> tuple[int, str]:
-        vwap = self.lot_manager.open_lot_vwap_buy_price(position.code)
-        median_price = self.lot_manager.median_open_buy_price(position.code)
-        if not vwap or not median_price:
-            return 0, ""
+    def _reference_buy_price(self, position: PositionState, current_price: int = 0) -> tuple[int, str]:
+        context = self._reference_buy_context(position, current_price)
+        return context.after_price, context.source
+
+    def _reference_buy_context(self, position: PositionState, current_price: int = 0) -> ReferencePriceContext:
+        lots = self.lot_manager.open_lots(position.code)
+        raw_vwap = _vwap_buy_price(lots)
+        raw_median = _median_buy_price(lots)
         mode = self._pnl_mode(position)
-        if mode == "PLUS":
-            return max(vwap, median_price), "max_vwap_median_for_plus"
-        if mode == "NEUTRAL":
-            return min(vwap, median_price), "min_vwap_median_for_neutral"
-        return min(vwap, median_price), "min_vwap_median_for_minus"
+        before_price, source = _reference_from_vwap_median(mode, raw_vwap, raw_median)
+        enabled = self.config.strategy.reference_exclusion_enabled
+        threshold = self.config.strategy.reference_exclusion_loss_rate
+        excluded: list[tuple[LotState, float]] = []
+        eligible: list[LotState] = []
+        for lot in lots:
+            realized_rate = lot.profit_pct_at(current_price) / 100.0 if current_price else 0.0
+            if enabled and current_price > 0 and realized_rate <= threshold + EPSILON:
+                excluded.append((lot, realized_rate))
+            else:
+                eligible.append(lot)
+        fallback = bool(lots and enabled and not eligible and current_price > 0)
+        if fallback:
+            eligible_vwap = current_price
+            eligible_median = current_price
+            after_price = current_price
+            source = "current_price_fallback_all_reference_lots_excluded"
+        else:
+            eligible_vwap = _vwap_buy_price(eligible)
+            eligible_median = _median_buy_price(eligible)
+            after_price, source = _reference_from_vwap_median(mode, eligible_vwap, eligible_median)
+        return ReferencePriceContext(
+            enabled=enabled,
+            threshold=threshold,
+            total_open_lot_count=len(lots),
+            excluded_lot_count=len(excluded),
+            eligible_lot_count=len(eligible),
+            excluded_lot_ids=";".join(lot.lot_id for lot, _ in excluded) or "NONE",
+            excluded_lot_return_rates=";".join(f"{rate:.4f}" for _, rate in excluded) or "NONE",
+            raw_vwap=raw_vwap,
+            raw_median=raw_median,
+            eligible_vwap=eligible_vwap,
+            eligible_median=eligible_median,
+            before_price=before_price,
+            after_price=after_price,
+            source=source,
+            fallback_to_current_price=fallback,
+        )
 
     def _reference_sell_lot(self, position: PositionState) -> LotState | None:
         mode = self._pnl_mode(position)
@@ -623,3 +751,26 @@ def _parse_time(value: str) -> datetime | None:
     if not value:
         return None
     return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
+
+
+def _vwap_buy_price(lots: list[LotState]) -> int:
+    quantity = sum(lot.remaining_quantity for lot in lots)
+    if quantity <= 0:
+        return 0
+    return int(round(sum(lot.buy_price * lot.remaining_quantity for lot in lots) / quantity))
+
+
+def _median_buy_price(lots: list[LotState]) -> int:
+    if not lots:
+        return 0
+    return int(round(median(lot.buy_price for lot in lots)))
+
+
+def _reference_from_vwap_median(mode: str, vwap: int, median_price: int) -> tuple[int, str]:
+    if not vwap or not median_price:
+        return 0, ""
+    if mode == "PLUS":
+        return max(vwap, median_price), "max_vwap_median_for_plus"
+    if mode == "NEUTRAL":
+        return min(vwap, median_price), "min_vwap_median_for_neutral"
+    return min(vwap, median_price), "min_vwap_median_for_minus"

@@ -45,6 +45,7 @@ class PositionLifecycle(str, Enum):
 class SellReason(str, Enum):
     PROFIT_TAKE = "PROFIT_TAKE"
     CLEANUP_SELL = "CLEANUP_SELL"
+    AUTO_DECAY_CLEANUP_SELL = "AUTO_DECAY_CLEANUP_SELL"
     MANUAL_SYNC = "MANUAL_SYNC"
     RISK_EXIT = "RISK_EXIT"
     UNKNOWN = "UNKNOWN"

@@ -321,7 +321,7 @@ def test_loss_lot_is_not_classified_as_profit_take() -> None:
     action = strategy.decide(position, 9800, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
 
     assert action is not None
-    assert action.sell_reason == SellReason.CLEANUP_SELL.value
+    assert action.sell_reason == SellReason.AUTO_DECAY_CLEANUP_SELL.value
 
 
 def test_trailing_reentry_after_post_exit_high_pullback() -> None:
@@ -368,52 +368,52 @@ def test_update_reentry_tracking_only_updates_wait_reentry() -> None:
     assert position.post_exit_high_price == 11500
 
 
-def test_cleanup_sell_partial_keeps_holding_and_sets_buy_cooldown() -> None:
+def test_auto_decay_cleanup_sell_partial_keeps_holding_and_sets_buy_cooldown() -> None:
     strategy_config = StrategyConfig(cleanup_enabled=True, estimated_fee_tax_pct=0)
     _, _, positions, strategy, risk, snapshot = setup_strategy(strategy_config, daily_profit_loss=10_000)
     old = add_lot(positions, "005930", 10000, 1)
-    age_lot(old, 20)
+    age_lot(old, 18)
     add_lot(positions, "005930", 9500, 1)
-    position = positions.refresh_from_lots("005930", 9600)
+    position = positions.refresh_from_lots("005930", 9700)
 
-    action = strategy.decide(position, 9600, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    action = strategy.decide(position, 9700, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
     assert action is not None
-    assert action.sell_reason == SellReason.CLEANUP_SELL.value
+    assert action.sell_reason == SellReason.AUTO_DECAY_CLEANUP_SELL.value
 
-    position = positions.apply_fill(TradeFill("005930", "Test", OrderSide.SELL, 1, 9600, "SELL-1", datetime.now(), old.lot_id, sell_reason=action.sell_reason))
+    position = positions.apply_fill(TradeFill("005930", "Test", OrderSide.SELL, 1, 9700, "SELL-1", datetime.now(), old.lot_id, sell_reason=action.sell_reason))
     assert position.position_state == PositionLifecycle.HOLDING.value
     assert position.cleanup_buy_cooldown_until
 
 
-def test_cleanup_sell_full_exit_sets_cleanup_cooldown() -> None:
+def test_auto_decay_cleanup_sell_full_exit_sets_cleanup_cooldown() -> None:
     strategy_config = StrategyConfig(cleanup_enabled=True, estimated_fee_tax_pct=0)
     _, _, positions, strategy, risk, snapshot = setup_strategy(strategy_config, daily_profit_loss=10_000)
     old = add_lot(positions, "005930", 10000, 1)
-    age_lot(old, 20)
-    position = positions.refresh_from_lots("005930", 9600)
+    age_lot(old, 18)
+    position = positions.refresh_from_lots("005930", 9700)
 
-    action = strategy.decide(position, 9600, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    action = strategy.decide(position, 9700, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
     assert action is not None
-    assert action.sell_reason == SellReason.CLEANUP_SELL.value
+    assert action.sell_reason == SellReason.AUTO_DECAY_CLEANUP_SELL.value
 
-    position = positions.apply_fill(TradeFill("005930", "Test", OrderSide.SELL, 1, 9600, "SELL-1", datetime.now(), old.lot_id, sell_reason=action.sell_reason))
+    position = positions.apply_fill(TradeFill("005930", "Test", OrderSide.SELL, 1, 9700, "SELL-1", datetime.now(), old.lot_id, sell_reason=action.sell_reason))
     assert position.position_state == PositionLifecycle.COOLDOWN_AFTER_CLEANUP.value
     assert position.cleanup_reentry_cooldown_until
 
 
-def test_cleanup_sell_prefers_oldest_allowed_lot_over_smaller_loss() -> None:
+def test_auto_decay_cleanup_sell_prefers_oldest_allowed_lot_over_smaller_loss() -> None:
     strategy_config = StrategyConfig(cleanup_enabled=True, estimated_fee_tax_pct=0)
     _, _, positions, strategy, risk, snapshot = setup_strategy(strategy_config, daily_profit_loss=10_000)
     old_larger_loss = add_lot(positions, "005930", 10000, 1)
     newer_smaller_loss = add_lot(positions, "005930", 9900, 1)
-    age_lot(old_larger_loss, 19)
-    age_lot(newer_smaller_loss, 18)
+    age_lot(old_larger_loss, 18)
+    age_lot(newer_smaller_loss, 16)
     position = positions.refresh_from_lots("005930", 9700)
 
     action = strategy.decide(position, 9700, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
 
     assert action is not None
-    assert action.sell_reason == SellReason.CLEANUP_SELL.value
+    assert action.sell_reason == SellReason.AUTO_DECAY_CLEANUP_SELL.value
     assert action.lot_id == old_larger_loss.lot_id
 
 
@@ -444,7 +444,7 @@ def test_cleanup_cooldown_expiry_returns_review_by_default() -> None:
     assert position.review_reason == "cleanup_cooldown_complete"
 
 
-def test_cleanup_loss_budget_blocks_large_loss() -> None:
+def test_auto_decay_cleanup_sell_is_not_blocked_by_cleanup_loss_budget() -> None:
     strategy_config = StrategyConfig(cleanup_enabled=True, estimated_fee_tax_pct=0)
     _, _, positions, strategy, risk, snapshot = setup_strategy(strategy_config, daily_profit_loss=10_000)
     old = add_lot(positions, "005930", 10000, 10)
@@ -453,7 +453,8 @@ def test_cleanup_loss_budget_blocks_large_loss() -> None:
 
     action = strategy.decide(position, 9600, snapshot, RiskDecision(False, ("buy_blocked_for_cleanup_budget_test",)), risk.symbol_buy_allowed(position))
 
-    assert action is None
+    assert action is not None
+    assert action.sell_reason == SellReason.AUTO_DECAY_CLEANUP_SELL.value
 
 
 def test_minus_mode_add_buy_uses_min_vwap_median_not_lowest_extreme() -> None:
@@ -467,12 +468,16 @@ def test_minus_mode_add_buy_uses_min_vwap_median_not_lowest_extreme() -> None:
 
     assert context.pnl_mode == "MINUS"
     assert context.lowest_open_buy_lot_price == 6000
-    assert context.open_lot_vwap_buy_price == 9636
-    assert context.median_open_buy_price == 8000
-    assert context.reference_buy_price == 8000
+    assert context.open_lot_vwap_raw_all_lots == 9636
+    assert context.median_open_buy_price_raw_all_lots == 8000
+    assert context.reference_buy_price_before_exclusion == 8000
+    assert context.open_lot_vwap_buy_price == 6000
+    assert context.median_open_buy_price == 6000
+    assert context.reference_buy_price == 6000
     assert context.reference_buy_source == "min_vwap_median_for_minus"
-    assert action is not None
-    assert action.side is OrderSide.BUY
+    assert context.reference_excluded_lot_count == 1
+    assert context.reference_eligible_lot_count == 1
+    assert action is None or action.side is not OrderSide.SELL
 
 
 def test_plus_mode_add_buy_uses_max_vwap_median_not_highest_extreme() -> None:
@@ -486,12 +491,63 @@ def test_plus_mode_add_buy_uses_max_vwap_median_not_highest_extreme() -> None:
 
     assert context.pnl_mode == "PLUS"
     assert context.highest_open_buy_lot_price == 10000
-    assert context.open_lot_vwap_buy_price == 5455
-    assert context.median_open_buy_price == 7500
-    assert context.reference_buy_price == 7500
+    assert context.open_lot_vwap_raw_all_lots == 5455
+    assert context.median_open_buy_price_raw_all_lots == 7500
+    assert context.reference_buy_price_before_exclusion == 7500
+    assert context.open_lot_vwap_buy_price == 5000
+    assert context.median_open_buy_price == 5000
+    assert context.reference_buy_price == 5000
     assert context.reference_buy_source == "max_vwap_median_for_plus"
-    assert action is not None
-    assert action.reason == "add_buy_drop_4%"
+    assert context.reference_excluded_lot_count == 1
+    assert action is None or action.side is not OrderSide.SELL
+
+
+def test_reference_exclusion_boundary_and_eligible_vwap_median() -> None:
+    _, lots, positions, strategy, _, _ = setup_strategy()
+    include = add_lot(positions, "005930", 9988, 1)
+    exact = add_lot(positions, "005930", 10000, 1)
+    deep = add_lot(positions, "005930", 12000, 1)
+    closed = add_lot(positions, "005930", 40000, 1)
+    closed.remaining_quantity = 0
+    closed.status = "CLOSED"
+    zero = add_lot(positions, "005930", 50000, 1)
+    zero.remaining_quantity = 0
+    zero.status = "CLOSED"
+    position = positions.refresh_from_lots("005930", 8500)
+
+    context = strategy.context(position, 8500)
+
+    assert include.profit_pct_at(8500) / 100.0 > -0.15
+    assert exact.profit_pct_at(8500) / 100.0 == pytest.approx(-0.15)
+    assert deep.profit_pct_at(8500) / 100.0 < -0.15
+    assert context.reference_total_open_lot_count == 3
+    assert context.reference_excluded_lot_count == 2
+    assert context.reference_eligible_lot_count == 1
+    assert context.excluded_lot_ids == f"{exact.lot_id};{deep.lot_id}"
+    assert context.open_lot_vwap_reference_eligible_only == 9988
+    assert context.median_open_buy_price_reference_eligible_only == 9988
+    assert context.reference_buy_price_after_exclusion == 9988
+
+
+def test_reference_exclusion_all_excluded_falls_back_to_current_price_and_blocks_extra_buy() -> None:
+    _, _, positions, strategy, risk, snapshot = setup_strategy()
+    add_lot(positions, "005930", 10000, 1)
+    add_lot(positions, "005930", 12000, 1)
+    position = positions.refresh_from_lots("005930", 8500)
+
+    action = strategy.decide(position, 8500, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    context = strategy.context(position, 8500)
+
+    assert context.reference_total_open_lot_count == 2
+    assert context.reference_excluded_lot_count == 2
+    assert context.reference_eligible_lot_count == 0
+    assert context.reference_fallback_to_current_price
+    assert context.open_lot_vwap_reference_eligible_only == 8500
+    assert context.median_open_buy_price_reference_eligible_only == 8500
+    assert context.reference_buy_price == 8500
+    assert context.reference_buy_source == "current_price_fallback_all_reference_lots_excluded"
+    assert context.buy_condition_met is False
+    assert action is None
 
 
 def test_plus_mode_sells_profitable_lot_even_if_highest_lot_is_below_target() -> None:
@@ -713,15 +769,103 @@ def test_review_required_blocks_cleanup_sell_conservatively() -> None:
     strategy_config = StrategyConfig(cleanup_enabled=True, estimated_fee_tax_pct=0)
     _, _, positions, strategy, risk, snapshot = setup_strategy(strategy_config, daily_profit_loss=10_000)
     lot = add_lot(positions, "005930", 10000, 1)
-    age_lot(lot, 20)
-    position = positions.refresh_from_lots("005930", 9600)
+    age_lot(lot, 18)
+    position = positions.refresh_from_lots("005930", 9650)
     position.needs_review = True
     position.position_state = PositionLifecycle.REVIEW_REQUIRED.value
 
-    action = strategy.decide(position, 9600, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    action = strategy.decide(position, 9650, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+
+    assert action is None or action.side is not OrderSide.SELL
+    assert position.skip_reason == "needs_review"
+
+
+def test_negative_effective_target_return_at_or_above_target_auto_decay_cleanup_sell() -> None:
+    strategy_config = StrategyConfig(estimated_fee_tax_pct=0)
+    _, _, positions, strategy, risk, snapshot = setup_strategy(strategy_config)
+    lot = add_lot(positions, "005930", 10000, 1)
+    age_lot(lot, 20)
+    position = positions.refresh_from_lots("005930", 9800)
+
+    action = strategy.decide(position, 9800, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    context = strategy.context(position, 9800)
+
+    assert lot.effective_target_profit_rate < 0
+    assert lot.profit_pct_at(9800) / 100.0 >= lot.effective_target_profit_rate
+    assert action is not None
+    assert action.side is OrderSide.SELL
+    assert action.sell_reason == SellReason.AUTO_DECAY_CLEANUP_SELL.value
+    assert action.cleanup_flag
+    assert context.decay_cleanup_eligible
+    assert context.sell_reason == SellReason.AUTO_DECAY_CLEANUP_SELL.value
+    assert context.net_realized_pnl < 0
+    assert context.expected_cleanup_loss > 0
+
+
+def test_negative_effective_target_below_target_does_not_auto_decay_cleanup_sell() -> None:
+    strategy_config = StrategyConfig(estimated_fee_tax_pct=0)
+    _, _, positions, strategy, risk, snapshot = setup_strategy(strategy_config)
+    lot = add_lot(positions, "005930", 10000, 1)
+    age_lot(lot, 20)
+    position = positions.refresh_from_lots("005930", 9500)
+
+    action = strategy.decide(position, 9500, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    context = strategy.context(position, 9500)
+
+    assert lot.effective_target_profit_rate < 0
+    assert lot.profit_pct_at(9500) / 100.0 < lot.effective_target_profit_rate
+    assert action is None or action.side is not OrderSide.SELL
+    assert not context.decay_cleanup_eligible
+
+
+def test_review_required_allows_auto_decay_cleanup_sell_without_fatal_block() -> None:
+    strategy_config = StrategyConfig(estimated_fee_tax_pct=0)
+    _, _, positions, strategy, risk, snapshot = setup_strategy(strategy_config)
+    lot = add_lot(positions, "005930", 10000, 1)
+    age_lot(lot, 20)
+    position = positions.refresh_from_lots("005930", 9800)
+    position.needs_review = True
+    position.position_state = PositionLifecycle.REVIEW_REQUIRED.value
+
+    action = strategy.decide(position, 9800, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+
+    assert action is not None
+    assert action.lot_id == lot.lot_id
+    assert action.sell_reason == SellReason.AUTO_DECAY_CLEANUP_SELL.value
+
+
+def test_sync_required_blocks_auto_decay_cleanup_sell() -> None:
+    strategy_config = StrategyConfig(estimated_fee_tax_pct=0)
+    _, _, positions, strategy, risk, snapshot = setup_strategy(strategy_config)
+    lot = add_lot(positions, "005930", 10000, 1)
+    age_lot(lot, 20)
+    position = positions.refresh_from_lots("005930", 9800)
+    position.sync_status = PositionLifecycle.SYNC_REQUIRED.value
+    position.position_state = PositionLifecycle.SYNC_REQUIRED.value
+    position.trading_paused = True
+
+    action = strategy.decide(position, 9800, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
 
     assert action is None
-    assert position.skip_reason == "needs_review"
+    assert position.skip_reason == "sync_required"
+
+
+def test_auto_decay_cleanup_sell_fill_uses_cleanup_lifecycle() -> None:
+    strategy_config = StrategyConfig(estimated_fee_tax_pct=0)
+    _, _, positions, strategy, risk, snapshot = setup_strategy(strategy_config)
+    lot = add_lot(positions, "005930", 10000, 1)
+    age_lot(lot, 20)
+    position = positions.refresh_from_lots("005930", 9800)
+
+    action = strategy.decide(position, 9800, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    assert action is not None
+    assert action.sell_reason == SellReason.AUTO_DECAY_CLEANUP_SELL.value
+
+    position = positions.apply_fill(TradeFill("005930", "Test", OrderSide.SELL, 1, 9800, "SELL-1", datetime.now(), lot.lot_id, sell_reason=action.sell_reason))
+
+    assert lot.status == "CLOSED"
+    assert position.position_state == PositionLifecycle.COOLDOWN_AFTER_CLEANUP.value
+    assert position.cleanup_reentry_cooldown_until
 
 
 def test_risk_blocked_blocks_buy_and_sell_conservatively() -> None:
@@ -812,44 +956,86 @@ def test_lot_sizing_lot_count_bands_and_max_lots_block() -> None:
 
     assert allowed_10th is not None
     assert strategy.context(position_9, 8700).current_open_lot_count == 9
+    assert strategy.context(position_9, 8700).add_buy_lot_band == "9-10"
 
     for _ in range(7):
         add_lot(positions, "005930", 10100, 1)
     position = positions.refresh_from_lots("005930", 8700)
+    allowed_11th = strategy.decide(position, 8700, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+
+    assert allowed_11th is not None
+    assert strategy.context(position, 8700).current_open_lot_count == 10
+    assert strategy.context(position, 8700).add_buy_lot_band == "9-10"
+
+    for _ in range(2):
+        add_lot(positions, "005930", 10100, 1)
+    position = positions.refresh_from_lots("005930", 8700)
     blocked = strategy.decide(position, 8700, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    blocked_context = strategy.context(position, 8700)
 
     assert blocked is None
     assert position.skip_reason == "max_lots_per_symbol_reached"
+    assert not position.needs_review
+    assert position.position_state == PositionLifecycle.HOLDING.value
+    assert blocked_context.max_lots_per_symbol == 12
+    assert blocked_context.max_lots_reached
+    assert blocked_context.max_lots_buy_blocked
+    assert blocked_context.position_state_after_max_lots_check == PositionLifecycle.HOLDING.value
+
+    sell = strategy.decide(position, 11200, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    assert sell is not None
+    assert sell.side is OrderSide.SELL
 
 
 def test_lot_sizing_open_lot_count_excludes_closed_lots_for_max_lot_boundary() -> None:
     _, lots, positions, strategy, risk, snapshot = setup_strategy(StrategyConfig())
-    for _ in range(10):
+    for _ in range(12):
         add_lot(positions, "005930", 10100, 1)
     closed = next(iter(lots.lots.values()))
     closed.remaining_quantity = 0
     closed.status = "CLOSED"
-    position = positions.refresh_from_lots("005930", 8700)
+    position = positions.refresh_from_lots("005930", 8600)
 
-    action = strategy.decide(position, 8700, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
-    context = strategy.context(position, 8700)
+    action = strategy.decide(position, 8600, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    context = strategy.context(position, 8600)
 
-    assert context.current_open_lot_count == 9
+    assert context.current_open_lot_count == 11
+    assert context.add_buy_lot_band == "11-12"
     assert action is not None
     assert action.side is OrderSide.BUY
 
 
-def test_lot_sizing_high_price_band_uses_default_ten_lot_limit() -> None:
+def test_lot_sizing_high_price_band_uses_default_twelve_lot_limit() -> None:
     _, _, positions, strategy, risk, snapshot = setup_strategy(StrategyConfig())
-    for _ in range(10):
+    for _ in range(12):
         add_lot(positions, "005930", 120000, 1)
     position = positions.refresh_from_lots("005930", 110000)
 
     action = strategy.decide(position, 110000, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
 
     assert action is None
-    assert position.max_lots_per_symbol == 10
+    assert position.max_lots_per_symbol == 12
     assert position.skip_reason == "max_lots_per_symbol_reached"
+
+
+def test_lot_sizing_after_twelve_to_eleven_re_evaluates_add_buy_capacity() -> None:
+    _, _, positions, strategy, risk, snapshot = setup_strategy(StrategyConfig(estimated_fee_tax_pct=0))
+    created = [add_lot(positions, "005930", 10100, 1) for _ in range(12)]
+    position = positions.refresh_from_lots("005930", 8700)
+
+    assert strategy.decide(position, 8700, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position)) is None
+
+    positions.apply_fill(TradeFill("005930", "Test", OrderSide.SELL, 1, 11200, "SELL-1", datetime.now(), created[0].lot_id, sell_reason=SellReason.PROFIT_TAKE.value))
+    position = positions.refresh_from_lots("005930", 8600)
+    action = strategy.decide(position, 8600, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    context = strategy.context(position, 8600)
+
+    assert context.current_open_lot_count == 11
+    assert context.add_buy_lot_band == "11-12"
+    assert not context.max_lots_reached
+    assert action is not None
+    assert action.side is OrderSide.BUY
+    assert action.reason == "add_buy_drop_14%"
 
 
 def test_lot_sizing_migrates_existing_open_lot_without_quantity_change() -> None:
@@ -903,6 +1089,25 @@ def test_target_profit_lot_band_uses_current_six_open_lots_for_old_lot() -> None
     assert context.target_profit_source == "current_lot_band"
     assert action is not None
     assert action.side is OrderSide.SELL
+
+
+def test_target_profit_lot_band_uses_eleven_twelve_band() -> None:
+    _, lots, positions, strategy, risk, snapshot = setup_strategy(StrategyConfig(estimated_fee_tax_pct=0))
+    for _ in range(11):
+        add_lot(positions, "005930", 10000, 1)
+    position = positions.refresh_from_lots("005930", 10900)
+    action_at_nine = strategy.decide(position, 10900, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    context_at_nine = strategy.context(position, 10900)
+
+    assert context_at_nine.current_open_lot_count == 11
+    assert context_at_nine.target_profit_lot_band == "11-12"
+    assert context_at_nine.current_base_target_profit_rate == pytest.approx(0.10)
+    assert action_at_nine is None or action_at_nine.side is not OrderSide.SELL
+    assert all(lot.effective_target_profit_rate == pytest.approx(0.10, abs=0.001) for lot in lots.open_lots("005930"))
+
+    action_at_ten = strategy.decide(position, 11000, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    assert action_at_ten is not None
+    assert action_at_ten.side is OrderSide.SELL
 
 
 def test_target_profit_recalculates_up_after_partial_lot_sales_reduce_open_count() -> None:
@@ -960,7 +1165,7 @@ def test_lot_sizing_dynamic_target_does_not_change_realized_pnl_sell_reason_rule
     action = strategy.decide(position, 9800, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
 
     assert action is not None
-    assert action.sell_reason == SellReason.CLEANUP_SELL.value
+    assert action.sell_reason == SellReason.AUTO_DECAY_CLEANUP_SELL.value
 
 
 def test_legacy_mode_keeps_exposure_based_target_profit_behavior() -> None:

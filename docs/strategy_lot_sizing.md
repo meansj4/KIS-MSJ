@@ -5,6 +5,8 @@
 
 > 2026-05-29 SELL LOT priority update: when multiple OPEN LOTs in the same symbol satisfy a SELL condition, the bot now sells the oldest matching LOT first by `buy_filled_at`. `PROFIT_TAKE` ties use higher profit rate, larger open amount, larger remaining quantity, then `lot_id`; `CLEANUP_SELL` ties use lower expected loss, lower profit rate, then `lot_id`. Missing or unparsable `buy_filled_at` values sort after valid timestamps. This only changes which already-eligible LOT is selected; guards, cleanup eligibility, fill dedupe, and fill-driven lots/positions updates are unchanged.
 
+> 2026-06-08 update: add-buy reference price now excludes OPEN LOTs whose current unrealized return is `<= -15%` from VWAP/median/reference calculations. If every OPEN LOT is excluded, the reference falls back to current price for that loop. Max LOTs per symbol default is now 12, with explicit 11~12 add-buy and target-profit bands. Age-decayed negative target cleanup uses `AUTO_DECAY_CLEANUP_SELL`.
+
 
 이 문서는 KIS LOT 자동거래 봇의 `cycle_locked_by_entry_price` LOT sizing 정책을 설명합니다.
 
@@ -63,8 +65,19 @@ LOT sizing 모드에서는 기존 절대금액 기준 `exposure_buy_bands` 대�
 - 5~6 LOT: 기준가 대비 8% 하락 시 1 LOT 추가
 - 7~8 LOT: 기준가 대비 10% 하락 시 1 LOT 추가
 - 9~10 LOT: 기준가 대비 12% 하락 시 1 LOT 추가
+- 11~12 LOT: 기준가 대비 14% 하락 시 1 LOT 추가
 
 추가매수 금액은 `lot_unit_amount * add_lot_count`입니다. OPEN LOT 수는 `remaining_quantity > 0`이고 `status != CLOSED`인 LOT만 계산합니다.
+
+## 추가매수 reference 제외
+
+추가매수 기준가(`reference_buy_price`)는 OPEN LOT의 VWAP과 median을 이용하지만, 기본 설정에서는 현재가 기준 손익률이 `reference_exclusion_loss_rate=-0.15` 이하인 OPEN LOT을 제외합니다.
+
+- 포함: `lot_unrealized_pnl_rate > -15%`
+- 제외: `lot_unrealized_pnl_rate <= -15%`
+- 적용 대상: `open_lot_vwap_buy_price`, `median_open_buy_price`, `reference_buy_price`
+- 모든 OPEN LOT이 제외되면 해당 루프의 reference는 `current_price`로 fallback됩니다.
+- 이 fallback은 추가매수 기준가만 바꾸며, `cycle_locked_by_entry_price` sizing lock은 유지합니다.
 
 ## Target profit LOT band
 
@@ -77,6 +90,7 @@ LOT sizing 모드에서는 매도 목표수익률도 현재 OPEN LOT 수 기준�
 - 5~6 LOT: 4%
 - 7~8 LOT: 3%
 - 9~10 LOT: 2%
+- 11~12 LOT: 10%
 
 LOT을 살 때 저장된 `base_target_profit_rate`는 과거 데이터 호환과 로그 참고용입니다. 실제 SELL 판단은 매도 판단 시점의 현재 OPEN LOT 수 구간에서 `current_base_target_profit_rate`를 계산해 사용합니다.
 
@@ -92,8 +106,10 @@ effective_target_profit_rate = current_base_target_profit_rate - lot_age_weeks *
 단, `PROFIT_TAKE`와 `CLEANUP_SELL` 분류는 목표수익률이 아니라 실제 예상 손익 기준입니다.
 
 - 예상 순손익이 0 이상이면 `PROFIT_TAKE`
-- 예상 순손익이 0 미만이면 `CLEANUP_SELL` 후보
+- 예상 순손익이 0 미만이고 age decay 후 `effective_target_profit_rate < 0`이며 LOT 현재 수익률이 그 target 이상이면 `AUTO_DECAY_CLEANUP_SELL`
+- 그 외 예상 순손익이 0 미만이면 `CLEANUP_SELL` 후보
 - `CLEANUP_SELL`은 cleanup 조건과 loss budget을 만족할 때만 실제 매도 후보가 됩니다.
+- `AUTO_DECAY_CLEANUP_SELL`은 REVIEW_REQUIRED 상태에서도 SYNC/open order/runtime/risk/manual-only/trading-halted 같은 hard block이 없으면 자동 SELL 후보가 될 수 있습니다.
 
 Decision log에는 아래 값이 남습니다.
 
@@ -104,6 +120,16 @@ Decision log에는 아래 값이 남습니다.
 - `effective_target_profit_rate`
 - `lot_age_weeks`
 - `age_decay_rate`
+- `reference_exclusion_enabled`
+- `reference_exclusion_threshold`
+- `reference_excluded_lot_count`
+- `open_lot_vwap_raw_all_lots`
+- `open_lot_vwap_reference_eligible_only`
+- `reference_fallback_to_current_price`
+- `max_lots_reached`
+- `max_lots_buy_blocked`
+- `decay_cleanup_eligible`
+- `expected_realized_pnl`
 
 ## BUY 차단 사유
 
@@ -115,6 +141,8 @@ Decision log에는 아래 값이 남습니다.
 - `lot_sizing_missing`: 보유 사이클 sizing 정보가 없음
 - `lot_sizing_migrated`: 기존 OPEN LOT 기준으로 sizing fallback 적용
 - `lot_sizing_changed_after_preview`: manual BUY preview 이후 실제 처리 직전 가격 구간이 바뀌어 재확인이 필요
+
+`max_lots_per_symbol_reached`는 BUY만 차단합니다. 이 사유만으로 `REVIEW_REQUIRED`를 새로 만들지 않으며, 이미 SELL 조건을 만족한 LOT은 계속 SELL 후보가 될 수 있습니다. 12 LOT에서 1 LOT이 매도되어 11 LOT이 되면 다음 루프에서는 다시 12번째 추가매수를 평가합니다.
 
 ## UI 표시
 

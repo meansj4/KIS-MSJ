@@ -113,6 +113,8 @@ class StrategyConfig:
     cleanup_buy_cooldown_days: int = 3
     cleanup_reentry_cooldown_days: int = 5
     cleanup_auto_return_to_wait_reentry: bool = False
+    reference_exclusion_enabled: bool = True
+    reference_exclusion_loss_rate: float = -0.15
     stale_lot_loss_rate: float = -0.15
     stale_lot_min_age_weeks: int = 8
     stale_lot_price_gap_rate: float = -0.10
@@ -136,6 +138,7 @@ class StrategyConfig:
         AddBuyLotBand(5, 6, 0.08, 1),
         AddBuyLotBand(7, 8, 0.10, 1),
         AddBuyLotBand(9, 10, 0.12, 1),
+        AddBuyLotBand(11, 12, 0.14, 1),
     )
     target_profit_lot_bands: tuple[TargetProfitLotBand, ...] = (
         TargetProfitLotBand(1, 2, 0.06),
@@ -143,8 +146,9 @@ class StrategyConfig:
         TargetProfitLotBand(5, 6, 0.04),
         TargetProfitLotBand(7, 8, 0.03),
         TargetProfitLotBand(9, 10, 0.02),
+        TargetProfitLotBand(11, 12, 0.10),
     )
-    max_lots_per_symbol_default: int = 10
+    max_lots_per_symbol_default: int = 12
     exposure_buy_bands: tuple[BuyBand, ...] = (
         BuyBand(1, 60_000, 4.0, 30_000),
         BuyBand(60_001, 120_000, 5.0, 30_000),

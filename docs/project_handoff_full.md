@@ -15,6 +15,8 @@
 
 > 2026-05-29 SELL LOT priority update: when multiple OPEN LOTs satisfy the same SELL condition for a symbol, the selected LOT is now the oldest valid `buy_filled_at` first. `PROFIT_TAKE` ties keep higher profit rate/larger exposure/larger quantity/`lot_id` ordering; `CLEANUP_SELL` ties use lower expected loss/lower profit rate/`lot_id`. This can sell an older lower-profit LOT before a newer higher-profit LOT, but does not change SELL eligibility, target calculation, risk/open-order/runtime guards, reconciliation, manual request routing, or fill-driven DB updates.
 
+> 2026-06-08 strategy update: add-buy reference VWAP/median/reference now excludes OPEN LOTs at `<= -15%` unrealized return and falls back to current price when all reference lots are excluded. `max_lots_per_symbol_default` is 12 with explicit 11~12 bands. Max-lots reached blocks BUY only and no longer creates REVIEW_REQUIRED by itself. Age-decayed negative target loss exits are classified as `AUTO_DECAY_CLEANUP_SELL`.
+
 > 2026-05-29 hourly log storage update: the configured `log_path` remains the compatibility anchor, but new bot/UI audit records are written under its parent as KST `YYMMDD/HH.log` files, for example `logs/260529/09.log`. Rollover is handled per logging record, not by cutting files, so multiline records stay intact. Existing root `logs/*.log` files are preserved and the Logs UI/API tails both legacy and hourly files.
 
 > 2026-05-29 config update: `001230` 동국홀딩스 is back in the 120-symbol bootstrap set after read-only quote verification. It changed from `enabled=false`, `manual_only=true`, `trading_halted=true` to `enabled=true`, `manual_only=false`, `trading_halted=false`. Enabled symbols are now 120/120, matching `risk.max_active_symbols=120`.
@@ -135,7 +137,7 @@ Analysis/tuning data preparation: see [docs/analysis_and_tuning.md](analysis_and
 | 기존 DB/log/config는 archive/backup 후 시작한다 | 새 시즌 전 이전 시즌 자료를 보존한다. | 문제 분석과 복구가 불가능해진다. |
 | DB/KIS 불일치는 SYNC_REQUIRED로 막는다 | 실제 계좌와 내부 LOT/position이 다르면 신규 주문 차단. | 잘못된 수량으로 매수/매도할 수 있다. |
 | REVIEW_REQUIRED는 강제 해제하지 않는다 | recheck, acknowledge, 수동매도, reconciliation 흐름으로 처리한다. | 위험 상태에서 자동 BUY가 다시 열릴 수 있다. |
-| cleanup/review/risk 상태에서 BUY 차단 정책 유지 | REVIEW_REQUIRED, RISK_BLOCKED, SYNC_REQUIRED, COOLDOWN은 보수적으로 동작한다. | 손실/불일치/위험 상태에서 물타기가 이어진다. |
+| cleanup/review/risk 상태에서 BUY 차단 정책 유지 | REVIEW_REQUIRED, RISK_BLOCKED, SYNC_REQUIRED, COOLDOWN은 보수적으로 동작한다. 다만 `AUTO_DECAY_CLEANUP_SELL`은 fatal block이 없으면 REVIEW_REQUIRED에서도 SELL 후보가 될 수 있다. | 손실/불일치/위험 상태에서 물타기가 이어진다. |
 
 ## 3. 전체 아키텍처
 
@@ -1286,15 +1288,15 @@ DB 초기화 버튼이 비활성인 대표 원인:
 | acknowledge | 사용자가 상황을 확인했고 추적 메모만 남길 때 |
 | 금지 | 조건이 남아 있는데 강제 HOLDING 전환 |
 
-### 사례 2. OPEN LOT 수 10개 초과
+### 사례 2. 최대 LOT 수 도달
 
 | 항목 | 설명 |
 | --- | --- |
-| 왜 발생 | current_open_lot_count가 허용 범위를 넘음 |
+| 왜 발생 | current_open_lot_count가 `max_lots_per_symbol`에 도달 |
 | UI 위치 | Review 탭, Lots, Dashboard risk |
-| 가능한 조치 | PROFIT_TAKE 가능한 LOT 정리, 수동매도 후 reconciliation |
-| recheck 시점 | OPEN LOT 수가 제한 이하로 줄어든 뒤 |
-| 금지 | max_lots만 키워 자동매수를 즉시 재개 |
+| 가능한 조치 | BUY는 중단하고 PROFIT_TAKE/AUTO_DECAY_CLEANUP_SELL 가능한 LOT은 Bot Core가 계속 평가 |
+| recheck 시점 | max lot 사유만으로는 REVIEW_REQUIRED를 만들지 않음 |
+| 금지 | max_lots만 키워 과다 물타기 재개 |
 
 ### 사례 3. 오래된 STALE LOT
 
@@ -1352,7 +1354,8 @@ DB 초기화 버튼이 비활성인 대표 원인:
 | 3~4 | 6% | 1 | 중간 노출 조절 |
 | 5~6 | 8% | 1 | 보수화 |
 | 7~8 | 10% | 1 | 더 보수화 |
-| 9~10 | 12% | 1 | 마지막 자동 추가매수 구간 |
+| 9~10 | 12% | 1 | 고노출 추가매수 구간 |
+| 11~12 | 14% | 1 | 마지막 자동 추가매수 구간 |
 
 ### target_profit_lot_bands
 
@@ -1363,6 +1366,7 @@ DB 초기화 버튼이 비활성인 대표 원인:
 | 5~6 | 4% | 기존 LOT도 동적 적용 |
 | 7~8 | 3% | 포지션 축소 우선 |
 | 9~10 | 2% | 고노출 구간 회전 우선 |
+| 11~12 | 10% | 최상단 LOT 구간, 깊은 물타기 이후 더 높은 회복 목표 |
 
 ### order 위험 설정
 
@@ -1382,6 +1386,7 @@ DB 초기화 버튼이 비활성인 대표 원인:
 | `cleanup_profit_offset_ratio` | config 확인 필요 | 당일 실현수익 중 cleanup budget 비율 | 손실 상쇄 규모 |
 | `cleanup_buy_cooldown_days` | config 확인 필요 | cleanup 후 BUY cooldown, calendar days | 거래일 기준 아님 |
 | `cleanup_reentry_cooldown_days` | config 확인 필요 | 전량 cleanup 후 review 전환 대기 | 거래일 기준 아님 |
+| `AUTO_DECAY_CLEANUP_SELL` | 자동 분류 | `effective_target_profit_rate < 0`이고 LOT 수익률이 target 이상인 손실 LOT 정리 | fatal block 없으면 REVIEW_REQUIRED에서도 SELL 후보 가능 |
 
 ### runtime/manual 설정
 
