@@ -43,11 +43,11 @@ Last updated: 2026-05-26
 - config profile: `expansion_100_safe`
 - KOSPI 후보: 100종목
 - enabled/manual_only: enabled 97, disabled/manual_only 3
-- `max_active_symbols=100`
-- `max_total_invested_amount=20,000,000`
-- `max_new_buy_per_day=10`
-- `max_new_buy_amount_per_day=2,000,000`
-- `max_total_open_lots=300`
+- `max_active_symbols=120`
+- `max_total_invested_amount=100,000,000`
+- `max_new_buy_per_day=120`
+- `max_new_buy_amount_per_day=30,000,000`
+- `max_total_open_lots=1,440`
 - `lot_sizing_mode=cycle_locked_by_entry_price`
 - `cleanup_enabled=false`
 - `ui_manual_trading_enabled=false`

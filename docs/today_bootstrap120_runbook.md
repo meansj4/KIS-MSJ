@@ -21,23 +21,23 @@ The active `config/lot_auto_trader.json` is prepared for a low-price bootstrap r
 - `risk.max_new_buy_per_day=120`
 - `risk.max_new_buy_amount_per_day=30,000,000`
 - `risk.max_total_initial_buy_amount_per_day=30,000,000`
-- `risk.max_total_open_lots=500`
-- `risk.max_total_invested_amount=30,000,000`
+- `risk.max_total_open_lots=1,440`
+- `risk.max_total_invested_amount=100,000,000`
 - experiment run id: `bootstrap_120_low_price_v1`
 
 The configured price LOT bands are:
 
 | min price | max price | 1 LOT amount | max symbol amount |
 | ---: | ---: | ---: | ---: |
-| 0 | 300 | 1,000 | 10,000 |
-| 301 | 1,000 | 3,000 | 30,000 |
-| 1,001 | 3,000 | 10,000 | 100,000 |
-| 3,001 | 10,000 | 30,000 | 300,000 |
-| 10,001 | 30,000 | 100,000 | 1,000,000 |
-| 30,001 | 100,000 | 300,000 | 3,000,000 |
-| 100,001 | 300,000 | 1,000,000 | 10,000,000 |
-| 300,001 | 1,000,000 | 3,000,000 | 30,000,000 |
-| 1,000,001 | 3,000,000 | 10,000,000 | 100,000,000 |
+| 0 | 300 | 1,000 | 12,000 |
+| 301 | 1,000 | 3,000 | 36,000 |
+| 1,001 | 3,000 | 10,000 | 120,000 |
+| 3,001 | 10,000 | 30,000 | 360,000 |
+| 10,001 | 30,000 | 100,000 | 1,200,000 |
+| 30,001 | 100,000 | 300,000 | 3,600,000 |
+| 100,001 | 300,000 | 1,000,000 | 12,000,000 |
+| 300,001 | 1,000,000 | 3,000,000 | 36,000,000 |
+| 1,000,001 | 3,000,000 | 10,000,000 | 120,000,000 |
 
 ## UI Order Of Operations
 

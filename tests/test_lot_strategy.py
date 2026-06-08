@@ -927,7 +927,7 @@ def test_lot_sizing_cycle_lock_keeps_original_lot_unit_after_price_moves() -> No
 
     assert position.entry_price_for_lot_sizing == 10100
     assert position.lot_unit_amount == 100000
-    assert position.max_symbol_amount == 1000000
+    assert position.max_symbol_amount == 1200000
     assert action is not None
     assert action.amount == 100000
 

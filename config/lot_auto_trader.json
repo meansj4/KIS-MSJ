@@ -2311,63 +2311,63 @@
         "min_price": 0,
         "max_price": 300,
         "lot_unit_amount": 1000,
-        "max_symbol_amount": 10000,
+        "max_symbol_amount": 12000,
         "enabled": true
       },
       {
         "min_price": 301,
         "max_price": 1000,
         "lot_unit_amount": 3000,
-        "max_symbol_amount": 30000,
+        "max_symbol_amount": 36000,
         "enabled": true
       },
       {
         "min_price": 1001,
         "max_price": 3000,
         "lot_unit_amount": 10000,
-        "max_symbol_amount": 100000,
+        "max_symbol_amount": 120000,
         "enabled": true
       },
       {
         "min_price": 3001,
         "max_price": 10000,
         "lot_unit_amount": 30000,
-        "max_symbol_amount": 300000,
+        "max_symbol_amount": 360000,
         "enabled": true
       },
       {
         "min_price": 10001,
         "max_price": 30000,
         "lot_unit_amount": 100000,
-        "max_symbol_amount": 1000000,
+        "max_symbol_amount": 1200000,
         "enabled": true
       },
       {
         "min_price": 30001,
         "max_price": 100000,
         "lot_unit_amount": 300000,
-        "max_symbol_amount": 3000000,
+        "max_symbol_amount": 3600000,
         "enabled": true
       },
       {
         "min_price": 100001,
         "max_price": 300000,
         "lot_unit_amount": 1000000,
-        "max_symbol_amount": 10000000,
+        "max_symbol_amount": 12000000,
         "enabled": true
       },
       {
         "min_price": 300001,
         "max_price": 1000000,
         "lot_unit_amount": 3000000,
-        "max_symbol_amount": 30000000,
+        "max_symbol_amount": 36000000,
         "enabled": true
       },
       {
         "min_price": 1000001,
         "max_price": 3000000,
         "lot_unit_amount": 10000000,
-        "max_symbol_amount": 100000000,
+        "max_symbol_amount": 120000000,
         "enabled": true
       }
     ],
@@ -2455,8 +2455,8 @@
     "max_price_sample_volatility_pct": 1,
     "block_on_lot_mismatch": true,
     "max_active_symbols": 120,
-    "max_total_open_lots": 500,
-    "max_total_invested_amount": 30000000,
+    "max_total_open_lots": 1440,
+    "max_total_invested_amount": 100000000,
     "max_new_buy_per_day": 120,
     "max_new_buy_amount_per_day": 30000000,
     "max_total_initial_buy_amount_per_day": 30000000,

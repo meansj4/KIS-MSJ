@@ -1127,7 +1127,7 @@ function renderConfigOriginalValue(value, meta) {
 }
 const STRUCTURED_JSON_TEMPLATES = {
   'strategy.price_lot_bands': {keys:['min_price','max_price','lot_unit_amount','max_symbol_amount','max_lots','enabled','note'], row:{min_price:0,max_price:0,lot_unit_amount:0,max_symbol_amount:0,enabled:true,note:''}},
-  'strategy.add_buy_lot_bands': {keys:['min_lots','max_lots','drop_rate','add_lot_count'], row:{min_lots:1,max_lots:1,drop_rate:0.04,add_lot_count:1}},
+  'strategy.add_buy_lot_bands': {keys:['min_lots','max_lots','drop_rate','add_lot_count'], row:{min_lots:1,max_lots:1,drop_rate:0.03,add_lot_count:1}},
   'strategy.target_profit_lot_bands': {keys:['min_lots','max_lots','target_profit_rate'], row:{min_lots:1,max_lots:1,target_profit_rate:0.06}},
 };
 function structuredJsonKeys(path, rows) {

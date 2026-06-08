@@ -566,7 +566,7 @@ def test_manual_buy_preview_reports_lot_sizing_and_blocks_out_of_range_band(tmp_
 
     assert preview["can_create"] is True
     assert preview["lot_unit_amount"] == 100000
-    assert preview["max_symbol_amount"] == 1000000
+    assert preview["max_symbol_amount"] == 1200000
     assert preview["price_lot_band"] == "10001-30000"
 
     low = service.manual_order_preview({"side": "BUY", "code": "005930", "current_price": 250})
@@ -905,7 +905,7 @@ def test_manual_buy_blocks_when_lot_sizing_bucket_changes_after_preview(tmp_path
                 {
                     "price_lot_band": "10001-30000",
                     "lot_unit_amount": 100000,
-                    "max_symbol_amount": 1000000,
+                    "max_symbol_amount": 1200000,
                 }
             ),
             "runtime_snapshot_json": "{}",
@@ -944,7 +944,7 @@ def test_requeued_manual_buy_runs_bot_core_guards_again(tmp_path):
                 {
                     "price_lot_band": "10001-30000",
                     "lot_unit_amount": 100000,
-                    "max_symbol_amount": 1000000,
+                    "max_symbol_amount": 1200000,
                 }
             ),
             "runtime_snapshot_json": "{}",

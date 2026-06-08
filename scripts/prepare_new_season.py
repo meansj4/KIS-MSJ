@@ -33,9 +33,9 @@ KOSPI_100: list[dict[str, Any]] = [{'code': '175330', 'name': 'JB금융지주', 
 
 
 PROFILES = {
-    "expansion_100_safe": {"max_total_invested_amount": 30_000_000, "max_new_buy_per_day": 120, "max_new_buy_amount_per_day": 30_000_000, "max_total_initial_buy_amount_per_day": 30_000_000, "max_total_open_lots": 500, "max_active_symbols": 120},
-    "expansion_100_medium": {"max_total_invested_amount": 50_000_000, "max_new_buy_per_day": 120, "max_new_buy_amount_per_day": 50_000_000, "max_total_initial_buy_amount_per_day": 50_000_000, "max_total_open_lots": 700, "max_active_symbols": 120},
-    "expansion_100_aggressive": {"max_total_invested_amount": 100_000_000, "max_new_buy_per_day": 120, "max_new_buy_amount_per_day": 100_000_000, "max_total_initial_buy_amount_per_day": 100_000_000, "max_total_open_lots": 1200, "max_active_symbols": 120},
+    "expansion_100_safe": {"max_total_invested_amount": 100_000_000, "max_new_buy_per_day": 120, "max_new_buy_amount_per_day": 30_000_000, "max_total_initial_buy_amount_per_day": 30_000_000, "max_total_open_lots": 1440, "max_active_symbols": 120},
+    "expansion_100_medium": {"max_total_invested_amount": 150_000_000, "max_new_buy_per_day": 120, "max_new_buy_amount_per_day": 50_000_000, "max_total_initial_buy_amount_per_day": 50_000_000, "max_total_open_lots": 1440, "max_active_symbols": 120},
+    "expansion_100_aggressive": {"max_total_invested_amount": 200_000_000, "max_new_buy_per_day": 120, "max_new_buy_amount_per_day": 100_000_000, "max_total_initial_buy_amount_per_day": 100_000_000, "max_total_open_lots": 1440, "max_active_symbols": 120},
 }
 
 def build_stock_rows() -> list[dict[str, Any]]:

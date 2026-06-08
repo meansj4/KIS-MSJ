@@ -101,11 +101,11 @@ Analysis/tuning data preparation: see [docs/analysis_and_tuning.md](analysis_and
 | 후보 종목 수 | 100 |
 | enabled 종목 수 | 97 |
 | disabled/manual_only 종목 | 3 |
-| `max_active_symbols` | 100 |
-| `max_total_invested_amount` | 20,000,000 |
-| `max_new_buy_per_day` | 10 |
-| `max_new_buy_amount_per_day` | 2,000,000 |
-| `max_total_open_lots` | 300 |
+| `max_active_symbols` | 120 |
+| `max_total_invested_amount` | 100,000,000 |
+| `max_new_buy_per_day` | 120 |
+| `max_new_buy_amount_per_day` | 30,000,000 |
+| `max_total_open_lots` | 1,440 |
 | `lot_sizing_mode` | `cycle_locked_by_entry_price` |
 | `cleanup_enabled` | false |
 | `ui_manual_trading_enabled` | false |
@@ -291,15 +291,15 @@ STALE_LOT은 자동 손절 신호가 아니라 오래된 손실 LOT 표시다. c
 
 | 가격 구간 | 1 LOT 금액 | 종목당 최대금액 | enabled | note |
 | --- | ---: | ---: | --- | --- |
-| 0~300 | 1,000 | 10,000 | true | 초저가 구간도 1 LOT 소액 운용 가능 |
-| 301~1,000 | 3,000 | 30,000 | true | 저가 구간 |
-| 1,001~3,000 | 10,000 | 100,000 | true | 저가~중저가 구간 |
-| 3,001~10,000 | 30,000 | 300,000 | true | 3만원 LOT 구간 |
-| 10,001~30,000 | 100,000 | 1,000,000 | true | 10만원 LOT 구간 |
-| 30,001~100,000 | 300,000 | 3,000,000 | true | 중고가 구간 |
-| 100,001~300,000 | 1,000,000 | 10,000,000 | true | 고가 구간 |
-| 300,001~1,000,000 | 3,000,000 | 30,000,000 | true | 매우 고가 구간 |
-| 1,000,001~3,000,000 | 10,000,000 | 100,000,000 | true | 초고가 구간, 전역 리스크 한도와 함께 운영 주의 |
+| 0~300 | 1,000 | 12,000 | true | 초저가 구간도 1 LOT 소액 운용 가능 |
+| 301~1,000 | 3,000 | 36,000 | true | 저가 구간 |
+| 1,001~3,000 | 10,000 | 120,000 | true | 저가~중저가 구간 |
+| 3,001~10,000 | 30,000 | 360,000 | true | 3만원 LOT 구간 |
+| 10,001~30,000 | 100,000 | 1,200,000 | true | 10만원 LOT 구간 |
+| 30,001~100,000 | 300,000 | 3,600,000 | true | 중고가 구간 |
+| 100,001~300,000 | 1,000,000 | 12,000,000 | true | 고가 구간 |
+| 300,001~1,000,000 | 3,000,000 | 36,000,000 | true | 매우 고가 구간 |
+| 1,000,001~3,000,000 | 10,000,000 | 120,000,000 | true | 초고가 구간, 전역 리스크 한도와 함께 운영 주의 |
 
 3,000,000원을 초과하는 가격은 어떤 band에도 포함되지 않으므로 `price_out_of_lot_sizing_range`로 BUY가 차단된다. 실제 매수는 위 band만으로 결정되지 않고, 전역 리스크 한도, runtime pause, risk/sync guard, open order guard, 가격 샘플 안정성도 모두 통과해야 한다.
 
@@ -517,12 +517,12 @@ UI/API:
 | 항목 | 현재값 | 의미 |
 | --- | --- | --- |
 | `risk.profile` | `expansion_100_safe` | 현재 적용 중인 리스크 프로필 |
-| `max_active_symbols` | 100 | 관리/보유 가능한 활성 종목 상한 |
-| `max_new_buy_per_day` | 10 | 하루 신규 initial buy 주문 수 제한. reentry는 포함하지 않는다 |
-| `max_new_buy_amount_per_day` | 2,000,000 | 하루 신규 매수 금액 제한 |
-| `max_total_initial_buy_amount_per_day` | 2,000,000 | initial buy 총액 제한 |
-| `max_total_open_lots` | 300 | 계좌 전체 OPEN LOT 수 제한 |
-| `max_total_invested_amount` | 20,000,000 | 계좌 전체 투입금 제한 |
+| `max_active_symbols` | 120 | 관리/보유 가능한 활성 종목 상한 |
+| `max_new_buy_per_day` | 120 | 하루 신규 initial buy 주문 수 제한. reentry는 포함하지 않는다 |
+| `max_new_buy_amount_per_day` | 30,000,000 | 하루 신규 매수 금액 제한 |
+| `max_total_initial_buy_amount_per_day` | 30,000,000 | initial buy 총액 제한 |
+| `max_total_open_lots` | 1,440 | 계좌 전체 OPEN LOT 수 제한 |
+| `max_total_invested_amount` | 100,000,000 | 계좌 전체 투입금 제한 |
 | `cleanup_enabled` | false | 초기 100종목 확장 운용에서는 false 유지 권장 |
 | `ui_manual_trading_enabled` | false | UI 수동 주문 요청 생성 기본값 |
 | `live_trading` | false | 실거래 주문 가능 여부 |
@@ -532,9 +532,9 @@ profile 후보:
 
 | profile | max_total_invested_amount | max_new_buy_per_day | max_new_buy_amount_per_day | max_total_open_lots | max_active_symbols |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| expansion_100_safe | 20,000,000 | 10 | 2,000,000 | 300 | 100 |
-| expansion_100_medium | 30,000,000 | 15 | 3,000,000 | 450 | 100 |
-| expansion_100_aggressive | 50,000,000 | 20 | 5,000,000 | 700 | 100 |
+| expansion_100_safe | 100,000,000 | 120 | 30,000,000 | 1,440 | 120 |
+| expansion_100_medium | 150,000,000 | 120 | 50,000,000 | 1,440 | 120 |
+| expansion_100_aggressive | 200,000,000 | 120 | 100,000,000 | 1,440 | 120 |
 
 전역 리스크 제한은 LOT sizing과 별도로 계속 살아 있다. 종목별 max_symbol_amount/max_lots가 통과되어도 계좌 전체 max_total_open_lots, max_total_invested_amount, max_new_buy_per_day, max_new_buy_amount_per_day에 걸리면 BUY는 차단된다. SELL은 전역 노출 제한 때문에 막지 않는다.
 
@@ -1335,15 +1335,15 @@ DB 초기화 버튼이 비활성인 대표 원인:
 
 | min 가격 | max 가격 | 1 LOT | 종목당 최대 | enabled | 영향 |
 | ---: | ---: | ---: | ---: | --- | --- |
-| 0 | 300 | 1,000 | 10,000 | true | 초저가주도 1 LOT 소액 진입 가능 |
-| 301 | 1,000 | 3,000 | 30,000 | true | 저가주 소액 LOT |
-| 1,001 | 3,000 | 10,000 | 100,000 | true | 저가~중저가 구간 |
-| 3,001 | 10,000 | 30,000 | 300,000 | true | 3만원 LOT 구간 |
-| 10,001 | 30,000 | 100,000 | 1,000,000 | true | 중가주 10만원 LOT |
-| 30,001 | 100,000 | 300,000 | 3,000,000 | true | 고가 진입 구간 |
-| 100,001 | 300,000 | 1,000,000 | 10,000,000 | true | 대형 고가주 구간 |
-| 300,001 | 1,000,000 | 3,000,000 | 30,000,000 | true | 매우 고가주 구간 |
-| 1,000,001 | 3,000,000 | 10,000,000 | 100,000,000 | true | 초고가 구간, 전역 리스크 한도와 함께 운영 주의 |
+| 0 | 300 | 1,000 | 12,000 | true | 초저가주도 1 LOT 소액 진입 가능 |
+| 301 | 1,000 | 3,000 | 36,000 | true | 저가주 소액 LOT |
+| 1,001 | 3,000 | 10,000 | 120,000 | true | 저가~중저가 구간 |
+| 3,001 | 10,000 | 30,000 | 360,000 | true | 3만원 LOT 구간 |
+| 10,001 | 30,000 | 100,000 | 1,200,000 | true | 중가주 10만원 LOT |
+| 30,001 | 100,000 | 300,000 | 3,600,000 | true | 고가 진입 구간 |
+| 100,001 | 300,000 | 1,000,000 | 12,000,000 | true | 대형 고가주 구간 |
+| 300,001 | 1,000,000 | 3,000,000 | 36,000,000 | true | 매우 고가주 구간 |
+| 1,000,001 | 3,000,000 | 10,000,000 | 120,000,000 | true | 초고가 구간, 전역 리스크 한도와 함께 운영 주의 |
 
 3,000,000원을 초과하는 가격은 `price_lot_bands` 범위 밖이므로 `price_out_of_lot_sizing_range`로 BUY가 차단된다.
 

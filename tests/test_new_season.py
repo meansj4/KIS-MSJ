@@ -96,8 +96,8 @@ def test_apply_expansion_config_safe_profile(tmp_path) -> None:
     assert config["risk"]["max_new_buy_per_day"] == 120
     assert config["risk"]["max_new_buy_amount_per_day"] == 30_000_000
     assert config["risk"]["max_total_initial_buy_amount_per_day"] == 30_000_000
-    assert config["risk"]["max_total_open_lots"] == 500
-    assert config["risk"]["max_total_invested_amount"] == 30_000_000
+    assert config["risk"]["max_total_open_lots"] == 1440
+    assert config["risk"]["max_total_invested_amount"] == 100_000_000
     assert config["strategy"]["cleanup_enabled"] is False
     assert config["order"]["live_trading"] is False
     assert config["order"]["enable_execution_raw_log"] is False
