@@ -21,6 +21,7 @@ from .kis_client import KisClient
 from .logger import append_hourly_log_line, tail_hourly_logs
 from .lot_manager import LotManager, round_price
 from .models import OrderSide, PositionLifecycle, PositionState
+from .position_manager import PositionManager
 from .runtime_control import DEFAULT_RUNTIME_CONTROL_PATH, RuntimeControl, load_runtime_control, runtime_block_reason, save_runtime_control
 from .strategy import LotGridStrategy, StrategyAction
 
@@ -1332,40 +1333,11 @@ class UIService:
         store = StateStore(self.config.storage_path)
         positions = store.load_positions()
         position = positions.get(code, PositionState(code=code))
-        triggers = self._review_triggers(asdict(position))
-        now = datetime.now().isoformat(timespec="seconds")
-        if "sync_required" in triggers["reasons"]:
-            position.sync_status = PositionLifecycle.SYNC_REQUIRED.value
-            position.position_state = PositionLifecycle.SYNC_REQUIRED.value
-            position.trading_paused = True
-            position.auto_buy_enabled = False
-            position.skip_reason = "sync_required"
-            event = "review_required_still_active"
-        elif triggers["reasons"]:
-            position.needs_review = True
-            position.auto_buy_enabled = False
-            position.position_state = PositionLifecycle.REVIEW_REQUIRED.value
-            position.review_reason = triggers["reasons"][0]
-            position.review_created_at = position.review_created_at or now
-            position.review_trigger_values = json.dumps(triggers["values"], ensure_ascii=False)
-            event = "review_required_still_active"
-        else:
-            position.needs_review = False
-            position.auto_buy_enabled = True
-            position.review_reason = ""
-            position.review_trigger_values = ""
-            position.skip_reason = ""
-            open_lots = [lot for lot in self.lots() if lot.get("code") == code and int(lot.get("remaining_quantity") or 0) > 0 and lot.get("status") != "CLOSED"]
-            if open_lots:
-                position.position_state = PositionLifecycle.HOLDING.value
-            elif position.position_state == PositionLifecycle.COOLDOWN_AFTER_CLEANUP.value and position.cleanup_reentry_cooldown_until:
-                position.position_state = PositionLifecycle.COOLDOWN_AFTER_CLEANUP.value
-            elif position.last_fill_side == OrderSide.SELL.value or any(lot.get("code") == code for lot in self.lots()):
-                position.position_state = PositionLifecycle.WAIT_REENTRY.value
-            else:
-                position.position_state = PositionLifecycle.NEVER_BOUGHT.value
-            event = "review_required_cleared"
+        lot_manager = LotManager(self.config.strategy, store.load_lots())
+        position_manager = PositionManager(self.config.strategy, lot_manager, positions)
+        position, triggers, event = position_manager.recheck_review_required(position, position.current_price)
         store.save_position(position)
+        store.save_lots(lot_manager.lots.values())
         payload = {"code": code, "event": event, "active_reasons": triggers["reasons"], "trigger_values": triggers["values"]}
         self._append_audit_log("review_status_rechecked", payload)
         self._append_audit_log(event, payload)
@@ -1395,38 +1367,10 @@ class UIService:
 
     def _review_triggers(self, position: dict[str, Any]) -> dict[str, Any]:
         code = str(position.get("code") or "").zfill(6)
-        open_lots = [lot for lot in self.lots() if lot.get("code") == code and int(lot.get("remaining_quantity") or 0) > 0 and lot.get("status") != "CLOSED"]
-        exposure = sum(int(lot.get("remaining_quantity") or 0) * int(lot.get("buy_price") or 0) for lot in open_lots)
-        open_lot_count = len(open_lots)
-        stale_lot_ids = [
-            str(lot.get("lot_id") or "")
-            for lot in open_lots
-            if bool(lot.get("stale_lot")) and float(lot.get("age_weeks") or 0) >= self.config.strategy.stale_lot_review_age_weeks
-        ]
-        reasons = []
-        pnl_rate = float(position.get("profit_loss_pct") or 0.0) / 100.0
-        if position.get("sync_status") == PositionLifecycle.SYNC_REQUIRED.value or position.get("lot_quantity_mismatch") or position.get("trading_paused"):
-            reasons.append("sync_required")
-        if self.config.strategy.lot_sizing_mode != "cycle_locked_by_entry_price" and exposure > self.config.strategy.auto_buy_limit:
-            reasons.append("auto_buy_limit_exceeded")
-        if pnl_rate <= self.config.strategy.review_symbol_loss_rate and exposure > 0:
-            reasons.append("symbol_loss_review")
-        max_lots = int(position.get("max_lots_per_symbol") or self.config.strategy.max_open_lots_before_review)
-        if max_lots and open_lot_count > max_lots:
-            reasons.append("too_many_open_lots")
-        if stale_lot_ids:
-            reasons.append("stale_lot_review_age")
-        values = {
-            "position_pnl_rate": pnl_rate,
-            "review_symbol_loss_rate": self.config.strategy.review_symbol_loss_rate,
-            "open_lot_count": open_lot_count,
-            "max_lots": max_lots,
-            "exposure": exposure,
-            "auto_buy_limit": self.config.strategy.auto_buy_limit,
-            "stale_lot_ids": stale_lot_ids,
-            "stale_lot_review_age_weeks": self.config.strategy.stale_lot_review_age_weeks,
-        }
-        return {"reasons": reasons, "values": values}
+        lot_manager = LotManager(self.config.strategy)
+        lot_manager.lots = {lot["lot_id"]: _lot_state_from_row(lot) for lot in self.lots() if lot.get("code") == code}
+        position_state = _position_state_from_row(position)
+        return PositionManager(self.config.strategy, lot_manager).review_triggers(position_state, int(position.get("current_price") or 0))
 
     def _review_release_requirements(self, status: dict[str, Any]) -> list[str]:
         reasons = set(status.get("active_reasons") or [])

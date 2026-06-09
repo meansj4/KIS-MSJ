@@ -1011,6 +1011,48 @@ def test_review_recheck_clears_review_when_triggers_are_resolved(tmp_path):
     assert position.auto_buy_enabled is True
 
 
+def test_review_recheck_clears_legacy_max_lots_review_in_cycle_locked_mode(tmp_path):
+    config_path, db_path, _ = _write_config(tmp_path)
+    store = StateStore(db_path)
+    store.save_position(
+        PositionState(
+            "005930",
+            "Samsung",
+            quantity=2,
+            current_price=11000,
+            cumulative_invested_amount=20000,
+            position_state=PositionLifecycle.REVIEW_REQUIRED.value,
+            needs_review=True,
+            auto_buy_enabled=False,
+            review_reason="max_lots_per_symbol_reached",
+            max_lots_per_symbol=1,
+        )
+    )
+    for index in range(2):
+        store.save_lot(
+            LotState(
+                f"LOT-LEGACY-MAX-{index}",
+                "005930",
+                "2026-05-01T09:05:00",
+                buy_price=10000,
+                buy_quantity=1,
+                buy_amount=10000,
+                remaining_quantity=1,
+                target_profit_pct=6.0,
+                target_sell_price=10600,
+            )
+        )
+    service = UIService(config_path, tmp_path / "runtime.json")
+
+    result = service.review_recheck("005930")
+    position = StateStore(db_path).load_positions()["005930"]
+
+    assert result["event"] == "review_required_cleared"
+    assert "too_many_open_lots" not in result["active_reasons"]
+    assert position.position_state == PositionLifecycle.HOLDING.value
+    assert position.needs_review is False
+
+
 def test_review_recheck_keeps_review_when_triggers_remain_and_ack_does_not_unblock(tmp_path):
     config_path, db_path, _ = _write_config(tmp_path)
     store = StateStore(db_path)

@@ -539,6 +539,7 @@ class AutoTrader:
                 position = self.position_manager.refresh_from_lots(position.code, current_price)
         else:
             position = self.position_manager.refresh_from_lots(position.code, current_price)
+        position = self.auto_recheck_review_required(position, current_price)
         if self.strategy.update_reentry_tracking(position, current_price):
             if profile:
                 with profile.stage("db"):
@@ -633,6 +634,24 @@ class AutoTrader:
         self.store.save_position(updated)
         self.store.save_lots(self.lot_manager.lots.values())
         self.logger.info("fill_applied code=%s side=%s qty=%s price=%s lot_id=%s order_id=%s", fill.code, fill.side.value, fill.quantity, fill.price, fill.lot_id, fill.order_id)
+
+    def auto_recheck_review_required(self, position: PositionState, current_price: int) -> PositionState:
+        if not (position.needs_review or position.position_state == PositionLifecycle.REVIEW_REQUIRED.value):
+            return position
+        updated, triggers, event = self.position_manager.recheck_review_required(position, current_price)
+        self.store.save_position(updated)
+        self.store.save_lots(self.lot_manager.lots.values())
+        self.logger.info(
+            "review_required_auto_recheck code=%s name=%s event=%s active_reasons=%s trigger_values=%s",
+            updated.code,
+            updated.name,
+            event,
+            ",".join(triggers["reasons"]) or "NONE",
+            json.dumps(triggers["values"], ensure_ascii=False),
+        )
+        if event == "review_required_cleared":
+            self.notifier.notify("REVIEW_REQUIRED_CLEARED", f"{updated.code} {updated.name}: review triggers resolved; trading resumed.")
+        return updated
 
     def log_symbol_decision(
         self,

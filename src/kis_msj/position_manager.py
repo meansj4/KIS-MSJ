@@ -83,6 +83,71 @@ class PositionManager:
         position.last_update_time = datetime.now().isoformat(timespec="seconds")
         return position
 
+    def review_triggers(self, position: PositionState, current_price: int = 0) -> dict[str, object]:
+        price = current_price or position.current_price
+        open_lots = self.lot_manager.open_lots(position.code)
+        exposure = sum(lot.open_amount for lot in open_lots)
+        stale_lots = self.lot_manager.stale_lots(position.code, price) if price and exposure > 0 else []
+        reasons: list[str] = []
+        cycle_locked = self.config.lot_sizing_mode == "cycle_locked_by_entry_price"
+        pnl_rate = position.profit_loss_pct / 100.0
+        if position.sync_status == PositionLifecycle.SYNC_REQUIRED.value or position.lot_quantity_mismatch or position.trading_paused:
+            reasons.append("sync_required")
+        if not cycle_locked and exposure > self.config.auto_buy_limit:
+            reasons.append("auto_buy_limit_exceeded")
+        if pnl_rate <= self.config.review_symbol_loss_rate and exposure > 0:
+            reasons.append("symbol_loss_review")
+        max_lots = int(position.max_lots_per_symbol or self.config.max_open_lots_before_review)
+        if not cycle_locked and max_lots and len(open_lots) > max_lots:
+            reasons.append("too_many_open_lots")
+        stale_lot_ids = [lot.lot_id for lot in stale_lots if lot.age_weeks >= self.config.stale_lot_review_age_weeks]
+        if stale_lot_ids:
+            reasons.append("stale_lot_review_age")
+        return {
+            "reasons": reasons,
+            "values": {
+                "position_pnl_rate": pnl_rate,
+                "review_symbol_loss_rate": self.config.review_symbol_loss_rate,
+                "open_lot_count": len(open_lots),
+                "max_lots": max_lots,
+                "exposure": exposure,
+                "auto_buy_limit": self.config.auto_buy_limit,
+                "stale_lot_ids": stale_lot_ids,
+                "stale_lot_review_age_weeks": self.config.stale_lot_review_age_weeks,
+                "current_price": price,
+            },
+        }
+
+    def recheck_review_required(self, position: PositionState, current_price: int = 0) -> tuple[PositionState, dict[str, object], str]:
+        triggers = self.review_triggers(position, current_price)
+        reasons = list(triggers["reasons"])
+        now = datetime.now().isoformat(timespec="seconds")
+        if "sync_required" in reasons:
+            position.sync_status = PositionLifecycle.SYNC_REQUIRED.value
+            position.position_state = PositionLifecycle.SYNC_REQUIRED.value
+            position.trading_paused = True
+            position.auto_buy_enabled = False
+            position.skip_reason = "sync_required"
+            return position, triggers, "review_required_still_active"
+        if reasons:
+            position.needs_review = True
+            position.auto_buy_enabled = False
+            position.position_state = PositionLifecycle.REVIEW_REQUIRED.value
+            position.review_reason = reasons[0]
+            position.review_created_at = position.review_created_at or now
+            position.review_trigger_values = json.dumps(triggers["values"], ensure_ascii=False)
+            return position, triggers, "review_required_still_active"
+        if not (position.needs_review or position.position_state == PositionLifecycle.REVIEW_REQUIRED.value):
+            position.position_state = self._lifecycle_for(position, bool(self.lot_manager.open_lots(position.code)))
+            return position, triggers, "review_not_required"
+        position.needs_review = False
+        position.auto_buy_enabled = not position.danger_state
+        position.review_reason = ""
+        position.review_trigger_values = ""
+        position.skip_reason = ""
+        position.position_state = self._lifecycle_for(position, bool(self.lot_manager.open_lots(position.code)))
+        return position, triggers, "review_required_cleared"
+
     def _lifecycle_for(self, position: PositionState, has_open_lots: bool) -> str:
         if position.sync_status == PositionLifecycle.SYNC_REQUIRED.value or position.trading_paused:
             return PositionLifecycle.SYNC_REQUIRED.value

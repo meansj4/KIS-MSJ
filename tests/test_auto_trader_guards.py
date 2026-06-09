@@ -3,7 +3,7 @@ from datetime import datetime
 from kis_msj.config import BotConfig, OrderConfig, RiskConfig, StockConfig, StrategyConfig
 from kis_msj.main import AutoTrader
 from kis_msj import main as trader_main
-from kis_msj.models import AccountSnapshot, OrderRequest, OrderResult, OrderSide, OrderStatus, PositionLifecycle, PositionState, Quote, ReentryType, SellReason, TradeFill
+from kis_msj.models import AccountSnapshot, LotState, OrderRequest, OrderResult, OrderSide, OrderStatus, PositionLifecycle, PositionState, Quote, ReentryType, SellReason, TradeFill
 from kis_msj.risk_manager import RiskDecision
 from kis_msj.strategy import StrategyAction
 
@@ -101,7 +101,8 @@ def test_fill_application_invalidates_account_snapshot_cache(tmp_path) -> None:
     assert calls["count"] == 2
 
 
-def test_evaluate_clears_stale_skip_reason_when_no_current_block(tmp_path) -> None:
+def test_evaluate_clears_stale_skip_reason_when_no_current_block(tmp_path, monkeypatch) -> None:
+    _force_trade_window(monkeypatch)
     bot = trader(tmp_path)
     position = PositionState(code="005930", name="Test", skip_reason="data_mismatch")
     bot.position_manager.positions[position.code] = position
@@ -113,6 +114,43 @@ def test_evaluate_clears_stale_skip_reason_when_no_current_block(tmp_path) -> No
 
     assert position.skip_reason == ""
     assert bot.store.load_positions()[position.code].skip_reason == ""
+
+
+def test_evaluate_auto_clears_review_required_when_triggers_resolved(tmp_path, monkeypatch) -> None:
+    _force_trade_window(monkeypatch)
+    bot = trader(tmp_path)
+    position = PositionState(
+        code="005930",
+        name="Test",
+        position_state=PositionLifecycle.REVIEW_REQUIRED.value,
+        needs_review=True,
+        auto_buy_enabled=False,
+        review_reason="symbol_loss_review",
+    )
+    bot.position_manager.positions[position.code] = position
+    bot.lot_manager.lots["LOT-REVIEW-CLEAR"] = LotState(
+        "LOT-REVIEW-CLEAR",
+        "005930",
+        "2026-05-01T09:05:00",
+        buy_price=10000,
+        buy_quantity=1,
+        buy_amount=10000,
+        remaining_quantity=1,
+        target_profit_pct=6.0,
+        target_sell_price=10600,
+    )
+    seen = {}
+    bot.client.quote = lambda code, name="": Quote(code, 11000, datetime.now(), name)
+    bot.strategy.decide = lambda position, current_price, snapshot, account_risk, symbol_risk: seen.setdefault("needs_review", position.needs_review) or None
+
+    bot.evaluate(position, AccountSnapshot(1_000_000, 1_000_000, 0, 0, ()), RiskDecision(True))
+
+    saved = bot.store.load_positions()["005930"]
+    assert seen["needs_review"] is False
+    assert saved.position_state == PositionLifecycle.HOLDING.value
+    assert saved.needs_review is False
+    assert saved.auto_buy_enabled is True
+    assert saved.review_reason == ""
 
 
 def _force_trade_window(monkeypatch) -> None:
