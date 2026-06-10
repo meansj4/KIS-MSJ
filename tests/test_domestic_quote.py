@@ -7,7 +7,7 @@ SRC_PATH = PROJECT_ROOT / "src"
 if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
-from kis_msj.domestic_quote import is_rate_limit_error, normalize_quote_output, read_master_codes
+from kis_msj.domestic_quote import is_rate_limit_error, is_token_expired_error, normalize_quote_output, read_master_codes
 
 
 def test_normalize_quote_output_extracts_current_price_and_volume() -> None:
@@ -44,3 +44,11 @@ def test_is_rate_limit_error_detects_common_messages() -> None:
     assert is_rate_limit_error(RuntimeError("KIS request failed (429): too many requests"))
     assert is_rate_limit_error(RuntimeError("초당 거래건수를 초과했습니다"))
     assert not is_rate_limit_error(RuntimeError("Missing environment variable: KIS_APP_KEY"))
+
+
+def test_token_expired_error_is_not_rate_limit() -> None:
+    error = RuntimeError('{"msg_cd":"EGW00123","msg1":"token expired"}')
+
+    assert is_token_expired_error(error)
+    assert not is_rate_limit_error(error)
+    assert not is_token_expired_error(RuntimeError('{"msg_cd":"EGW00201","msg1":"rate limit"}'))

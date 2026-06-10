@@ -43,7 +43,7 @@ def test_kis_http_error_includes_endpoint_details_and_body(monkeypatch: pytest.M
     def fail_urlopen(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
         nonlocal attempts
         attempts += 1
-        raise _http_error(500, '{"rt_cd":"1","msg_cd":"EGW00123","msg1":"upstream exploded"}')
+        raise _http_error(500, '{"rt_cd":"1","msg_cd":"SERVER_ERR","msg1":"upstream exploded"}')
 
     monkeypatch.setattr("kis_msj.kis_client.urllib.request.urlopen", fail_urlopen)
     monkeypatch.setattr("kis_msj.kis_client.time.sleep", lambda seconds: None)
@@ -57,7 +57,7 @@ def test_kis_http_error_includes_endpoint_details_and_body(monkeypatch: pytest.M
     assert f"path={BALANCE_PATH}" in message
     assert "tr_id=TTTC8434R" in message
     assert "status=500" in message
-    assert "EGW00123" in message
+    assert "SERVER_ERR" in message
     assert "12345678" not in message
 
 
@@ -87,6 +87,36 @@ def test_korean_ledger_rate_limit_message_is_retryable() -> None:
     error = RuntimeError('{"msg_cd":"EGW00201","msg1":"원장에서 허용 가능한 초당 거래건수를 초과하였습니다."}')
 
     assert is_rate_limit_error(error)
+
+
+def test_request_refreshes_token_once_when_kis_reports_expired_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _client()
+    calls = []
+
+    class Response:
+        def __enter__(self):  # noqa: ANN204
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):  # noqa: ANN001, ANN204
+            return False
+
+        def read(self) -> bytes:
+            return b'{"rt_cd":"0","output1":[],"output2":[{"dnca_tot_amt":"1000000","tot_evlu_amt":"1000000"}]}'
+
+    def urlopen(request, timeout=20):  # noqa: ANN001, ANN202
+        calls.append(request)
+        if len(calls) == 1:
+            raise _http_error(500, '{"rt_cd":"1","msg_cd":"EGW00123","msg1":"token expired"}')
+        return Response()
+
+    monkeypatch.setattr("kis_msj.kis_client.urllib.request.urlopen", urlopen)
+    monkeypatch.setattr("kis_msj.kis_client.get_access_token", lambda credentials, use_cache=True: "new-token")
+
+    payload = client._request("GET", BALANCE_PATH, params={"CANO": "12345678"}, tr_id="TTTC8434R")
+
+    assert payload["rt_cd"] == "0"
+    assert client.access_token == "new-token"
+    assert len(calls) == 2
 
 
 def test_executions_logs_masked_raw_fields_when_enabled(caplog: pytest.LogCaptureFixture) -> None:

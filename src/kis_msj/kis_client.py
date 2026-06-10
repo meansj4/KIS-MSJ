@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import KisAccountConfig
-from .domestic_quote import fetch_current_quote, get_access_token, is_rate_limit_error, load_credentials, set_kis_min_request_interval, throttle_kis_request
+from .domestic_quote import fetch_current_quote, get_access_token, is_rate_limit_error, is_token_expired_error, load_credentials, set_kis_min_request_interval, throttle_kis_request
 from .models import AccountSnapshot, BalanceItem, OrderRequest, OrderResult, OrderSide, OrderStatus, Quote, TradeFill
 
 
@@ -92,8 +92,18 @@ class KisClient:
         return self.credentials.env == "demo"
 
     def quote(self, code: str, *, name: str = "") -> Quote:
-        row = fetch_current_quote(code, korean_name=name, credentials=self.credentials, access_token=self.access_token)
+        try:
+            row = fetch_current_quote(code, korean_name=name, credentials=self.credentials, access_token=self.access_token)
+        except RuntimeError as error:
+            if not is_token_expired_error(error):
+                raise
+            self.refresh_access_token("quote_token_expired")
+            row = fetch_current_quote(code, korean_name=name, credentials=self.credentials, access_token=self.access_token)
         return Quote(code, int(row["current_price"]), datetime.now(), name)
+
+    def refresh_access_token(self, reason: str = "token_expired") -> None:
+        self.access_token = get_access_token(self.credentials, use_cache=False)
+        self.logger.info("kis_access_token_refreshed reason=%s", reason)
 
     def account_snapshot(self) -> AccountSnapshot:
         pages = self._balance_pages()
@@ -263,20 +273,21 @@ class KisClient:
 
     def _request(self, method: str, path: str, *, params: dict[str, str] | None = None, body: dict[str, Any] | None = None, tr_id: str, tr_cont: str = "") -> dict[str, Any]:
         query = f"?{urllib.parse.urlencode(params)}" if params else ""
-        headers = {
-            "Content-Type": "application/json; charset=utf-8",
-            "authorization": f"Bearer {self.access_token}",
-            "appkey": self.credentials.app_key,
-            "appsecret": self.credentials.app_secret,
-            "tr_id": tr_id,
-            "custtype": self.account_config.customer_type,
-        }
-        if tr_cont:
-            headers["tr_cont"] = tr_cont
-        if method == "POST" and body is not None:
-            headers["hashkey"] = self._hashkey(body)
-        request = urllib.request.Request(f"{self.credentials.base_url}{path}{query}", data=json.dumps(body).encode("utf-8") if body is not None else None, headers=headers, method=method)
+        token_refreshed = False
         for attempt in range(3):
+            headers = {
+                "Content-Type": "application/json; charset=utf-8",
+                "authorization": f"Bearer {self.access_token}",
+                "appkey": self.credentials.app_key,
+                "appsecret": self.credentials.app_secret,
+                "tr_id": tr_id,
+                "custtype": self.account_config.customer_type,
+            }
+            if tr_cont:
+                headers["tr_cont"] = tr_cont
+            if method == "POST" and body is not None:
+                headers["hashkey"] = self._hashkey(body)
+            request = urllib.request.Request(f"{self.credentials.base_url}{path}{query}", data=json.dumps(body).encode("utf-8") if body is not None else None, headers=headers, method=method)
             try:
                 throttle_kis_request()
                 with urllib.request.urlopen(request, timeout=20) as response:
@@ -302,6 +313,10 @@ class KisClient:
                     status_code=error.code,
                     body=error_body,
                 )
+                if not token_refreshed and is_token_expired_error(wrapped):
+                    self.refresh_access_token(f"{path}:http_token_expired")
+                    token_refreshed = True
+                    continue
                 if attempt >= 2 or not _is_transient_http_status(error.code):
                     raise wrapped from error
                 time.sleep(2**attempt)
@@ -313,6 +328,10 @@ class KisClient:
                 time.sleep(2**attempt)
             except KisApiError as error:
                 self.consecutive_errors += 1
+                if not token_refreshed and is_token_expired_error(error):
+                    self.refresh_access_token(f"{path}:api_token_expired")
+                    token_refreshed = True
+                    continue
                 if attempt >= 2 or not is_rate_limit_error(error):
                     raise
                 time.sleep(2**attempt)

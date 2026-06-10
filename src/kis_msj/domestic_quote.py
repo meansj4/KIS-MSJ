@@ -165,10 +165,16 @@ def is_rate_limit_error(error: RuntimeError) -> bool:
         "거래건수",
         "허용 가능한",
         "egw00201",
-        "egw",
         "429",
     )
     return any(marker in message for marker in rate_limit_markers)
+
+
+def is_token_expired_error(error: RuntimeError) -> bool:
+    """Return True when KIS reports an expired OAuth token."""
+
+    message = str(error).lower()
+    return "egw00123" in message or "expired token" in message or "기간이 만료된 token" in message
 
 
 def _read_cached_token(cache_key: str, path: Path = TOKEN_CACHE_PATH) -> str | None:
