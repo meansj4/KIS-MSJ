@@ -157,6 +157,24 @@ def test_cancel_rejected_order_remains_reconciliation_candidate(tmp_path) -> Non
     assert store.has_open_order("005930", OrderSide.BUY)
 
 
+def test_cancel_rejected_no_cancelable_after_partial_fill_closes_order(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    result = order(quantity=2)
+    store.record_order(result)
+    store.record_fill(TradeFill("005930", "Test", OrderSide.BUY, 1, 10000, "000001", datetime.now(), execution_id="E-PARTIAL"))
+    client = ReconcileClient((), cancel_error=RuntimeError("APBK0927 no cancelable quantity"))
+    manager = OrderManager(BotConfig(order=OrderConfig(limit_order_timeout_seconds=0)), client, store, __import__("logging").getLogger("test"))
+
+    fills = manager.reconcile_open_orders()
+
+    assert fills == ()
+    assert store.find_order("000001").status is OrderStatus.CANCELED_AFTER_PARTIAL_FILL
+    assert not store.has_open_order("005930", OrderSide.BUY)
+    with store._connect() as connection:
+        row = connection.execute("SELECT post_cancel_execution_checked_at FROM orders WHERE order_id = '000001'").fetchone()
+    assert row["post_cancel_execution_checked_at"]
+
+
 def test_canceled_order_no_longer_counts_as_open(tmp_path) -> None:
     store = StateStore(tmp_path / "state.sqlite3")
     result = order()
@@ -233,6 +251,26 @@ def test_aggregate_execution_reconcile_records_only_delta_quantity(tmp_path) -> 
     assert len(fills) == 1
     assert fills[0].quantity == 2
     assert store.filled_quantity_for_order("000001") == 3
+    assert store.find_order("000001").status is OrderStatus.FILLED
+
+
+def test_aggregate_delta_with_same_quantity_and_time_is_inserted(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    result = order(code="053690", side=OrderSide.SELL, quantity=2, lot_id="LOT-1")
+    store.record_order(result)
+    filled_at = datetime.now().replace(microsecond=0)
+    first = TradeFill("053690", "Hanmi", OrderSide.SELL, 1, 18050, "000001", filled_at, "LOT-1", "AGG:000001:053690:1:18050:105523")
+    cumulative = TradeFill("053690", "Hanmi", OrderSide.SELL, 2, 18050, "000001", filled_at, "LOT-1", "AGG:000001:053690:2:18050:105523")
+    assert store.record_fill(first)
+    client = ReconcileClient((cumulative,))
+    manager = OrderManager(BotConfig(order=OrderConfig(limit_order_timeout_seconds=999)), client, store, logging.getLogger("test"))
+
+    fills = manager.reconcile_open_orders()
+
+    assert len(fills) == 1
+    assert fills[0].quantity == 1
+    assert fills[0].filled_at > filled_at
+    assert store.filled_quantity_for_order("000001") == 2
     assert store.find_order("000001").status is OrderStatus.FILLED
 
 

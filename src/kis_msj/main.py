@@ -127,13 +127,14 @@ class AutoTrader:
                 self._last_account_snapshot_at = time.monotonic()
                 self._account_snapshot_rate_limited_until = 0.0
         if self.config.order.live_trading:
-            self.position_manager.sync_account(snapshot)
-            self.risk_manager.data_mismatch_detected = self.position_manager.account_mismatch_detected
-            if self.position_manager.account_mismatch_detected:
-                self.notifier.notify("SYNC_REQUIRED", "Lot quantity differs from KIS account balance. Trading is paused for mismatched symbols.")
             if snapshot_from_rate_limit_cache:
+                self.logger.warning("account_sync skipped reason=account_snapshot_rate_limited_using_cache")
                 self.logger.warning("open_orders skipped reason=account_snapshot_rate_limited_using_cache")
             else:
+                self.position_manager.sync_account(snapshot)
+                self.risk_manager.data_mismatch_detected = self.position_manager.account_mismatch_detected
+                if self.position_manager.account_mismatch_detected:
+                    self.notifier.notify("SYNC_REQUIRED", "Lot quantity differs from KIS account balance. Trading is paused for mismatched symbols.")
                 try:
                     open_orders = self.client.open_orders()
                 except RuntimeError as error:

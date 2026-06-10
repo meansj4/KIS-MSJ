@@ -1,9 +1,10 @@
+import time
 from datetime import datetime
 
 from kis_msj.config import BotConfig, OrderConfig, RiskConfig, StockConfig, StrategyConfig
 from kis_msj.main import AutoTrader
 from kis_msj import main as trader_main
-from kis_msj.models import AccountSnapshot, LotState, OrderRequest, OrderResult, OrderSide, OrderStatus, PositionLifecycle, PositionState, Quote, ReentryType, SellReason, TradeFill
+from kis_msj.models import AccountSnapshot, BalanceItem, LotState, OrderRequest, OrderResult, OrderSide, OrderStatus, PositionLifecycle, PositionState, Quote, ReentryType, SellReason, TradeFill
 from kis_msj.risk_manager import RiskDecision
 from kis_msj.strategy import StrategyAction
 
@@ -99,6 +100,36 @@ def test_fill_application_invalidates_account_snapshot_cache(tmp_path) -> None:
 
     assert bot.startup_sync().cash_available == 990_000
     assert calls["count"] == 2
+
+
+def test_rate_limited_cached_account_snapshot_does_not_mark_sync_required(tmp_path) -> None:
+    config = BotConfig(
+        order=OrderConfig(live_trading=True, account_snapshot_min_interval_seconds=0),
+        storage_path=str(tmp_path / "state.sqlite3"),
+        log_path=str(tmp_path / "trader.log"),
+    )
+    bot = AutoTrader(config, use_mock_client=True)
+    bot.apply_reconciled_fill(TradeFill("005930", "Test", OrderSide.BUY, 3, 10000, "BUY-1", datetime.now()))
+    bot._last_account_snapshot = AccountSnapshot(
+        1_000_000,
+        1_000_000,
+        0,
+        0,
+        (BalanceItem("005930", "Test", 4, 10000, 10000),),
+    )
+    bot._last_account_snapshot_at = time.monotonic() - 120
+
+    def account_snapshot():
+        raise RuntimeError('{"msg_cd":"EGW00201","msg1":"rate limit"}')
+
+    bot.client.account_snapshot = account_snapshot
+
+    bot.startup_sync()
+
+    position = bot.position_manager.positions["005930"]
+    assert not position.lot_quantity_mismatch
+    assert position.sync_status == "OK"
+    assert position.position_state == PositionLifecycle.HOLDING.value
 
 
 def test_evaluate_clears_stale_skip_reason_when_no_current_block(tmp_path, monkeypatch) -> None:

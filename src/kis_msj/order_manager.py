@@ -158,6 +158,24 @@ class OrderManager:
             try:
                 status = self.client.cancel_order(result.order_id, max(1, result.request.quantity - filled_quantity))
             except RuntimeError as error:
+                if filled_quantity > 0 and _is_no_cancelable_quantity_error(error):
+                    self.store.mark_order_cancel_check(
+                        result.order_id,
+                        cancel_requested=True,
+                        cancel_rejected=True,
+                        response_message=str(error),
+                        post_cancel_execution_checked=True,
+                    )
+                    self.store.record_order(OrderResult(result.request, result.order_id, OrderStatus.CANCELED_AFTER_PARTIAL_FILL, "cancel_rejected_no_cancelable_quantity_after_partial_fill"))
+                    self.logger.warning(
+                        "order_cancel_rejected_closed_after_partial_fill code=%s order_id=%s filled_qty=%s order_qty=%s error=%s",
+                        result.request.code,
+                        result.order_id,
+                        filled_quantity,
+                        result.request.quantity,
+                        error,
+                    )
+                    continue
                 self.store.mark_order_cancel_check(result.order_id, cancel_requested=True, cancel_rejected=True, response_message=str(error), post_cancel_execution_checked=False)
                 self.store.record_order(OrderResult(result.request, result.order_id, OrderStatus.CANCEL_REJECTED, "cancel_rejected_pending_reconciliation"))
                 self.logger.warning("order_cancel_or_requery_failed code=%s order_id=%s error=%s", result.request.code, result.order_id, error)
@@ -248,6 +266,7 @@ class OrderManager:
             delta_quantity = fill.quantity - already_filled
             if delta_quantity <= 0:
                 return None
+            delta_filled_at = fill.filled_at + timedelta(microseconds=max(1, already_filled))
             return TradeFill(
                 fill.code,
                 fill.name,
@@ -255,7 +274,7 @@ class OrderManager:
                 delta_quantity,
                 fill.price,
                 fill.order_id,
-                fill.filled_at,
+                delta_filled_at,
                 fill.lot_id,
                 f"{fill.execution_id}:delta:{already_filled}->{fill.quantity}",
                 fill.sell_reason,
@@ -370,6 +389,11 @@ class OrderManager:
 def _normalize_order_id(order_id: str) -> str:
     normalized = str(order_id).strip()
     return normalized.lstrip("0") or normalized
+
+
+def _is_no_cancelable_quantity_error(error: Exception) -> bool:
+    message = str(error)
+    return "APBK0927" in message or "40330000" in message
 
 
 def _parse_timestamp(value: str) -> datetime:
