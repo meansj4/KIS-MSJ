@@ -716,16 +716,17 @@ class LotGridStrategy:
 
     def _reentry_decay_params(self, reentry_type: str) -> tuple[float, float, int]:
         if reentry_type == ReentryType.TRAILING_REENTRY.value:
-            return (
-                -abs(self.config.strategy.trailing_reentry_drop_rate),
-                self.config.strategy.trailing_reentry_daily_decay_rate,
-                self.config.strategy.trailing_reentry_decay_days,
-            )
-        return (
-            -abs(self.config.strategy.normal_reentry_drop_rate),
-            self.config.strategy.normal_reentry_daily_decay_rate,
-            self.config.strategy.normal_reentry_decay_days,
-        )
+            base = -abs(self.config.strategy.trailing_reentry_drop_rate)
+            duration_days = self.config.strategy.trailing_reentry_decay_days
+            return (base, self._daily_reentry_decay_rate(base, duration_days), duration_days)
+        base = -abs(self.config.strategy.normal_reentry_drop_rate)
+        duration_days = self.config.strategy.normal_reentry_decay_days
+        return (base, self._daily_reentry_decay_rate(base, duration_days), duration_days)
+
+    def _daily_reentry_decay_rate(self, base_reentry_rate: float, duration_days: int) -> float:
+        if duration_days <= 0:
+            return 0.0
+        return abs(base_reentry_rate) / duration_days
 
     def _cycle_id(self, position: PositionState) -> str:
         if not position.exit_time and not position.lot_sizing_locked_at:

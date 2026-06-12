@@ -193,9 +193,9 @@ def test_sold_out_wait_reentry_allows_reentry_after_drop() -> None:
     _, _, positions, strategy, risk, snapshot = setup_strategy()
     lot = add_lot(positions, "005930", 10000, 1)
     positions.apply_fill(TradeFill("005930", "Test", OrderSide.SELL, 1, 10600, "SELL-1", datetime.now(), lot.lot_id, sell_reason=SellReason.PROFIT_TAKE.value))
-    position = positions.refresh_from_lots("005930", 9964)
+    position = positions.refresh_from_lots("005930", 10070)
 
-    action = strategy.decide(position, 9964, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    action = strategy.decide(position, 10070, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
 
     assert action is not None
     assert action.side is OrderSide.BUY
@@ -246,10 +246,10 @@ def test_normal_reentry_uses_normal_exit_anchor_not_cycle_highest() -> None:
     position.normal_exit_anchor_price = 10500
     position.trailing_exit_anchor_price = 11000
     position.post_exit_high_price = 11000
-    position.exit_time = (datetime.now() - timedelta(minutes=61)).isoformat(timespec="seconds")
+    position.exit_time = datetime.now().isoformat(timespec="seconds")
 
-    assert strategy.decide(position, 9871, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position)) is None
-    action = strategy.decide(position, 9870, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    assert strategy.decide(position, 9976, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position)) is None
+    action = strategy.decide(position, 9975, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
 
     assert action is not None
     assert action.reentry_type == ReentryType.NORMAL_REENTRY.value
@@ -265,7 +265,7 @@ def test_trailing_reentry_activation_uses_trailing_exit_anchor_not_cycle_highest
     position.post_exit_high_price = 11600
     position.exit_time = (datetime.now() - timedelta(minutes=61)).isoformat(timespec="seconds")
 
-    action = strategy.decide(position, 10208, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    action = strategy.decide(position, 10440, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
 
     assert action is not None
     assert action.reentry_type == ReentryType.TRAILING_REENTRY.value
@@ -333,7 +333,7 @@ def test_trailing_reentry_after_post_exit_high_pullback() -> None:
     position.post_exit_high_price = 11500
     position.exit_time = (datetime.now() - timedelta(minutes=61)).isoformat(timespec="seconds")
 
-    action = strategy.decide(position, 10120, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    action = strategy.decide(position, 10350, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
 
     assert action is not None
     assert action.side is OrderSide.BUY
@@ -948,11 +948,11 @@ def test_lot_sizing_reentry_starts_new_cycle_from_reentry_price() -> None:
 @pytest.mark.parametrize(
     ("days", "expected"),
     (
-        (0, -0.06),
-        (1, -0.058),
-        (2, -0.056),
-        (10, -0.04),
-        (20, -0.02),
+        (0, -0.05),
+        (1, -0.04833333333333334),
+        (2, -0.04666666666666667),
+        (10, -0.03333333333333334),
+        (20, -0.01666666666666667),
         (30, 0.0),
         (31, 0.0),
     ),
@@ -973,11 +973,11 @@ def test_normal_reentry_decay_uses_calendar_days(days: int, expected: float) -> 
 @pytest.mark.parametrize(
     ("days", "expected"),
     (
-        (0, -0.12),
-        (1, -0.116),
-        (2, -0.112),
-        (10, -0.08),
-        (20, -0.04),
+        (0, -0.10),
+        (1, -0.09666666666666668),
+        (2, -0.09333333333333334),
+        (10, -0.06666666666666668),
+        (20, -0.03333333333333334),
         (30, 0.0),
         (31, 0.0),
     ),
@@ -1003,9 +1003,9 @@ def test_reentry_trigger_uses_effective_decayed_normal_anchor() -> None:
     position.normal_exit_anchor_price = 10_000
     position.trailing_exit_anchor_price = 10_000
 
-    assert strategy.check_reentry_conditions(position, 9_600, datetime(2026, 6, 11, 9, 0)) == (True, False)
-    assert strategy.check_reentry_conditions(position, 9_601, datetime(2026, 6, 11, 9, 0)) == (False, False)
-    context = strategy.context(position, 9_600)
+    assert strategy.check_reentry_conditions(position, 9_666, datetime(2026, 6, 11, 9, 0)) == (True, False)
+    assert strategy.check_reentry_conditions(position, 9_667, datetime(2026, 6, 11, 9, 0)) == (False, False)
+    context = strategy.context(position, 9_666)
     assert context.normal_exit_anchor_price == 10_000
 
 
@@ -1019,8 +1019,8 @@ def test_reentry_trigger_uses_effective_decayed_trailing_high() -> None:
     position.post_exit_high_price = 11_000
     position.trailing_reentry_count_date = "2026-06-11"
 
-    assert strategy.check_reentry_conditions(position, 10_120, datetime(2026, 6, 11, 10, 1)) == (False, True)
-    assert strategy.check_reentry_conditions(position, 10_121, datetime(2026, 6, 11, 10, 1)) == (False, False)
+    assert strategy.check_reentry_conditions(position, 10_266, datetime(2026, 6, 11, 10, 1)) == (False, True)
+    assert strategy.check_reentry_conditions(position, 10_267, datetime(2026, 6, 11, 10, 1)) == (False, False)
 
 
 def test_force_reentry_timeout_creates_new_cycle_candidate_after_30_calendar_days() -> None:

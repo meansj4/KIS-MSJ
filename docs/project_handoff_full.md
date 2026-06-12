@@ -417,12 +417,12 @@ Reentry anchor는 normal/trailing 용도로 분리되어 있다.
 | `exit_anchor_price` | deprecated/fallback, 보통 normal anchor와 호환 | 새 로직에서 직접 기준으로 쓰지 않는다. |
 | `cycle_highest_sell_price`, `cycle_last_sell_price` | 로그/참고 | anchor 계산에 직접 쓰지 않는다. |
 
-NORMAL_REENTRY 기본 조건은 `normal_reentry_drop_rate = 0.06`이다. WAIT_REENTRY 시작일(`exit_time`)부터 calendar day 기준 decay를 적용해 `effective_reentry_rate = min(0.0, -0.06 + elapsed_days * 0.002)`로 계산하며, `current_price <= normal_exit_anchor_price * (1 + effective_reentry_rate)`이면 후보가 된다. 30일 이후에도 유효 기준은 0%를 초과하지 않는다.
+NORMAL_REENTRY 기본 조건은 `normal_reentry_drop_rate = 0.05`이다. WAIT_REENTRY 시작일(`exit_time`)부터 calendar day 기준 decay를 적용해 `effective_reentry_rate = min(0.0, -0.05 + elapsed_days * (0.05 / 30))`로 계산하며, `current_price <= normal_exit_anchor_price * (1 + effective_reentry_rate)`이면 후보가 된다. 30일 이후에도 유효 기준은 0%를 초과하지 않는다.
 
 TRAILING_REENTRY 조건:
 
 1. `post_exit_high_price >= trailing_exit_anchor_price * (1 + trailing_activation_gain)`
-2. `trailing_reentry_drop_rate = 0.12`에서 calendar day decay를 적용한 `effective_reentry_rate = min(0.0, -0.12 + elapsed_days * 0.004)` 기준으로 `current_price <= post_exit_high_price * (1 + effective_reentry_rate)`
+2. `trailing_reentry_drop_rate = 0.10`에서 calendar day decay를 적용한 `effective_reentry_rate = min(0.0, -0.10 + elapsed_days * (0.10 / 30))` 기준으로 `current_price <= post_exit_high_price * (1 + effective_reentry_rate)`
 3. `now - exit_time >= min_reentry_wait_minutes`
 4. `trailing_reentry_count_today < max_trailing_reentry_per_day`
 
