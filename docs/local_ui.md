@@ -188,7 +188,7 @@ Config 탭은 기본적으로 원본 JSON 편집기가 아니라 항목별 form�
 일부 값은 UI 표시와 config 저장 단위가 다릅니다.
 
 - `decimal_rate`: UI에서는 percent로 보여주고 저장 시 100으로 나눈 소수로 저장합니다.
-  - 예: `normal_reentry_drop_rate` UI `4.0%` -> config `0.04`
+  - 예: `normal_reentry_drop_rate` UI `6.0%` -> config `0.06`
   - 예: `pnl_minus_threshold` UI `-1.0%` -> config `-0.01`
 - `percent_value`: config 값 자체가 percent입니다.
   - 예: `estimated_fee_tax_pct` UI `0.25%` -> config `0.25`
@@ -565,10 +565,11 @@ UI 서버는 KIS 주문 API를 직접 호출하지 않습니다.
 
 Config 탭의 설명은 단순히 "무엇인지"만 적지 않고, 실제 자동매매 흐름에서 "어디에 어떻게 쓰이는지"를 함께 적는 방향으로 관리합니다.
 
-`strategy.reentry_drop_rate`는 예전 단일 재진입 기준값이었고, 현재 로직에서는 사용하지 않습니다. 현재 재진입은 아래 두 값으로 분리되어 동작합니다.
+`strategy.reentry_drop_rate`는 예전 단일 재진입 기준값이었고, 현재 로직에서는 사용하지 않습니다. 현재 재진입은 normal/trailing 기준과 WAIT_REENTRY calendar day decay, 30일 timeout force reentry로 동작합니다.
 
-- `strategy.normal_reentry_drop_rate`: 전량 PROFIT_TAKE 후 일반 재진입 기준입니다. 기준가격은 전량 매도 사이클의 SELL 체결 VWAP과 median 중 낮은 값인 `normal_exit_anchor_price`입니다.
-- `strategy.trailing_activation_gain` / `strategy.trailing_reentry_drop_rate`: 전량 매도 후 더 올라간 종목을 고점 대비 조정 시 다시 보는 trailing 재진입 기준입니다. 활성화 기준가격은 SELL 체결 VWAP과 median 중 높은 값인 `trailing_exit_anchor_price`입니다.
+- `strategy.normal_reentry_drop_rate`: 전량 PROFIT_TAKE 후 일반 재진입 기본 기준입니다. 기본 6% 하락에서 시작해 30 calendar day 동안 하루 0.2%p씩 완화되어 0%에서 cap 됩니다. 기준가격은 전량 매도 사이클의 SELL 체결 VWAP과 median 중 낮은 값인 `normal_exit_anchor_price`입니다.
+- `strategy.trailing_activation_gain` / `strategy.trailing_reentry_drop_rate`: 전량 매도 후 더 올라간 종목을 고점 대비 조정 시 다시 보는 trailing 재진입 기준입니다. 기본 12% 하락에서 시작해 30 calendar day 동안 하루 0.4%p씩 완화되어 0%에서 cap 됩니다. 활성화 기준가격은 SELL 체결 VWAP과 median 중 높은 값인 `trailing_exit_anchor_price`입니다.
+- `strategy.force_reentry_after_timeout_enabled` / `strategy.force_reentry_timeout_days`: WAIT_REENTRY가 30 calendar day 이상 지속되고 normal/trailing 조건이 아직 성립하지 않으면 `FORCE_REENTRY_TIMEOUT_NEW_CYCLE` BUY 후보를 만듭니다. 이 BUY는 기존 WAIT_REENTRY anchor 복귀가 아니라 현재가 기준 새 initial cycle로 체결 후 lot sizing을 새로 lock합니다.
 
 따라서 UI Config 화면에서는 `strategy.reentry_drop_rate`를 더 이상 표시하지 않습니다.
 

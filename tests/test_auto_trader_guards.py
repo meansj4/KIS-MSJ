@@ -1,5 +1,5 @@
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from kis_msj.config import BotConfig, OrderConfig, RiskConfig, StockConfig, StrategyConfig
 from kis_msj.main import AutoTrader
@@ -182,6 +182,20 @@ def test_evaluate_auto_clears_review_required_when_triggers_resolved(tmp_path, m
     assert saved.needs_review is False
     assert saved.auto_buy_enabled is True
     assert saved.review_reason == ""
+
+
+def test_run_once_skips_manual_only_stock(tmp_path, monkeypatch) -> None:
+    _force_trade_window(monkeypatch)
+    config = BotConfig(
+        stocks=(StockConfig("005930", "Manual", manual_only=True),),
+        order=OrderConfig(price_sample_interval_seconds=0),
+        storage_path=str(tmp_path / "state.sqlite3"),
+        log_path=str(tmp_path / "trader.log"),
+    )
+    bot = AutoTrader(config, use_mock_client=True)
+    bot.client.quote = lambda code, name="": (_ for _ in ()).throw(AssertionError("manual_only stock should not be evaluated"))
+
+    assert bot.run_once() == ""
 
 
 def _force_trade_window(monkeypatch) -> None:
@@ -395,6 +409,72 @@ def test_pre_request_blocks_sync_required_buy_and_sell(tmp_path) -> None:
 
     assert bot.pre_request_block_reason(position, buy) == "sync_required"
     assert bot.pre_request_block_reason(position, sell) == "sync_required"
+
+
+def test_pre_request_blocks_force_reentry_when_buy_order_is_open(tmp_path) -> None:
+    bot = trader(tmp_path)
+    position = PositionState(code="005930", name="Test", position_state=PositionLifecycle.WAIT_REENTRY.value)
+    open_request = OrderRequest("005930", "Test", OrderSide.BUY, 1, 10000, "FORCE_REENTRY_TIMEOUT_NEW_CYCLE")
+    bot.store.record_order(OrderResult(open_request, "BUY-OPEN", OrderStatus.REQUESTED, "requested"))
+    action = StrategyAction(
+        OrderSide.BUY,
+        30_000,
+        None,
+        "FORCE_REENTRY_TIMEOUT_NEW_CYCLE",
+        reentry_type=ReentryType.FORCE_REENTRY_TIMEOUT_NEW_CYCLE.value,
+    )
+
+    assert bot.pre_request_block_reason(position, action) == "open_buy_order_exists"
+
+
+def test_force_reentry_open_order_guard_clears_after_order_is_closed(tmp_path) -> None:
+    bot = trader(tmp_path)
+    position = PositionState(code="005930", name="Test", position_state=PositionLifecycle.WAIT_REENTRY.value)
+    request = OrderRequest("005930", "Test", OrderSide.BUY, 1, 10000, "FORCE_REENTRY_TIMEOUT_NEW_CYCLE")
+    action = StrategyAction(
+        OrderSide.BUY,
+        30_000,
+        None,
+        "FORCE_REENTRY_TIMEOUT_NEW_CYCLE",
+        reentry_type=ReentryType.FORCE_REENTRY_TIMEOUT_NEW_CYCLE.value,
+    )
+    bot.store.record_order(OrderResult(request, "BUY-CANCELED", OrderStatus.CANCELED, "canceled"))
+
+    assert bot.open_order_block_reason(position, action) == ""
+
+
+def test_force_reentry_is_blocked_by_sync_risk_and_review_guards(tmp_path) -> None:
+    bot = trader(tmp_path)
+    action = StrategyAction(
+        OrderSide.BUY,
+        30_000,
+        None,
+        "FORCE_REENTRY_TIMEOUT_NEW_CYCLE",
+        reentry_type=ReentryType.FORCE_REENTRY_TIMEOUT_NEW_CYCLE.value,
+    )
+
+    assert bot.pre_request_block_reason(PositionState(code="005930", sync_status=PositionLifecycle.SYNC_REQUIRED.value), action) == "sync_required"
+    assert bot.pre_request_block_reason(PositionState(code="005930", trading_paused=True), action) == "trading_paused"
+    assert bot.pre_request_block_reason(PositionState(code="005930", position_state=PositionLifecycle.RISK_BLOCKED.value, danger_state=True), action) == "risk_blocked"
+    assert bot.pre_request_block_reason(PositionState(code="005930", position_state=PositionLifecycle.REVIEW_REQUIRED.value, needs_review=True), action) == "review_required"
+
+
+def test_force_reentry_strategy_blocks_lot_quantity_mismatch() -> None:
+    config = BotConfig(order=OrderConfig(price_sample_interval_seconds=0), strategy=StrategyConfig(cleanup_enabled=True, estimated_fee_tax_pct=0))
+    bot = AutoTrader(config, use_mock_client=True)
+    snapshot = AccountSnapshot(1_000_000, 1_000_000, 0, 0, ())
+    position = bot.position_manager.get("005930", "Test")
+    position.position_state = PositionLifecycle.WAIT_REENTRY.value
+    position.exit_time = (datetime.now() - timedelta(days=30)).isoformat(timespec="seconds")
+    position.normal_exit_anchor_price = 10_000
+    position.trailing_exit_anchor_price = 10_000
+    position.lot_quantity_mismatch = True
+    symbol_risk = bot.risk_manager.symbol_buy_allowed(position)
+
+    action = bot.strategy.decide(position, 11_000, snapshot, bot.risk_manager.account_buy_allowed(snapshot, bot.position_manager.positions), symbol_risk)
+
+    assert action is None
+    assert position.skip_reason == "lot_quantity_mismatch"
 
 
 def test_no_fill_result_does_not_change_lots_or_positions(tmp_path, monkeypatch) -> None:

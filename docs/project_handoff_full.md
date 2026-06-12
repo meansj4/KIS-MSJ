@@ -269,7 +269,7 @@ reset을 막는 진행 중 status:
 | --- | --- | --- | --- | --- | --- |
 | `NEVER_BOUGHT` | 한 번도 매수한 적 없는 후보 종목 | initial_buy 가능 | 없음 | config stock 후보, OPEN LOT 없음 | price/lot sizing/global/risk/order guard |
 | `HOLDING` | OPEN LOT 1개 이상 | 추가매수 가능, guard 통과 필요 | PROFIT_TAKE 가능, CLEANUP 조건부 가능 | BUY fill 반영 후 | open order, global BUY limit, cleanup cooldown |
-| `WAIT_REENTRY` | PROFIT_TAKE 전량 매도 후 재진입 대기 | NORMAL/TRAILING_REENTRY만 가능 | 없음 | 전량 PROFIT_TAKE 후 | initial_buy 금지, reentry guard |
+| `WAIT_REENTRY` | PROFIT_TAKE 전량 매도 후 재진입 대기 | NORMAL/TRAILING_REENTRY 또는 30일 timeout force reentry 가능 | 없음 | 전량 PROFIT_TAKE 후 | initial_buy 금지, reentry guard |
 | `COOLDOWN_AFTER_CLEANUP` | CLEANUP_SELL 전량 매도 후 보수 대기 | 모든 BUY 금지 | 일반적으로 OPEN LOT 없음 | 전량 cleanup 후 | cleanup cooldown, 자동 재진입 금지 |
 | `REVIEW_REQUIRED` | 자동 판단만으로 계속 진행하기 위험 | BUY 금지 | PROFIT_TAKE 허용, CLEANUP_SELL 차단 | 손실/LOT과다/stale/cleanup 완료 등 | `review_required` |
 | `RISK_BLOCKED` | 위험 플래그 상태 | 차단 | 현재 보수정책상 차단 | stock risk flag | `risk_blocked_buy_sell_blocked` |
@@ -417,16 +417,25 @@ Reentry anchor는 normal/trailing 용도로 분리되어 있다.
 | `exit_anchor_price` | deprecated/fallback, 보통 normal anchor와 호환 | 새 로직에서 직접 기준으로 쓰지 않는다. |
 | `cycle_highest_sell_price`, `cycle_last_sell_price` | 로그/참고 | anchor 계산에 직접 쓰지 않는다. |
 
-NORMAL_REENTRY 조건: `current_price <= normal_exit_anchor_price * (1 - normal_reentry_drop_rate)`.
+NORMAL_REENTRY 기본 조건은 `normal_reentry_drop_rate = 0.06`이다. WAIT_REENTRY 시작일(`exit_time`)부터 calendar day 기준 decay를 적용해 `effective_reentry_rate = min(0.0, -0.06 + elapsed_days * 0.002)`로 계산하며, `current_price <= normal_exit_anchor_price * (1 + effective_reentry_rate)`이면 후보가 된다. 30일 이후에도 유효 기준은 0%를 초과하지 않는다.
 
 TRAILING_REENTRY 조건:
 
 1. `post_exit_high_price >= trailing_exit_anchor_price * (1 + trailing_activation_gain)`
-2. `current_price <= post_exit_high_price * (1 - trailing_reentry_drop_rate)`
+2. `trailing_reentry_drop_rate = 0.12`에서 calendar day decay를 적용한 `effective_reentry_rate = min(0.0, -0.12 + elapsed_days * 0.004)` 기준으로 `current_price <= post_exit_high_price * (1 + effective_reentry_rate)`
 3. `now - exit_time >= min_reentry_wait_minutes`
 4. `trailing_reentry_count_today < max_trailing_reentry_per_day`
 
 `update_reentry_tracking()`은 WAIT_REENTRY 중 `post_exit_high_price`만 갱신한다. `check_reentry_conditions()`는 상태 변경 부작용 없이 판단한다.
+
+30 calendar day timeout force reentry:
+
+- `force_reentry_after_timeout_enabled=true`이고 `days_since_wait_reentry_started >= force_reentry_timeout_days`인데 normal/trailing 조건이 아직 성립하지 않으면 `FORCE_REENTRY_TIMEOUT_NEW_CYCLE` BUY 후보를 만든다.
+- 30일차 우선순위는 조건 reentry가 먼저다. 즉 30일차에 `current_price <= anchor`이면 NORMAL/TRAILING_REENTRY가 발생하고, `current_price > anchor`처럼 조건 reentry가 아직 성립하지 않을 때만 force reentry 새 cycle 후보가 된다.
+- force reentry는 기존 anchor 기준 복귀가 아니라 current_price 기준 새 initial cycle 시작으로 처리한다.
+- 실제 LOT/position 변경은 기존 주문/체결 경로와 `position_manager.apply_fill()` 이후에만 일어난다.
+- BUY fill 시 OPEN LOT이 없으므로 기존 `normal_exit_anchor_price`, `trailing_exit_anchor_price`, `reentry_anchor_price`, `exit_time`, old lot sizing 값은 carry-over하지 않고 현재 체결가 기준 `price_lot_band`로 새로 lock한다.
+- WAIT_REENTRY 경과일은 `exit_time`을 WAIT_REENTRY 시작 시각으로 사용한다. `exit_time`이 비어 있는 WAIT_REENTRY는 malformed/safety fallback으로 보고 normal/trailing/force reentry 후보를 만들지 않는다. 이때 decision log/UI의 skip/block reason에는 `REENTRY_BLOCKED_MISSING_EXIT_TIME`을 남겨 조용히 방치되지 않게 한다.
 
 ## 12. 주문/체결/DB 반영
 
@@ -472,6 +481,8 @@ manual SELL은 LOT별 `lot_id`와 잔여 수량을 유지한다. CLOSED LOT, 남
 
 REVIEW_REQUIRED는 자동 BUY를 멈추고 사람이 확인해야 하는 상태다. 강제 해제는 만들지 않는다.
 
+REVIEW_REQUIRED의 차단 단위는 BUY 계열과 SELL 계열을 구분한다. initial/add/NORMAL_REENTRY/TRAILING_REENTRY/FORCE_REENTRY_TIMEOUT_NEW_CYCLE 같은 BUY 계열은 `review_required`로 차단한다. 반면 수익 실현 목적의 `PROFIT_TAKE` SELL은 계속 허용될 수 있다. 손실 확정 성격의 일반 `CLEANUP_SELL`은 `symbol_state == HOLDING` 조건 때문에 REVIEW_REQUIRED에서는 차단한다. age-decay로 effective target이 음수가 된 `AUTO_DECAY_CLEANUP_SELL`은 fatal block이 없으면 REVIEW_REQUIRED에서도 SELL 후보가 될 수 있으므로, 운영자는 review 화면에서 profit-take와 cleanup 성격을 구분해 확인해야 한다.
+
 진입 조건 예:
 
 | reason | 의미 |
@@ -503,7 +514,7 @@ UI/API:
 | `buy_paused` | initial/add/reentry BUY | `runtime_buy_paused` |
 | `sell_paused` | PROFIT_TAKE/CLEANUP SELL | `runtime_sell_paused` |
 | `cleanup_paused` | CLEANUP_SELL만 | `runtime_cleanup_paused` |
-| `reentry_paused` | NORMAL/TRAILING_REENTRY | `runtime_reentry_paused` |
+| `reentry_paused` | NORMAL/TRAILING/FORCE_REENTRY BUY | `runtime_reentry_paused` |
 | emergency stop | 모든 pause 플래그 true | emergency stop reason |
 | `bot_paused` | 자동 루프 진행 정지 | UI loop pause |
 | `config_reload_requested` | 실행 중 config reload 요청 | Reset / Config 다시 읽기 |

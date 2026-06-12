@@ -63,6 +63,20 @@ class StrategyContext:
     reentry_condition_met: bool = False
     normal_reentry_condition_met: bool = False
     trailing_reentry_condition_met: bool = False
+    reentry_mode: str = ReentryType.NONE.value
+    wait_reentry_started_at: str = ""
+    days_since_wait_reentry_started: int = 0
+    base_reentry_rate: float = 0.0
+    daily_reentry_decay_rate: float = 0.0
+    decay_duration_days: int = 0
+    effective_reentry_rate: float = 0.0
+    reentry_trigger_price: int = 0
+    force_reentry_timeout_days: int = 0
+    force_reentry_eligible: bool = False
+    force_reentry_reason: str = ""
+    force_reentry_starts_new_cycle: bool = False
+    old_cycle_id: str = ""
+    new_cycle_id: str = ""
     sell_reason: str = SellReason.UNKNOWN.value
     realized_pnl_rate: float = 0.0
     net_realized_pnl: int = 0
@@ -206,6 +220,23 @@ class LotGridStrategy:
                     else:
                         amount = self.config.strategy.initial_buy_amount
                     return StrategyAction(OrderSide.BUY, amount, None, "reentry_buy", reentry_type=ReentryType.TRAILING_REENTRY.value)
+                if self.force_reentry_eligible(position, current_price):
+                    if self._lot_sizing_enabled():
+                        sizing = self.lot_sizing_for_new_cycle(current_price)
+                        block = self.lot_sizing_buy_block_reason(position, current_price, sizing, next_buy_amount=sizing.get("lot_unit_amount", 0), open_lot_count=0)
+                        if block:
+                            position.skip_reason = block
+                            return None
+                        amount = int(sizing["lot_unit_amount"])
+                    else:
+                        amount = self.config.strategy.initial_buy_amount
+                    return StrategyAction(
+                        OrderSide.BUY,
+                        amount,
+                        None,
+                        "FORCE_REENTRY_TIMEOUT_NEW_CYCLE",
+                        reentry_type=ReentryType.FORCE_REENTRY_TIMEOUT_NEW_CYCLE.value,
+                    )
             return None
         return self._add_buy_action(position, current_price, snapshot)
 
@@ -380,6 +411,7 @@ class LotGridStrategy:
         cleanup_candidate_lots = self.lot_manager.cleanup_candidate_lots(position.code, current_price) if exposure > 0 else []
         stale_lots = self.lot_manager.stale_lots(position.code, current_price) if exposure > 0 else []
         normal_reentry, trailing_reentry = self.check_reentry_conditions(position, current_price)
+        reentry_details = self.reentry_details(position, current_price)
         sell_candidate = self._sell_candidate(position, current_price, snapshot) if exposure > 0 else None
         selected_target_lot = sell_candidate[0] if sell_candidate else (profit_take_lots[0] if profit_take_lots else (self.lot_manager.open_lots(position.code)[0] if self.lot_manager.open_lots(position.code) else None))
         cleanup_budget = self.cleanup_loss_budget(snapshot)
@@ -438,6 +470,20 @@ class LotGridStrategy:
             reentry_condition_met=normal_reentry or trailing_reentry,
             normal_reentry_condition_met=normal_reentry,
             trailing_reentry_condition_met=trailing_reentry,
+            reentry_mode=reentry_details["reentry_mode"],
+            wait_reentry_started_at=reentry_details["wait_reentry_started_at"],
+            days_since_wait_reentry_started=int(reentry_details["days_since_wait_reentry_started"]),
+            base_reentry_rate=float(reentry_details["base_reentry_rate"]),
+            daily_reentry_decay_rate=float(reentry_details["daily_reentry_decay_rate"]),
+            decay_duration_days=int(reentry_details["decay_duration_days"]),
+            effective_reentry_rate=float(reentry_details["effective_reentry_rate"]),
+            reentry_trigger_price=int(reentry_details["reentry_trigger_price"]),
+            force_reentry_timeout_days=int(reentry_details["force_reentry_timeout_days"]),
+            force_reentry_eligible=bool(reentry_details["force_reentry_eligible"]),
+            force_reentry_reason=str(reentry_details["force_reentry_reason"]),
+            force_reentry_starts_new_cycle=bool(reentry_details["force_reentry_starts_new_cycle"]),
+            old_cycle_id=str(reentry_details["old_cycle_id"]),
+            new_cycle_id=str(reentry_details["new_cycle_id"]),
             sell_reason=sell_candidate[1] if sell_candidate else SellReason.UNKNOWN.value,
             realized_pnl_rate=(sell_candidate[0].profit_pct_at(current_price) / 100.0) if sell_candidate else 0.0,
             net_realized_pnl=self._net_pnl(sell_candidate[0], current_price, sell_candidate[0].remaining_quantity) if sell_candidate else 0,
@@ -585,17 +631,106 @@ class LotGridStrategy:
         if self._position_state(position) != PositionLifecycle.WAIT_REENTRY.value or normal_anchor <= 0 or trailing_anchor <= 0:
             return False, False
         post_exit_high = position.post_exit_high_price if position.post_exit_high_price > 0 else trailing_anchor
-        normal = current_price <= normal_anchor * (1.0 - self.config.strategy.normal_reentry_drop_rate)
+        normal_rate = self.effective_reentry_rate(position, ReentryType.NORMAL_REENTRY.value, now)
+        trailing_rate = self.effective_reentry_rate(position, ReentryType.TRAILING_REENTRY.value, now)
         exit_time = _parse_time(position.exit_time)
+        if exit_time is None:
+            return False, False
+        normal = current_price <= normal_anchor * (1.0 + normal_rate)
         waited = exit_time is not None and now - exit_time >= timedelta(minutes=self.config.strategy.min_reentry_wait_minutes)
         count_today = position.trailing_reentry_count_today if position.trailing_reentry_count_date == now.date().isoformat() else 0
         trailing = (
             post_exit_high >= trailing_anchor * (1.0 + self.config.strategy.trailing_activation_gain)
-            and current_price <= post_exit_high * (1.0 - self.config.strategy.trailing_reentry_drop_rate)
+            and current_price <= post_exit_high * (1.0 + trailing_rate)
             and waited
             and count_today < self.config.strategy.max_trailing_reentry_per_day
         )
         return normal, trailing
+
+    def effective_reentry_rate(self, position: PositionState, reentry_type: str, now: datetime | None = None) -> float:
+        now = now or datetime.now()
+        base, daily_decay, duration_days = self._reentry_decay_params(reentry_type)
+        if not self.config.strategy.reentry_decay_enabled:
+            return base
+        elapsed_days = min(self.days_since_wait_reentry_started(position, now), duration_days)
+        return min(0.0, self.config.strategy.reentry_decay_cap_rate, base + elapsed_days * daily_decay)
+
+    def days_since_wait_reentry_started(self, position: PositionState, now: datetime | None = None) -> int:
+        now = now or datetime.now()
+        started = _parse_time(position.exit_time)
+        if started is None:
+            return 0
+        return max(0, (now.date() - started.date()).days)
+
+    def force_reentry_eligible(self, position: PositionState, current_price: int, now: datetime | None = None) -> bool:
+        now = now or datetime.now()
+        if not self.config.strategy.force_reentry_after_timeout_enabled:
+            return False
+        if self._position_state(position) != PositionLifecycle.WAIT_REENTRY.value:
+            return False
+        if self.lot_manager.open_lots(position.code):
+            return False
+        if _parse_time(position.exit_time) is None:
+            return False
+        normal, trailing = self.check_reentry_conditions(position, current_price, now)
+        if normal or trailing:
+            return False
+        return self.days_since_wait_reentry_started(position, now) >= self.config.strategy.force_reentry_timeout_days
+
+    def reentry_details(self, position: PositionState, current_price: int, now: datetime | None = None) -> dict[str, object]:
+        now = now or datetime.now()
+        normal, trailing = self.check_reentry_conditions(position, current_price, now)
+        mode = ReentryType.TRAILING_REENTRY.value if trailing else (ReentryType.NORMAL_REENTRY.value if normal else ReentryType.NONE.value)
+        anchor = 0
+        trigger_base_price = 0
+        rate_type = ReentryType.NORMAL_REENTRY.value
+        if trailing:
+            trigger_base_price = position.post_exit_high_price if position.post_exit_high_price > 0 else self._trailing_exit_anchor(position)
+            anchor = self._trailing_exit_anchor(position)
+            rate_type = ReentryType.TRAILING_REENTRY.value
+        elif normal or self._position_state(position) == PositionLifecycle.WAIT_REENTRY.value:
+            trigger_base_price = self._normal_exit_anchor(position)
+            anchor = trigger_base_price
+            rate_type = ReentryType.NORMAL_REENTRY.value
+        base, daily_decay, duration_days = self._reentry_decay_params(rate_type)
+        effective = self.effective_reentry_rate(position, rate_type, now)
+        force = self.force_reentry_eligible(position, current_price, now)
+        old_cycle_id = self._cycle_id(position)
+        return {
+            "reentry_mode": mode,
+            "wait_reentry_started_at": position.exit_time,
+            "days_since_wait_reentry_started": self.days_since_wait_reentry_started(position, now),
+            "base_reentry_rate": base,
+            "daily_reentry_decay_rate": daily_decay,
+            "decay_duration_days": duration_days,
+            "effective_reentry_rate": effective,
+            "reentry_anchor_price": anchor,
+            "reentry_trigger_price": int(round(trigger_base_price * (1.0 + effective))) if trigger_base_price else 0,
+            "force_reentry_timeout_days": self.config.strategy.force_reentry_timeout_days,
+            "force_reentry_eligible": force,
+            "force_reentry_reason": "FORCE_REENTRY_TIMEOUT_NEW_CYCLE" if force else "",
+            "force_reentry_starts_new_cycle": self.config.strategy.force_reentry_starts_new_cycle,
+            "old_cycle_id": old_cycle_id,
+            "new_cycle_id": f"{position.code}:{current_price}:pending_new_cycle" if force else "",
+        }
+
+    def _reentry_decay_params(self, reentry_type: str) -> tuple[float, float, int]:
+        if reentry_type == ReentryType.TRAILING_REENTRY.value:
+            return (
+                -abs(self.config.strategy.trailing_reentry_drop_rate),
+                self.config.strategy.trailing_reentry_daily_decay_rate,
+                self.config.strategy.trailing_reentry_decay_days,
+            )
+        return (
+            -abs(self.config.strategy.normal_reentry_drop_rate),
+            self.config.strategy.normal_reentry_daily_decay_rate,
+            self.config.strategy.normal_reentry_decay_days,
+        )
+
+    def _cycle_id(self, position: PositionState) -> str:
+        if not position.exit_time and not position.lot_sizing_locked_at:
+            return ""
+        return f"{position.code}:{position.lot_sizing_locked_at or 'unlocked'}:{position.exit_time or 'open'}"
 
     def _normal_exit_anchor(self, position: PositionState) -> int:
         return position.normal_exit_anchor_price or position.exit_anchor_price or position.reentry_anchor_price or position.last_sell_price
@@ -614,6 +749,10 @@ class LotGridStrategy:
             return state.lower()
         if state == PositionLifecycle.COOLDOWN_AFTER_CLEANUP.value:
             return "cleanup_cooldown"
+        if state == PositionLifecycle.WAIT_REENTRY.value and _parse_time(position.exit_time) is None:
+            return "REENTRY_BLOCKED_MISSING_EXIT_TIME"
+        if state == PositionLifecycle.WAIT_REENTRY.value and self.force_reentry_eligible(position, current_price):
+            return "FORCE_REENTRY_TIMEOUT_NEW_CYCLE"
         if state == PositionLifecycle.WAIT_REENTRY.value and not any(self.check_reentry_conditions(position, current_price)):
             return "wait_reentry"
         if self._lot_sizing_enabled() and state == PositionLifecycle.NEVER_BOUGHT.value:

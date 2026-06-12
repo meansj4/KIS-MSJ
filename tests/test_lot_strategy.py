@@ -193,9 +193,9 @@ def test_sold_out_wait_reentry_allows_reentry_after_drop() -> None:
     _, _, positions, strategy, risk, snapshot = setup_strategy()
     lot = add_lot(positions, "005930", 10000, 1)
     positions.apply_fill(TradeFill("005930", "Test", OrderSide.SELL, 1, 10600, "SELL-1", datetime.now(), lot.lot_id, sell_reason=SellReason.PROFIT_TAKE.value))
-    position = positions.refresh_from_lots("005930", 10176)
+    position = positions.refresh_from_lots("005930", 9964)
 
-    action = strategy.decide(position, 10176, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    action = strategy.decide(position, 9964, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
 
     assert action is not None
     assert action.side is OrderSide.BUY
@@ -248,8 +248,8 @@ def test_normal_reentry_uses_normal_exit_anchor_not_cycle_highest() -> None:
     position.post_exit_high_price = 11000
     position.exit_time = (datetime.now() - timedelta(minutes=61)).isoformat(timespec="seconds")
 
-    assert strategy.decide(position, 10090, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position)) is None
-    action = strategy.decide(position, 10080, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    assert strategy.decide(position, 9871, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position)) is None
+    action = strategy.decide(position, 9870, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
 
     assert action is not None
     assert action.reentry_type == ReentryType.NORMAL_REENTRY.value
@@ -265,7 +265,7 @@ def test_trailing_reentry_activation_uses_trailing_exit_anchor_not_cycle_highest
     position.post_exit_high_price = 11600
     position.exit_time = (datetime.now() - timedelta(minutes=61)).isoformat(timespec="seconds")
 
-    action = strategy.decide(position, 10672, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    action = strategy.decide(position, 10208, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
 
     assert action is not None
     assert action.reentry_type == ReentryType.TRAILING_REENTRY.value
@@ -333,7 +333,7 @@ def test_trailing_reentry_after_post_exit_high_pullback() -> None:
     position.post_exit_high_price = 11500
     position.exit_time = (datetime.now() - timedelta(minutes=61)).isoformat(timespec="seconds")
 
-    action = strategy.decide(position, 10580, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    action = strategy.decide(position, 10120, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
 
     assert action is not None
     assert action.side is OrderSide.BUY
@@ -943,6 +943,270 @@ def test_lot_sizing_reentry_starts_new_cycle_from_reentry_price() -> None:
     assert action is not None
     assert action.side is OrderSide.BUY
     assert action.amount == 30000
+
+
+@pytest.mark.parametrize(
+    ("days", "expected"),
+    (
+        (0, -0.06),
+        (1, -0.058),
+        (2, -0.056),
+        (10, -0.04),
+        (20, -0.02),
+        (30, 0.0),
+        (31, 0.0),
+    ),
+)
+def test_normal_reentry_decay_uses_calendar_days(days: int, expected: float) -> None:
+    _, _, positions, strategy, _, _ = setup_strategy(StrategyConfig())
+    position = positions.get("005930", "Test")
+    position.position_state = PositionLifecycle.WAIT_REENTRY.value
+    position.exit_time = datetime(2026, 6, 1, 9, 0).isoformat(timespec="seconds")
+    position.normal_exit_anchor_price = 10_000
+    position.trailing_exit_anchor_price = 10_000
+
+    rate = strategy.effective_reentry_rate(position, ReentryType.NORMAL_REENTRY.value, datetime(2026, 6, 1, 9, 0) + timedelta(days=days))
+
+    assert rate == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(
+    ("days", "expected"),
+    (
+        (0, -0.12),
+        (1, -0.116),
+        (2, -0.112),
+        (10, -0.08),
+        (20, -0.04),
+        (30, 0.0),
+        (31, 0.0),
+    ),
+)
+def test_trailing_reentry_decay_uses_calendar_days(days: int, expected: float) -> None:
+    _, _, positions, strategy, _, _ = setup_strategy(StrategyConfig())
+    position = positions.get("005930", "Test")
+    position.position_state = PositionLifecycle.WAIT_REENTRY.value
+    position.exit_time = datetime(2026, 6, 1, 9, 0).isoformat(timespec="seconds")
+    position.normal_exit_anchor_price = 10_000
+    position.trailing_exit_anchor_price = 10_000
+
+    rate = strategy.effective_reentry_rate(position, ReentryType.TRAILING_REENTRY.value, datetime(2026, 6, 1, 9, 0) + timedelta(days=days))
+
+    assert rate == pytest.approx(expected)
+
+
+def test_reentry_trigger_uses_effective_decayed_normal_anchor() -> None:
+    _, _, positions, strategy, _, _ = setup_strategy(StrategyConfig())
+    position = positions.get("005930", "Test")
+    position.position_state = PositionLifecycle.WAIT_REENTRY.value
+    position.exit_time = datetime(2026, 6, 1, 9, 0).isoformat(timespec="seconds")
+    position.normal_exit_anchor_price = 10_000
+    position.trailing_exit_anchor_price = 10_000
+
+    assert strategy.check_reentry_conditions(position, 9_600, datetime(2026, 6, 11, 9, 0)) == (True, False)
+    assert strategy.check_reentry_conditions(position, 9_601, datetime(2026, 6, 11, 9, 0)) == (False, False)
+    context = strategy.context(position, 9_600)
+    assert context.normal_exit_anchor_price == 10_000
+
+
+def test_reentry_trigger_uses_effective_decayed_trailing_high() -> None:
+    _, _, positions, strategy, _, _ = setup_strategy(StrategyConfig(max_trailing_reentry_per_day=2))
+    position = positions.get("005930", "Test")
+    position.position_state = PositionLifecycle.WAIT_REENTRY.value
+    position.exit_time = datetime(2026, 6, 1, 9, 0).isoformat(timespec="seconds")
+    position.normal_exit_anchor_price = 10_000
+    position.trailing_exit_anchor_price = 10_000
+    position.post_exit_high_price = 11_000
+    position.trailing_reentry_count_date = "2026-06-11"
+
+    assert strategy.check_reentry_conditions(position, 10_120, datetime(2026, 6, 11, 10, 1)) == (False, True)
+    assert strategy.check_reentry_conditions(position, 10_121, datetime(2026, 6, 11, 10, 1)) == (False, False)
+
+
+def test_force_reentry_timeout_creates_new_cycle_candidate_after_30_calendar_days() -> None:
+    _, _, positions, strategy, risk, snapshot = setup_strategy(StrategyConfig())
+    position = positions.get("005930", "Test")
+    position.position_state = PositionLifecycle.WAIT_REENTRY.value
+    position.exit_time = (datetime.now() - timedelta(days=30)).isoformat(timespec="seconds")
+    position.normal_exit_anchor_price = 10_000
+    position.trailing_exit_anchor_price = 10_000
+    position.reentry_anchor_price = 10_000
+    position.lot_unit_amount = 100_000
+    position.max_symbol_amount = 1_200_000
+    position.lot_sizing_bucket = "10001-30000"
+    account = risk.account_buy_allowed(snapshot, positions.positions)
+    symbol = risk.symbol_buy_allowed(position)
+
+    action = strategy.decide(position, 11_000, snapshot, account, symbol)
+
+    assert action is not None
+    assert action.reason == "FORCE_REENTRY_TIMEOUT_NEW_CYCLE"
+    assert action.reentry_type == ReentryType.FORCE_REENTRY_TIMEOUT_NEW_CYCLE.value
+    assert action.amount == 100_000
+
+
+def test_force_reentry_timeout_is_not_eligible_before_30_calendar_days() -> None:
+    _, _, positions, strategy, risk, snapshot = setup_strategy(StrategyConfig())
+    position = positions.get("005930", "Test")
+    position.position_state = PositionLifecycle.WAIT_REENTRY.value
+    position.exit_time = (datetime.now() - timedelta(days=29)).isoformat(timespec="seconds")
+    position.normal_exit_anchor_price = 10_000
+    position.trailing_exit_anchor_price = 10_000
+    account = risk.account_buy_allowed(snapshot, positions.positions)
+    symbol = risk.symbol_buy_allowed(position)
+
+    assert strategy.decide(position, 11_000, snapshot, account, symbol) is None
+
+
+def test_wait_reentry_missing_exit_time_blocks_reentry_and_force_timeout() -> None:
+    _, _, positions, strategy, risk, snapshot = setup_strategy(StrategyConfig(force_reentry_timeout_days=0))
+    position = positions.get("005930", "Test")
+    position.position_state = PositionLifecycle.WAIT_REENTRY.value
+    position.normal_exit_anchor_price = 10_000
+    position.trailing_exit_anchor_price = 10_000
+    account = risk.account_buy_allowed(snapshot, positions.positions)
+    symbol = risk.symbol_buy_allowed(position)
+
+    action = strategy.decide(position, 9_000, snapshot, account, symbol)
+    context = strategy.context(position, 9_000)
+
+    assert action is None
+    assert context.reentry_condition_met is False
+    assert context.force_reentry_eligible is False
+    assert context.days_since_wait_reentry_started == 0
+    assert context.skip_reason == "REENTRY_BLOCKED_MISSING_EXIT_TIME"
+
+
+def test_partial_profit_sell_keeps_holding_and_does_not_start_wait_reentry_decay() -> None:
+    _, _, positions, strategy, _, _ = setup_strategy(StrategyConfig(estimated_fee_tax_pct=0))
+    lot = add_lot(positions, "005930", 9_000, 2)
+
+    positions.apply_fill(
+        TradeFill(
+            "005930",
+            "Test",
+            OrderSide.SELL,
+            1,
+            10_000,
+            "SELL-PARTIAL",
+            datetime.now() - timedelta(days=30),
+            lot.lot_id,
+            sell_reason=SellReason.PROFIT_TAKE.value,
+        )
+    )
+    position = positions.refresh_from_lots("005930", 10_000)
+
+    assert position.position_state == PositionLifecycle.HOLDING.value
+    assert strategy.context(position, 10_000).days_since_wait_reentry_started == 0
+
+
+def test_day_30_prioritizes_anchor_reentry_before_force_new_cycle() -> None:
+    _, _, positions, strategy, risk, snapshot = setup_strategy(StrategyConfig())
+    position = positions.get("005930", "Test")
+    position.position_state = PositionLifecycle.WAIT_REENTRY.value
+    position.exit_time = (datetime.now() - timedelta(days=30)).isoformat(timespec="seconds")
+    position.normal_exit_anchor_price = 10_000
+    position.trailing_exit_anchor_price = 10_000
+    account = risk.account_buy_allowed(snapshot, positions.positions)
+    symbol = risk.symbol_buy_allowed(position)
+
+    anchor_action = strategy.decide(position, 10_000, snapshot, account, symbol)
+    force_action = strategy.decide(position, 10_001, snapshot, account, symbol)
+
+    assert anchor_action is not None
+    assert anchor_action.reason == "reentry_buy"
+    assert anchor_action.reentry_type == ReentryType.NORMAL_REENTRY.value
+    assert force_action is not None
+    assert force_action.reason == "FORCE_REENTRY_TIMEOUT_NEW_CYCLE"
+    assert force_action.reentry_type == ReentryType.FORCE_REENTRY_TIMEOUT_NEW_CYCLE.value
+
+
+def test_force_reentry_fill_resets_old_cycle_values_and_locks_current_price_band() -> None:
+    _, lots, positions, strategy, _, _ = setup_strategy(StrategyConfig())
+    position = positions.get("005930", "Test")
+    position.position_state = PositionLifecycle.WAIT_REENTRY.value
+    position.exit_time = (datetime.now() - timedelta(days=30)).isoformat(timespec="seconds")
+    position.normal_exit_anchor_price = 10_000
+    position.trailing_exit_anchor_price = 10_500
+    position.reentry_anchor_price = 10_000
+    position.exit_anchor_price = 10_000
+    position.post_exit_high_price = 11_000
+    position.lot_unit_amount = 30_000
+    position.max_symbol_amount = 360_000
+    position.lot_sizing_bucket = "3001-10000"
+
+    positions.apply_fill(
+        TradeFill(
+            "005930",
+            "Test",
+            OrderSide.BUY,
+            1,
+            20_000,
+            "BUY-FORCE",
+            datetime.now(),
+            reentry_type=ReentryType.FORCE_REENTRY_TIMEOUT_NEW_CYCLE.value,
+        )
+    )
+    updated = positions.refresh_from_lots("005930", 20_000)
+
+    assert len(lots.open_lots("005930")) == 1
+    assert updated.position_state == PositionLifecycle.HOLDING.value
+    assert updated.entry_price_for_lot_sizing == 20_000
+    assert updated.lot_unit_amount == 100_000
+    assert updated.max_symbol_amount == 1_200_000
+    assert updated.lot_sizing_bucket == "10001-30000"
+    assert updated.normal_exit_anchor_price == 0
+    assert updated.trailing_exit_anchor_price == 0
+    assert updated.reentry_anchor_price == 0
+    assert updated.exit_time == ""
+    assert strategy.context(updated, 20_000).days_since_wait_reentry_started == 0
+
+
+def test_force_reentry_fill_relocks_different_price_bucket_from_current_price() -> None:
+    _, lots, positions, strategy, _, _ = setup_strategy(StrategyConfig())
+    position = positions.get("005930", "Test")
+    position.position_state = PositionLifecycle.WAIT_REENTRY.value
+    position.exit_time = (datetime.now() - timedelta(days=30)).isoformat(timespec="seconds")
+    position.normal_exit_anchor_price = 9_000
+    position.trailing_exit_anchor_price = 9_500
+    position.reentry_anchor_price = 9_000
+    position.exit_anchor_price = 9_000
+    position.post_exit_high_price = 9_500
+    position.entry_price_for_lot_sizing = 9_000
+    position.lot_unit_amount = 30_000
+    position.max_symbol_amount = 360_000
+    position.lot_sizing_bucket = "3001-10000"
+
+    positions.apply_fill(
+        TradeFill(
+            "005930",
+            "Test",
+            OrderSide.BUY,
+            8,
+            35_000,
+            "BUY-FORCE-35000",
+            datetime.now(),
+            reentry_type=ReentryType.FORCE_REENTRY_TIMEOUT_NEW_CYCLE.value,
+        )
+    )
+    updated = positions.refresh_from_lots("005930", 35_000)
+    context = strategy.context(updated, 35_000)
+
+    assert len(lots.open_lots("005930")) == 1
+    assert updated.position_state == PositionLifecycle.HOLDING.value
+    assert updated.entry_price_for_lot_sizing == 35_000
+    assert updated.lot_unit_amount == 300_000
+    assert updated.max_symbol_amount == 3_600_000
+    assert updated.lot_sizing_bucket == "30001-100000"
+    assert updated.normal_exit_anchor_price == 0
+    assert updated.trailing_exit_anchor_price == 0
+    assert updated.reentry_anchor_price == 0
+    assert updated.exit_anchor_price == 0
+    assert updated.exit_time == ""
+    assert context.reference_buy_price == 35_000
+    assert context.reentry_condition_met is False
+    assert context.force_reentry_eligible is False
+    assert context.days_since_wait_reentry_started == 0
 
 
 def test_lot_sizing_lot_count_bands_and_max_lots_block() -> None:

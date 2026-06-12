@@ -228,6 +228,10 @@ class AutoTrader:
                         if profile:
                             profile.symbols_skipped += 1
                         continue
+                    if stock.manual_only:
+                        if profile:
+                            profile.symbols_skipped += 1
+                        continue
                     position = self.position_manager.get(stock.code, stock.name)
                     if stock.danger_state:
                         position.danger_state = True
@@ -768,6 +772,20 @@ class AutoTrader:
             reentry_anchor_price=position.reentry_anchor_price,
             reentry_condition_met=context.reentry_condition_met,
             reentry_type=context.reentry_type,
+            reentry_mode=context.reentry_mode,
+            wait_reentry_started_at=context.wait_reentry_started_at,
+            days_since_wait_reentry_started=context.days_since_wait_reentry_started,
+            base_reentry_rate=f"{context.base_reentry_rate:.4f}",
+            daily_reentry_decay_rate=f"{context.daily_reentry_decay_rate:.4f}",
+            decay_duration_days=context.decay_duration_days,
+            effective_reentry_rate=f"{context.effective_reentry_rate:.4f}",
+            reentry_trigger_price=context.reentry_trigger_price,
+            force_reentry_timeout_days=context.force_reentry_timeout_days,
+            force_reentry_eligible=context.force_reentry_eligible,
+            force_reentry_reason=context.force_reentry_reason,
+            force_reentry_starts_new_cycle=context.force_reentry_starts_new_cycle,
+            old_cycle_id=context.old_cycle_id,
+            new_cycle_id=context.new_cycle_id,
             exit_anchor_price=context.exit_anchor_price,
             cycle_highest_sell_price=context.cycle_highest_sell_price,
             cycle_last_sell_price=context.cycle_last_sell_price,

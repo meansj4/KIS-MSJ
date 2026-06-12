@@ -413,6 +413,15 @@ def test_runtime_controls_are_readable_and_block_actions(tmp_path):
     assert runtime_block_reason(RuntimeControl(cleanup_paused=True), cleanup) == "runtime_cleanup_paused"
     reentry = StrategyAction(OrderSide.BUY, 30000, None, "reentry_buy", reentry_type=ReentryType.NORMAL_REENTRY.value)
     assert runtime_block_reason(RuntimeControl(reentry_paused=True), reentry) == "runtime_reentry_paused"
+    force_reentry = StrategyAction(
+        OrderSide.BUY,
+        30000,
+        None,
+        "FORCE_REENTRY_TIMEOUT_NEW_CYCLE",
+        reentry_type=ReentryType.FORCE_REENTRY_TIMEOUT_NEW_CYCLE.value,
+    )
+    assert runtime_block_reason(RuntimeControl(reentry_paused=True), force_reentry) == "runtime_reentry_paused"
+    assert runtime_block_reason(RuntimeControl(all_orders_paused=True), force_reentry) == "runtime_all_orders_paused"
 
 
 def test_runtime_loop_pause_and_config_reload_flags(tmp_path):
