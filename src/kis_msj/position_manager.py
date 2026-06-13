@@ -157,6 +157,9 @@ class PositionManager:
             return PositionLifecycle.REVIEW_REQUIRED.value
         if has_open_lots:
             return PositionLifecycle.HOLDING.value
+        if position.position_state == PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value:
+            self._mark_trade_stopped_after_exit(position)
+            return PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value
         if position.retire_after_exit:
             self._mark_trade_stopped_after_exit(position)
             return PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value

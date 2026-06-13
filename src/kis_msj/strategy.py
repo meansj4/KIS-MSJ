@@ -800,10 +800,10 @@ class LotGridStrategy:
         return ""
 
     def _retire_buy_block_reason(self, position: PositionState, lifecycle: str, current_price: int = 0) -> str:
-        if not position.retire_after_exit:
-            return ""
         if lifecycle == PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value:
             return "TRADE_STOPPED_AFTER_EXIT"
+        if not position.retire_after_exit:
+            return ""
         if lifecycle == PositionLifecycle.WAIT_REENTRY.value:
             if current_price and self.force_reentry_eligible(position, current_price):
                 return "FORCE_REENTRY_BLOCKED_RETIRE_AFTER_EXIT"

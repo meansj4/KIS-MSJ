@@ -215,6 +215,15 @@ def test_pre_request_blocks_retire_after_exit_buy_but_not_sell(tmp_path) -> None
     assert bot.pre_request_block_reason(position, sell) == ""
 
 
+def test_pre_request_keeps_trade_stopped_block_when_retire_flag_removed(tmp_path) -> None:
+    bot = trader(tmp_path)
+    position = PositionState(code="005930", name="Test", position_state=PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value)
+    position.retire_after_exit = False
+    buy = StrategyAction(OrderSide.BUY, 30_000, None, "initial_buy")
+
+    assert bot.pre_request_block_reason(position, buy) == "TRADE_STOPPED_AFTER_EXIT"
+
+
 def test_apply_stock_retirement_config_copies_flags(tmp_path) -> None:
     config = BotConfig(
         stocks=(StockConfig("005930", "Test", retire_after_exit=True, retire_reason="replace"),),
@@ -229,6 +238,35 @@ def test_apply_stock_retirement_config_copies_flags(tmp_path) -> None:
 
     assert position.retire_after_exit is True
     assert position.retire_reason == "replace"
+
+
+def test_retire_after_exit_final_fill_is_fill_driven_with_open_order_guard(tmp_path) -> None:
+    bot = trader(tmp_path)
+    position = bot.position_manager.get("005930", "Test")
+    position.retire_after_exit = True
+    bot.position_manager.apply_fill(TradeFill("005930", "Test", OrderSide.BUY, 1, 10_000, "BUY-1", datetime.now()))
+    lot = bot.lot_manager.last_buy_lot("005930")
+    assert lot is not None
+
+    request = OrderRequest("005930", "Test", OrderSide.SELL, 1, 11_000, "sell_profitable_lot", lot.lot_id)
+    bot.store.record_order(OrderResult(request, "SELL-OPEN", OrderStatus.REQUESTED, "requested"))
+    duplicate_sell = StrategyAction(
+        OrderSide.SELL,
+        0,
+        1,
+        "sell_profitable_lot",
+        lot.lot_id,
+        sell_reason=SellReason.PROFIT_TAKE.value,
+    )
+
+    assert bot.open_order_block_reason(position, duplicate_sell) == "open_sell_order_exists"
+
+    updated = bot.position_manager.apply_fill(
+        TradeFill("005930", "Test", OrderSide.SELL, 1, 11_000, "SELL-OPEN", datetime.now(), lot.lot_id)
+    )
+
+    assert updated.position_state == PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value
+    assert bot.lot_manager.open_lots("005930") == []
 
 
 def _force_trade_window(monkeypatch) -> None:

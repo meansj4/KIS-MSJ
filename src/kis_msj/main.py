@@ -931,6 +931,8 @@ class AutoTrader:
             return "risk_blocked"
         if self.review_required_block_reason(position, action):
             return "review_required"
+        if position.position_state == PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value and action.side is OrderSide.BUY:
+            return "TRADE_STOPPED_AFTER_EXIT"
         retire_block = self.retire_after_exit_block_reason(position, action)
         if retire_block:
             return retire_block

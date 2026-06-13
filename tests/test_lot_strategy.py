@@ -1174,6 +1174,27 @@ def test_trade_stopped_after_exit_blocks_initial_buy() -> None:
     assert context.trade_stop_after_exit_state == PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value
 
 
+def test_trade_stopped_after_exit_does_not_auto_resume_when_retire_flag_removed() -> None:
+    _, _, positions, strategy, risk, snapshot = setup_strategy()
+    position = positions.get("005930", "Test")
+    position.position_state = PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value
+    position.retire_after_exit = False
+    position.last_fill_side = OrderSide.SELL.value
+    position.exit_time = (datetime.now() - timedelta(days=30)).isoformat(timespec="seconds")
+    position.normal_exit_anchor_price = 10_000
+    position.trailing_exit_anchor_price = 10_000
+
+    refreshed = positions.refresh_from_lots("005930", 9_000)
+    action = strategy.decide(refreshed, 9_000, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(refreshed))
+    context = strategy.context(refreshed, 9_000)
+
+    assert refreshed.position_state == PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value
+    assert refreshed.auto_buy_enabled is False
+    assert refreshed.skip_reason == "TRADE_STOPPED_AFTER_EXIT"
+    assert action is None
+    assert context.position_state == PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value
+
+
 def test_partial_profit_sell_keeps_holding_and_does_not_start_wait_reentry_decay() -> None:
     _, _, positions, strategy, _, _ = setup_strategy(StrategyConfig(estimated_fee_tax_pct=0))
     lot = add_lot(positions, "005930", 9_000, 2)
