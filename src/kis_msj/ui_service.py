@@ -9,6 +9,8 @@ import os
 import re
 import shutil
 import sqlite3
+import threading
+import time
 import uuid
 from collections import defaultdict
 from dataclasses import asdict
@@ -33,6 +35,7 @@ MANUAL_REQUEUE_CONFIRM_TEXT = "수동요청 재처리 확인"
 MANUAL_CANCEL_CONFIRM_TEXT = "수동요청 차단 확인"
 MANUAL_PENDING_STATUSES = {"REQUESTED", "PROCESSING", "ACCEPTED", "SUBMITTED", "PENDING", "OPEN", "NEW", "CREATED", "RETRYING"}
 ORDER_PENDING_STATUSES = {"REQUESTED", "PARTIAL", "CANCEL_REJECTED", "SUBMITTED", "ACCEPTED", "PENDING", "OPEN", "NEW"}
+UI_CACHE_TTL_SECONDS = 1.0
 
 NEW_SEASON_REASON_GUIDE: dict[str, dict[str, str]] = {
     "": {"title": "진행 가능", "description": "현재 단계의 조건을 만족했습니다.", "next_action": "다음 단계로 진행하세요."},
@@ -304,13 +307,26 @@ class UIService:
     def __init__(self, config_path: str | Path = DEFAULT_CONFIG_PATH, runtime_path: str | Path = DEFAULT_RUNTIME_CONTROL_PATH) -> None:
         self.config_path = Path(config_path)
         self.runtime_path = Path(runtime_path)
+        self._cache_lock = threading.Lock()
+        self._cache: dict[tuple[Any, ...], tuple[float, Any]] = {}
 
     @property
     def config(self) -> BotConfig:
-        return load_config(self.config_path)
+        key = ("config", str(self.config_path))
+        cached = self._cache_get(key)
+        if cached is not None:
+            return cached
+        loaded = load_config(self.config_path)
+        return self._cache_set(key, loaded)
 
     def raw_config(self) -> dict[str, Any]:
-        return json.loads(self.config_path.read_text(encoding="utf-8"))
+        key = ("raw_config", str(self.config_path))
+        cached = self._cache_get(key)
+        if cached is not None:
+            return json.loads(json.dumps(cached, ensure_ascii=False))
+        raw = json.loads(self.config_path.read_text(encoding="utf-8"))
+        self._cache_set(key, raw)
+        return json.loads(json.dumps(raw, ensure_ascii=False))
 
     def config_schema(self) -> dict[str, Any]:
         sections: dict[str, list[dict[str, Any]]] = {}
@@ -344,12 +360,10 @@ class UIService:
     def status(self) -> dict[str, Any]:
         config = self.config
         positions = self.positions()
-        lots = self.lots()
-        orders = self.orders()
-        fills = self.fills()
         logs = self.parse_log_events(400)
         runtime = asdict(load_runtime_control(self.runtime_path))
         raw_mapping = self.execution_mapping_status()
+        status_metrics = self._status_metrics(positions)
         return {
             "bot": {
                 "state": "UNKNOWN",
@@ -362,15 +376,15 @@ class UIService:
                 "consecutive_api_errors": "unknown",
                 "market_status": self.market_status(),
             },
-            "warnings": self.warnings(config, positions, orders, raw_mapping),
+            "warnings": self.warnings(config, positions, status_metrics["warning_orders"], raw_mapping),
             "risk_banner": self.risk_banner(config),
             "runtime_control": runtime,
-            "account_risk": self.risk_summary(config, positions, lots, orders, fills),
+            "account_risk": self.risk_summary_fast(config, positions, status_metrics),
             "position_state_counts": _count_by(positions, "position_state"),
-            "order_status_counts": _count_by(orders, "status"),
+            "order_status_counts": status_metrics["order_status_counts"],
             "reconciliation": self.reconciliation_summary(logs),
             "execution_mapping": raw_mapping,
-            "analysis_status": self.analysis_status(positions, lots, fills),
+            "analysis_status": self.analysis_status_fast(positions, status_metrics),
             "loop_performance": self.loop_performance_summary(logs),
         }
 
@@ -459,6 +473,214 @@ class UIService:
             "what_if_analysis_level": what_if_level,
             "analysis_export_ready": bool(fills or decisions),
         }
+
+    def analysis_status_fast(self, positions: list[dict[str, Any]], metrics: dict[str, Any]) -> dict[str, Any]:
+        current_hash = config_hash(self.config)
+        run_id = self.config.experiment.run_id or self.config.run_id or f"{self.config.risk.profile}_{current_hash}"
+        experiment_name = self.config.experiment.experiment_name or self.config.experiment_name or self.config.risk.profile
+        readiness_level = 0
+        what_if_level = "Level 0: trade results only"
+        if metrics["price_snapshots_count"]:
+            readiness_level = 1
+            what_if_level = "Level 1: decision-time price context"
+        if metrics["daily_prices_count"]:
+            readiness_level = 2
+            what_if_level = "Level 2: daily follow-up possible"
+        if metrics["price_snapshots_count"] and metrics["daily_prices_count"]:
+            readiness_level = 2
+            what_if_level = "config_comparison_and_limited_what_if"
+        configured_codes = {stock.code for stock in self.config.stocks if stock.enabled and not stock.manual_only}
+        return {
+            "fill_count": metrics["fill_count"],
+            "closed_lot_count": metrics["closed_lot_count"],
+            "open_lot_count": metrics["open_lot_count"],
+            "stale_lot_count": metrics["stale_lot_count"],
+            "review_required_count": sum(1 for position in positions if position.get("needs_review") or position.get("position_state") == PositionLifecycle.REVIEW_REQUIRED.value),
+            "trading_day_count": metrics["trading_day_count"],
+            "config_snapshot_count": metrics["config_snapshot_count"],
+            "decision_record_count": metrics["decision_record_count"],
+            "current_config_hash": current_hash,
+            "current_run_id": run_id,
+            "current_experiment_name": experiment_name,
+            "price_snapshots_count": metrics["price_snapshots_count"],
+            "daily_prices_count": metrics["daily_prices_count"],
+            "liquidity_snapshots_count": metrics["liquidity_snapshots_count"],
+            "symbols_with_price_data_count": metrics["symbols_with_price_data_count"],
+            "symbols_with_daily_prices_count": metrics["symbols_with_daily_prices_count"],
+            "market_data_missing_symbols_count": max(0, len(configured_codes) - metrics["symbols_with_price_data_count"]),
+            "latest_market_data_collected_at": metrics["latest_market_data_collected_at"],
+            "latest_daily_price_date": metrics["latest_daily_price_date"],
+            "days_with_market_data_count": metrics["days_with_market_data_count"],
+            "market_data_collection_run_count": metrics["market_data_collection_run_count"],
+            "latest_market_data_collection_run_id": metrics["latest_market_data_collection_run_id"],
+            "latest_market_data_collection_mode": metrics["latest_market_data_collection_mode"],
+            "latest_market_data_collection_errors": metrics["latest_market_data_collection_errors"],
+            "tuning_readiness_level": readiness_level,
+            "what_if_analysis_level": what_if_level,
+            "analysis_export_ready": bool(metrics["fill_count"] or metrics["decision_record_count"]),
+        }
+
+    def risk_summary_fast(self, config: BotConfig, positions: list[dict[str, Any]], metrics: dict[str, Any]) -> dict[str, Any]:
+        active_codes = {
+            str(item.get("code") or "")
+            for item in positions
+            if item.get("position_state") in {
+                PositionLifecycle.HOLDING.value,
+                PositionLifecycle.WAIT_REENTRY.value,
+                PositionLifecycle.COOLDOWN_AFTER_CLEANUP.value,
+                PositionLifecycle.REVIEW_REQUIRED.value,
+                PositionLifecycle.RISK_BLOCKED.value,
+                PositionLifecycle.SYNC_REQUIRED.value,
+            }
+        }
+        active_codes |= set(metrics["open_lot_codes"])
+        active_codes |= set(metrics["open_order_codes"])
+        return {
+            "cash_available": "unknown_ui_read_only",
+            "min_cash_available": config.risk.min_cash_available,
+            "daily_profit_loss": "unknown_ui_read_only",
+            "daily_account_loss_limit_pct": config.risk.daily_account_loss_limit_pct,
+            "total_account_loss_limit_pct": config.risk.total_account_loss_limit_pct,
+            "max_active_symbols": config.risk.max_active_symbols,
+            "active_symbol_count": len(active_codes),
+            "max_total_open_lots": config.risk.max_total_open_lots,
+            "total_open_lot_count": metrics["open_lot_count"],
+            "max_total_invested_amount": config.risk.max_total_invested_amount,
+            "total_invested_amount": metrics["total_invested_amount"],
+            "max_new_buy_per_day": config.risk.max_new_buy_per_day,
+            "new_buy_count_today": metrics["new_buy_count_today"],
+            "max_new_buy_amount_per_day": config.risk.max_new_buy_amount_per_day,
+            "max_total_initial_buy_amount_per_day": config.risk.max_total_initial_buy_amount_per_day,
+            "new_buy_amount_today": metrics["new_buy_amount_today"],
+            "risk_profile": config.risk.profile,
+            "candidate_stock_count": len(config.stocks),
+            "enabled_stock_count": sum(1 for stock in config.stocks if stock.enabled),
+            "today_fill_count": metrics["today_fill_count"],
+        }
+
+    def _status_metrics(self, positions: list[dict[str, Any]]) -> dict[str, Any]:
+        today = datetime.now().date().isoformat()
+        key = ("status_metrics", str(self._db_path()), today, self._db_mtime())
+        cached = self._cache_get(key)
+        if cached is not None:
+            return json.loads(json.dumps(cached, ensure_ascii=False))
+        metrics: dict[str, Any] = {
+            "open_lot_count": 0,
+            "closed_lot_count": 0,
+            "stale_lot_count": 0,
+            "total_invested_amount": 0,
+            "open_lot_codes": [],
+            "order_status_counts": {},
+            "warning_orders": [],
+            "open_order_codes": [],
+            "new_buy_count_today": 0,
+            "new_buy_amount_today": 0,
+            "fill_count": 0,
+            "today_fill_count": 0,
+            "trading_day_count": 0,
+            "config_snapshot_count": 0,
+            "decision_record_count": 0,
+            "price_snapshots_count": 0,
+            "daily_prices_count": 0,
+            "liquidity_snapshots_count": 0,
+            "symbols_with_price_data_count": 0,
+            "symbols_with_daily_prices_count": 0,
+            "latest_market_data_collected_at": "",
+            "latest_daily_price_date": "",
+            "days_with_market_data_count": 0,
+            "market_data_collection_run_count": 0,
+            "latest_market_data_collection_run_id": "",
+            "latest_market_data_collection_mode": "",
+            "latest_market_data_collection_errors": 0,
+        }
+        if not self._db_path().exists():
+            return metrics
+        with sqlite3.connect(self._db_path()) as connection:
+            connection.row_factory = sqlite3.Row
+            lots = self._fetch_one(
+                connection,
+                """
+                SELECT
+                    COUNT(*) AS open_lot_count,
+                    COALESCE(SUM(remaining_quantity * buy_price), 0) AS total_invested_amount,
+                    COALESCE(SUM(CASE WHEN cleanup_candidate THEN 1 ELSE 0 END), 0) AS stale_lot_count
+                FROM lots
+                WHERE COALESCE(remaining_quantity, 0) > 0 AND COALESCE(status, '') != 'CLOSED'
+                """,
+            )
+            metrics["open_lot_count"] = _to_int(lots.get("open_lot_count"))
+            metrics["total_invested_amount"] = _to_int(lots.get("total_invested_amount"))
+            metrics["stale_lot_count"] = _to_int(lots.get("stale_lot_count"))
+            metrics["closed_lot_count"] = self._count_where(connection, "lots", "COALESCE(status, '') = 'CLOSED' OR COALESCE(remaining_quantity, 0) <= 0")
+            metrics["open_lot_codes"] = self._fetch_values(
+                connection,
+                "SELECT DISTINCT code FROM lots WHERE COALESCE(remaining_quantity, 0) > 0 AND COALESCE(status, '') != 'CLOSED'",
+            )
+            metrics["order_status_counts"] = self._count_grouped(connection, "orders", "status")
+            metrics["warning_orders"] = [
+                {"code": row.get("code", ""), "status": row.get("status", "")}
+                for row in self._fetch_all(
+                    connection,
+                    "SELECT code, status FROM orders WHERE status IN ('REQUESTED', 'PARTIAL') LIMIT 1",
+                )
+            ]
+            metrics["open_order_codes"] = self._fetch_values(
+                connection,
+                "SELECT DISTINCT code FROM orders WHERE status IN ('REQUESTED', 'PARTIAL')",
+            )
+            new_buy = self._fetch_one(
+                connection,
+                """
+                SELECT COUNT(*) AS count, COALESCE(SUM(quantity * limit_price), 0) AS amount
+                FROM orders
+                WHERE side = 'BUY' AND reason = 'initial_buy' AND requested_at LIKE ?
+                """,
+                (f"{today}%",),
+            )
+            metrics["new_buy_count_today"] = _to_int(new_buy.get("count"))
+            metrics["new_buy_amount_today"] = _to_int(new_buy.get("amount"))
+            metrics["fill_count"] = self._count_all(connection, "fills")
+            metrics["today_fill_count"] = self._count_where(connection, "fills", "filled_at LIKE ?", (f"{today}%",))
+            metrics["trading_day_count"] = self._scalar_int(connection, "SELECT COUNT(DISTINCT substr(filled_at, 1, 10)) FROM fills WHERE COALESCE(filled_at, '') != ''")
+            metrics["config_snapshot_count"] = self._count_all(connection, "config_snapshots")
+            # decisions is also large in long-running DBs; id is monotonic enough for a status badge.
+            metrics["decision_record_count"] = self._scalar_int(connection, "SELECT MAX(id) FROM decisions")
+            # price_snapshots can be large; MAX(id) gives a fast monotonic row estimate for status.
+            metrics["price_snapshots_count"] = self._scalar_int(connection, "SELECT MAX(id) FROM price_snapshots")
+            metrics["daily_prices_count"] = self._count_all(connection, "daily_prices")
+            metrics["liquidity_snapshots_count"] = self._scalar_int(connection, "SELECT MAX(id) FROM liquidity_snapshots")
+            metrics["symbols_with_daily_prices_count"] = self._scalar_int(connection, "SELECT COUNT(DISTINCT code) FROM daily_prices")
+            metrics["symbols_with_price_data_count"] = metrics["symbols_with_daily_prices_count"] if metrics["price_snapshots_count"] else 0
+            latest_price = self._fetch_one(
+                connection,
+                "SELECT COALESCE(collected_at, sampled_at, '') AS latest_at FROM price_snapshots ORDER BY id DESC LIMIT 1",
+            )
+            latest_liquidity = self._fetch_one(
+                connection,
+                "SELECT COALESCE(collected_at, sampled_at, '') AS latest_at FROM liquidity_snapshots ORDER BY id DESC LIMIT 1",
+            )
+            metrics["latest_market_data_collected_at"] = max(
+                str(latest_price.get("latest_at") or ""),
+                self._scalar_text(connection, "SELECT MAX(COALESCE(collected_at, '')) FROM daily_prices"),
+                str(latest_liquidity.get("latest_at") or ""),
+            )
+            metrics["latest_daily_price_date"] = self._scalar_text(connection, "SELECT MAX(COALESCE(date, '')) FROM daily_prices")
+            metrics["days_with_market_data_count"] = self._scalar_int(connection, "SELECT COUNT(DISTINCT date) FROM daily_prices")
+            metrics["market_data_collection_run_count"] = self._count_all(connection, "market_data_collection_runs")
+            latest_run = self._fetch_one(
+                connection,
+                """
+                SELECT run_id, mode, error_count
+                FROM market_data_collection_runs
+                ORDER BY COALESCE(ended_at, started_at, '') DESC
+                LIMIT 1
+                """,
+            )
+            metrics["latest_market_data_collection_run_id"] = latest_run.get("run_id", "")
+            metrics["latest_market_data_collection_mode"] = latest_run.get("mode", "")
+            metrics["latest_market_data_collection_errors"] = _to_int(latest_run.get("error_count"))
+        self._cache_set(key, metrics)
+        return json.loads(json.dumps(metrics, ensure_ascii=False))
 
     def collect_market_data(self, *, execute: bool = False, symbols_from_config: bool = True, snapshot: bool = True, daily: bool = True) -> dict[str, Any]:
         from scripts.collect_market_data import collect_market_data
@@ -1347,6 +1569,7 @@ class UIService:
         position, triggers, event = position_manager.recheck_review_required(position, position.current_price)
         store.save_position(position)
         store.save_lots(lot_manager.lots.values())
+        self._cache_clear()
         payload = {"code": code, "event": event, "active_reasons": triggers["reasons"], "trigger_values": triggers["values"]}
         self._append_audit_log("review_status_rechecked", payload)
         self._append_audit_log(event, payload)
@@ -1363,6 +1586,7 @@ class UIService:
         position.review_acknowledged_by = acknowledged_by or "local_ui"
         position.review_note = note
         store.save_position(position)
+        self._cache_clear()
         payload = {
             "code": code,
             "review_acknowledged_at": position.review_acknowledged_at,
@@ -1642,6 +1866,7 @@ class UIService:
             )
             return {"requeued": False, "request_id": request_id, "block_reason": block_reason, "order_api_called": False, "lots_positions_fills_changed": False}
         ok = StateStore(self.config.storage_path).requeue_stale_manual_order_request(request_id)
+        self._cache_clear()
         self._append_audit_log(
             "manual_order_request_requeued",
             self._manual_recovery_audit_payload(row, request_id, ok, "operator_requeue_stale_processing", operator_note),
@@ -1662,6 +1887,7 @@ class UIService:
             )
             return {"canceled": False, "request_id": request_id, "block_reason": block_reason, "order_api_called": False, "lots_positions_fills_changed": False}
         ok = StateStore(self.config.storage_path).cancel_stale_manual_order_request(request_id, reason)
+        self._cache_clear()
         self._append_audit_log(
             "manual_order_request_blocked_by_operator",
             self._manual_recovery_audit_payload(row, request_id, ok, reason, operator_note),
@@ -1889,6 +2115,7 @@ class UIService:
         from .storage import StateStore
 
         StateStore(self.config.storage_path).create_manual_order_request(request)
+        self._cache_clear()
         self._append_audit_log("manual_order_request_created", request)
         return {"created": True, "request_id": request_id, "preview": preview}
 
@@ -1963,7 +2190,18 @@ class UIService:
         return ""
 
     def parse_log_events(self, limit: int = 300) -> list[str]:
-        return [_mask_sensitive(line.rstrip()) for line in tail_hourly_logs(self.config.log_path, limit)]
+        log_path = Path(self.config.log_path)
+        try:
+            log_mtime = log_path.stat().st_mtime
+        except OSError:
+            log_mtime = 0.0
+        key = ("logs", str(log_path), int(limit), log_mtime)
+        cached = self._cache_get(key)
+        if cached is not None:
+            return list(cached)
+        lines = [_mask_sensitive(line.rstrip()) for line in tail_hourly_logs(self.config.log_path, limit)]
+        self._cache_set(key, lines)
+        return list(lines)
 
     def parse_decision_logs(self, limit: int = 500) -> list[dict[str, Any]]:
         decisions = []
@@ -2066,11 +2304,14 @@ class UIService:
         temp_path = self.config_path.with_suffix(self.config_path.suffix + ".tmp")
         temp_path.write_text(json.dumps(updated, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         os.replace(temp_path, self.config_path)
+        self._cache_clear()
         reloaded = self.raw_config()
         if reloaded != updated:
             shutil.copy2(backup_path, self.config_path)
+            self._cache_clear()
             return {"saved": False, "errors": ["round_trip_verification_failed"], "backup_path": str(backup_path)}
         self._append_config_history(raw, updated, updated_by, backup_path)
+        self._cache_clear()
         return {"saved": True, "backup_path": str(backup_path), "restart_required": True}
 
     def backup_config(self) -> Path:
@@ -2100,6 +2341,7 @@ class UIService:
         current["updated_at"] = datetime.now().isoformat(timespec="seconds")
         control = RuntimeControl(**{key: current.get(key) for key in RuntimeControl.__dataclass_fields__})
         save_runtime_control(control, self.runtime_path)
+        self._cache_clear()
         return asdict(control)
 
     def runtime_status(self) -> dict[str, Any]:
@@ -2137,16 +2379,108 @@ class UIService:
         return {"previews": previews, "dry_run": True, "order_api_called": False}
 
     def _table(self, table: str) -> list[dict[str, Any]]:
-        db_path = Path(self.config.storage_path)
+        db_path = self._db_path()
         if not db_path.exists():
             return []
+        db_mtime = self._db_mtime()
+        key = ("table", str(db_path), table, db_mtime)
+        cached = self._cache_get(key)
+        if cached is not None:
+            return [dict(row) for row in cached]
         with sqlite3.connect(db_path) as connection:
             connection.row_factory = sqlite3.Row
             try:
                 rows = connection.execute(f"SELECT * FROM {table}").fetchall()
             except sqlite3.Error:
                 return []
-        return [_normalize_row(dict(row)) for row in rows]
+        normalized = [_normalize_row(dict(row)) for row in rows]
+        self._cache_set(key, normalized)
+        return [dict(row) for row in normalized]
+
+    def _db_path(self) -> Path:
+        return Path(self.config.storage_path)
+
+    def _db_mtime(self) -> tuple[int, int, int, int]:
+        db_path = self._db_path()
+        try:
+            db_stat = db_path.stat()
+            db_stamp = (db_stat.st_mtime_ns, db_stat.st_size)
+        except OSError:
+            db_stamp = (0, 0)
+        try:
+            wal_stat = db_path.with_name(db_path.name + "-wal").stat()
+            wal_stamp = (wal_stat.st_mtime_ns, wal_stat.st_size)
+        except OSError:
+            wal_stamp = (0, 0)
+        return (*db_stamp, *wal_stamp)
+
+    def _fetch_all(self, connection: sqlite3.Connection, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+        try:
+            return [_normalize_row(dict(row)) for row in connection.execute(sql, params).fetchall()]
+        except sqlite3.Error:
+            return []
+
+    def _fetch_one(self, connection: sqlite3.Connection, sql: str, params: tuple[Any, ...] = ()) -> dict[str, Any]:
+        try:
+            row = connection.execute(sql, params).fetchone()
+        except sqlite3.Error:
+            return {}
+        return _normalize_row(dict(row)) if row else {}
+
+    def _fetch_values(self, connection: sqlite3.Connection, sql: str, params: tuple[Any, ...] = ()) -> list[str]:
+        try:
+            rows = connection.execute(sql, params).fetchall()
+        except sqlite3.Error:
+            return []
+        return [str(row[0]) for row in rows if row[0] not in (None, "")]
+
+    def _scalar_int(self, connection: sqlite3.Connection, sql: str, params: tuple[Any, ...] = ()) -> int:
+        try:
+            row = connection.execute(sql, params).fetchone()
+        except sqlite3.Error:
+            return 0
+        return _to_int(row[0]) if row else 0
+
+    def _scalar_text(self, connection: sqlite3.Connection, sql: str, params: tuple[Any, ...] = ()) -> str:
+        try:
+            row = connection.execute(sql, params).fetchone()
+        except sqlite3.Error:
+            return ""
+        return str(row[0] or "") if row else ""
+
+    def _count_all(self, connection: sqlite3.Connection, table: str) -> int:
+        return self._scalar_int(connection, f"SELECT COUNT(*) FROM {table}")
+
+    def _count_where(self, connection: sqlite3.Connection, table: str, where: str, params: tuple[Any, ...] = ()) -> int:
+        return self._scalar_int(connection, f"SELECT COUNT(*) FROM {table} WHERE {where}", params)
+
+    def _count_grouped(self, connection: sqlite3.Connection, table: str, column: str) -> dict[str, int]:
+        try:
+            rows = connection.execute(f"SELECT {column}, COUNT(*) FROM {table} GROUP BY {column}").fetchall()
+        except sqlite3.Error:
+            return {}
+        return {str(row[0] or ""): _to_int(row[1]) for row in rows}
+
+    def _cache_get(self, key: tuple[Any, ...]) -> Any | None:
+        now = time.monotonic()
+        with self._cache_lock:
+            item = self._cache.get(key)
+            if item is None:
+                return None
+            created_at, value = item
+            if now - created_at > UI_CACHE_TTL_SECONDS:
+                self._cache.pop(key, None)
+                return None
+            return value
+
+    def _cache_set(self, key: tuple[Any, ...], value: Any) -> Any:
+        with self._cache_lock:
+            self._cache[key] = (time.monotonic(), value)
+        return value
+
+    def _cache_clear(self) -> None:
+        with self._cache_lock:
+            self._cache.clear()
 
     def _has_open_order(self, code: str, side: str, lot_id: str = "") -> bool:
         for order in self.orders():

@@ -149,8 +149,8 @@ function setupAutoRefresh() {
   if (enabled) autoRefreshTimer = setInterval(() => { if (currentView !== 'config') manualRefresh(); }, seconds * 1000);
 }
 async function manualRefresh() {
-  await refreshBanner();
-  await reloadCurrent();
+  const status = await refreshBanner();
+  await reloadCurrent(status);
   const target = document.getElementById('lastRefreshAt');
   if (target) target.textContent = '마지막 갱신: ' + new Date().toLocaleTimeString();
 }
@@ -523,7 +523,7 @@ function sortValue(v) {
   return {empty:false, value:s.toLowerCase()};
 }
 let currentView = 'dashboard';
-async function reloadCurrent() {
+async function reloadCurrent(status=null) {
   if (currentView === 'portfolioDashboard') return loadPortfolioDashboard();
   if (currentView === 'stocks') return loadStocks();
   if (currentView === 'lots') return loadLots();
@@ -534,7 +534,7 @@ async function reloadCurrent() {
   if (currentView === 'reviewRequired') return loadReviewRequired();
   if (currentView === 'logs') return loadLogs();
   if (currentView === 'config') return renderConfig();
-  return loadDashboard();
+  return loadDashboard(status);
 }
 function metrics(obj) {
   return '<div class="grid">' + Object.entries(obj || {}).map(([k,v]) => `<div class="metric"><strong>${esc(labelFor(k))}<span class="key">${esc(k)}</span></strong>${typeof v === 'object' && v !== null ? renderReadableObject(v) : displayCell(k, v)}</div>`).join('') + '</div>';
@@ -568,10 +568,11 @@ async function refreshBanner() {
   const s = await api('/api/status');
   const msgs = s.risk_banner.messages || [];
   document.getElementById('banner').innerHTML = msgs.length ? `<div class="danger">${msgs.map(esc).join('<br>')}</div>` : '';
+  return s;
 }
-async function loadDashboard() {
+async function loadDashboard(status=null) {
   currentView = 'dashboard';
-  const s = await api('/api/status');
+  const s = status || await api('/api/status');
   const top = {
     live_trading: s.risk_banner.live_trading,
     all_orders_paused: s.runtime_control.all_orders_paused,
