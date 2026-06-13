@@ -282,6 +282,9 @@ function badgeClass(value) {
 }
 function displayCell(key, value) {
   if (value === null || value === undefined || value === '') return '<span class="empty">-</span>';
+  if (key === 'retire_after_exit') {
+    return value ? '<span class="badge warn">청산 후 중지 예정</span><span class="key">true</span>' : '<span class="badge neutral">-</span><span class="key">false</span>';
+  }
   if (typeof value === 'number') return esc(formatNumber(value));
   const translated = valueLabel(value);
   if (/state|status|reason|side|dedupe|flag|enabled|paused|candidate|stale|duplicate|reflected/i.test(key)) {
