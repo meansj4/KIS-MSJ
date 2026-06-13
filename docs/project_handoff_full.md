@@ -485,13 +485,13 @@ REVIEW_REQUIRED의 차단 단위는 BUY 계열과 SELL 계열을 구분한다. i
 
 ## 14-1. retire_after_exit / TRADE_STOPPED_AFTER_EXIT
 
-`retire_after_exit`는 종목 교체를 위해 보유 LOT은 정리하되 새 BUY를 막는 stock config flag다. 기본값은 `false`이며 선택적으로 `retire_reason`을 기록할 수 있다. 이 기능은 `manual_only`와 다르다. `manual_only`는 자동 평가 자체를 건너뛰는 운영 정지에 가깝고, `retire_after_exit`는 기존 보유 LOT의 `PROFIT_TAKE` SELL 및 허용된 cleanup SELL은 계속 평가한 뒤 OPEN LOT이 0개가 되면 종목을 멈춘다.
+`retire_after_exit`는 종목 교체를 위해 현재 보유 cycle은 기존 전략대로 운용하되, cycle 종료 후 재진입하지 않고 멈추는 stock config flag다. 기본값은 `false`이며 선택적으로 `retire_reason`을 기록할 수 있다. 이 기능은 `manual_only`와 다르다. `manual_only`는 자동 평가 자체를 건너뛰는 운영 정지에 가깝고, `retire_after_exit`는 OPEN LOT이 남아 있는 동안 기존 BUY/SELL 판단을 유지한 뒤 OPEN LOT이 0개가 되면 종목을 멈춘다.
 
 상태 전환:
 
-- `retire_after_exit=true`이고 OPEN LOT이 있으면 보유 lifecycle은 유지한다. SELL 후보는 기존 정책대로 허용한다.
-- 같은 상태에서 BUY 계열은 모두 차단한다. initial BUY는 `BUY_BLOCKED_RETIRE_AFTER_EXIT`, add BUY는 `ADD_BUY_BLOCKED_RETIRE_AFTER_EXIT`, normal/trailing reentry는 `REENTRY_BLOCKED_RETIRE_AFTER_EXIT`, 30일 timeout force reentry는 `FORCE_REENTRY_BLOCKED_RETIRE_AFTER_EXIT`를 남긴다.
+- `retire_after_exit=true`이고 OPEN LOT이 있으면 `HOLDING` lifecycle과 기존 전략을 유지한다. ADD_BUY, PROFIT_TAKE, AUTO_DECAY_CLEANUP_SELL은 기존 target/drop/risk/open-order guard 조건대로 판단한다.
 - `retire_after_exit=true`이고 OPEN LOT이 0개가 되면 `TRADE_STOPPED_AFTER_EXIT`로 전환한다. 이 상태는 `REVIEW_REQUIRED`가 아니며, WAIT_REENTRY로 대기하지 않는다.
+- `TRADE_STOPPED_AFTER_EXIT` 또는 OPEN LOT 0 상태에서 BUY 계열은 모두 차단한다. initial BUY는 `BUY_BLOCKED_RETIRE_AFTER_EXIT`, normal/trailing reentry는 `REENTRY_BLOCKED_RETIRE_AFTER_EXIT`, 30일 timeout force reentry는 `FORCE_REENTRY_BLOCKED_RETIRE_AFTER_EXIT`를 남긴다.
 - 최종 청산 뒤에는 `normal_exit_anchor_price`, `trailing_exit_anchor_price`, `reentry_anchor_price`, `exit_anchor_price`, `post_exit_high_price`, `exit_time`을 비워 old cycle 값이 다음 판단에 섞이지 않게 한다.
 - `TRADE_STOPPED_AFTER_EXIT`에서는 자동 BUY가 계속 차단되고 skip/block reason은 `TRADE_STOPPED_AFTER_EXIT`로 표시한다.
 

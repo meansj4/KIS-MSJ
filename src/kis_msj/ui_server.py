@@ -158,7 +158,7 @@ const LABELS = {
   code:'종목코드', name:'종목명', enabled:'사용 여부', position_state:'보유 상태',
   current_price:'현재가', open_lot_count:'OPEN LOT 수', invested_amount:'투입금',
   profit_loss_pct:'평가손익률', risk_block_reasons:'위험 사유', last_decision:'최근 판단',
-  retire_after_exit:'교체대기', retire_reason:'교체 사유',
+  retire_after_exit:'청산 후 중지 예정', retire_reason:'중지 예정 사유',
   skip_reason:'스킵 사유', final_block_reason:'최종 차단 사유',
   lot_id:'LOT ID', status:'상태', buy_price:'매수가', buy_quantity:'매수 수량',
   remaining_quantity:'잔여 수량', buy_amount:'매수 금액', buy_filled_at:'매수 체결시각',

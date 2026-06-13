@@ -808,10 +808,6 @@ class LotGridStrategy:
             if current_price and self.force_reentry_eligible(position, current_price):
                 return "FORCE_REENTRY_BLOCKED_RETIRE_AFTER_EXIT"
             return "REENTRY_BLOCKED_RETIRE_AFTER_EXIT"
-        if lifecycle == PositionLifecycle.HOLDING.value:
-            return "ADD_BUY_BLOCKED_RETIRE_AFTER_EXIT"
-        if lifecycle == PositionLifecycle.NEVER_BOUGHT.value:
-            return "BUY_BLOCKED_RETIRE_AFTER_EXIT"
         return ""
 
     def cleanup_loss_budget(self, snapshot: AccountSnapshot) -> int:

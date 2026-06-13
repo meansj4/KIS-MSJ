@@ -62,7 +62,7 @@ def test_minus_four_percent_add_buy_under_600k() -> None:
     assert "4%" in action.reason
 
 
-def test_retire_after_exit_blocks_add_buy_but_allows_profit_take_sell() -> None:
+def test_retire_after_exit_allows_add_buy_and_profit_take_during_holding_cycle() -> None:
     _, _, positions, strategy, risk, snapshot = setup_strategy()
     add_lot(positions, "005930", 10000, 3)
     position = positions.refresh_from_lots("005930", 9600)
@@ -70,8 +70,9 @@ def test_retire_after_exit_blocks_add_buy_but_allows_profit_take_sell() -> None:
 
     buy = strategy.decide(position, 9600, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
 
-    assert buy is None
-    assert position.skip_reason == "ADD_BUY_BLOCKED_RETIRE_AFTER_EXIT"
+    assert buy is not None
+    assert buy.side is OrderSide.BUY
+    assert "add_buy" in buy.reason
 
     position.skip_reason = ""
     sell = strategy.decide(position, 10600, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))

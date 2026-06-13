@@ -971,12 +971,12 @@ class AutoTrader:
             return ""
         if position.position_state == PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value:
             return "TRADE_STOPPED_AFTER_EXIT"
+        if self.lot_manager.open_lots(position.code):
+            return ""
         if action.reentry_type == ReentryType.FORCE_REENTRY_TIMEOUT_NEW_CYCLE.value:
             return "FORCE_REENTRY_BLOCKED_RETIRE_AFTER_EXIT"
         if action.reentry_type != ReentryType.NONE.value:
             return "REENTRY_BLOCKED_RETIRE_AFTER_EXIT"
-        if self.lot_manager.open_lots(position.code):
-            return "ADD_BUY_BLOCKED_RETIRE_AFTER_EXIT"
         return "BUY_BLOCKED_RETIRE_AFTER_EXIT"
 
     def log_pre_request_block(self, position: PositionState, reason: str) -> None:

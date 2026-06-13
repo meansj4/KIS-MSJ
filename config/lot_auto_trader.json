@@ -340,7 +340,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "178920",
@@ -397,7 +399,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "003850",
@@ -473,7 +477,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "016580",
@@ -492,7 +498,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "004310",
@@ -511,7 +519,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "102460",
@@ -549,7 +559,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "214390",
@@ -568,7 +580,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "088980",
@@ -777,7 +791,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "034590",
@@ -796,7 +812,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "117580",
@@ -986,7 +1004,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "028670",
@@ -1100,7 +1120,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "001680",
@@ -1119,7 +1141,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "017810",
@@ -1138,7 +1162,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "003960",
@@ -1195,7 +1221,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "264900",
@@ -1214,7 +1242,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "005740",
@@ -1252,7 +1282,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "122900",
@@ -1271,7 +1303,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "030000",
@@ -1328,7 +1362,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "031430",
@@ -1347,7 +1383,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "002790",
@@ -1385,7 +1423,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "084690",
@@ -1461,7 +1501,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "383800",
@@ -1556,7 +1598,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "005720",
@@ -1575,7 +1619,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "073240",
@@ -1651,7 +1697,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "023810",
@@ -1670,7 +1718,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "092200",
@@ -1708,7 +1758,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "041650",
@@ -1784,7 +1836,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "004840",
@@ -1803,7 +1857,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "004560",
@@ -1822,7 +1878,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "002710",
@@ -1860,7 +1918,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "084010",
@@ -1879,7 +1939,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "104700",
@@ -1917,7 +1979,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "460850",
@@ -1936,7 +2000,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "075580",
@@ -1993,7 +2059,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "008260",
@@ -2012,7 +2080,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "008420",
@@ -2031,7 +2101,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "026940",
@@ -2050,7 +2122,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "210540",
@@ -2069,7 +2143,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "005680",
@@ -2088,7 +2164,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "035510",
@@ -2145,7 +2223,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "192650",
@@ -2202,7 +2282,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "004710",
@@ -2240,7 +2322,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "저평가 우량주 기준 미달 또는 자동거래 유지 우선순위 낮음. 현재 cycle 종료 후 reentry 없이 거래 중지 예정"
     },
     {
       "code": "100090",

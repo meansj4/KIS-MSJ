@@ -215,6 +215,16 @@ def test_pre_request_blocks_retire_after_exit_buy_but_not_sell(tmp_path) -> None
     assert bot.pre_request_block_reason(position, sell) == ""
 
 
+def test_pre_request_allows_retire_after_exit_add_buy_while_holding(tmp_path) -> None:
+    bot = trader(tmp_path)
+    bot.position_manager.apply_fill(TradeFill("005930", "Test", OrderSide.BUY, 3, 10_000, "BUY-1", datetime.now()))
+    position = bot.position_manager.refresh_from_lots("005930", 9_600)
+    position.retire_after_exit = True
+    add_buy = StrategyAction(OrderSide.BUY, 30_000, None, "add_buy_drop_4%")
+
+    assert bot.pre_request_block_reason(position, add_buy) == ""
+
+
 def test_pre_request_keeps_trade_stopped_block_when_retire_flag_removed(tmp_path) -> None:
     bot = trader(tmp_path)
     position = PositionState(code="005930", name="Test", position_state=PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value)
