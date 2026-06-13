@@ -198,6 +198,39 @@ def test_run_once_skips_manual_only_stock(tmp_path, monkeypatch) -> None:
     assert bot.run_once() == ""
 
 
+def test_stock_config_retire_after_exit_defaults_false() -> None:
+    stock = StockConfig("005930", "Test")
+
+    assert stock.retire_after_exit is False
+    assert stock.retire_reason == ""
+
+
+def test_pre_request_blocks_retire_after_exit_buy_but_not_sell(tmp_path) -> None:
+    bot = trader(tmp_path)
+    position = PositionState(code="005930", name="Test", retire_after_exit=True)
+    buy = StrategyAction(OrderSide.BUY, 30_000, None, "initial_buy")
+    sell = StrategyAction(OrderSide.SELL, 0, 1, "sell_profitable_lot", sell_reason=SellReason.PROFIT_TAKE.value)
+
+    assert bot.pre_request_block_reason(position, buy) == "BUY_BLOCKED_RETIRE_AFTER_EXIT"
+    assert bot.pre_request_block_reason(position, sell) == ""
+
+
+def test_apply_stock_retirement_config_copies_flags(tmp_path) -> None:
+    config = BotConfig(
+        stocks=(StockConfig("005930", "Test", retire_after_exit=True, retire_reason="replace"),),
+        order=OrderConfig(price_sample_interval_seconds=0),
+        storage_path=str(tmp_path / "state.sqlite3"),
+        log_path=str(tmp_path / "trader.log"),
+    )
+    bot = AutoTrader(config, use_mock_client=True)
+    position = bot.position_manager.get("005930", "Test")
+
+    bot.apply_stock_retirement_config(position, config.stocks[0])
+
+    assert position.retire_after_exit is True
+    assert position.retire_reason == "replace"
+
+
 def _force_trade_window(monkeypatch) -> None:
     monkeypatch.setattr(trader_main, "in_trade_window", lambda config: True)
 

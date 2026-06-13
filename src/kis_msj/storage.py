@@ -82,6 +82,9 @@ class StateStore:
             _ensure_column(connection, "positions", "sync_status", "TEXT NOT NULL DEFAULT 'OK'")
             _ensure_column(connection, "positions", "trading_paused", "INTEGER NOT NULL DEFAULT 0")
             _ensure_column(connection, "positions", "position_state", "TEXT NOT NULL DEFAULT 'NEVER_BOUGHT'")
+            _ensure_column(connection, "positions", "retire_after_exit", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "positions", "retire_reason", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "positions", "trade_stop_after_exit_at", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(connection, "positions", "last_sell_price", "INTEGER NOT NULL DEFAULT 0")
             _ensure_column(connection, "positions", "reentry_anchor_price", "INTEGER NOT NULL DEFAULT 0")
             _ensure_column(connection, "positions", "exit_anchor_price", "INTEGER NOT NULL DEFAULT 0")
@@ -465,7 +468,7 @@ class StateStore:
             data.setdefault("review_acknowledged_by", "")
             data.setdefault("review_note", "")
             data.setdefault("skip_reason", "")
-            for key in ("needs_review", "auto_buy_enabled", "danger_state", "lot_quantity_mismatch", "trading_paused", "anchor_single_fill"):
+            for key in ("needs_review", "auto_buy_enabled", "danger_state", "lot_quantity_mismatch", "trading_paused", "retire_after_exit", "anchor_single_fill"):
                 data[key] = bool(data[key])
             data = _known_model_fields(data, PositionState)
             positions[data["code"]] = PositionState(**data)

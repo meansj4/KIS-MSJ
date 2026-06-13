@@ -43,6 +43,13 @@ def test_initial_buy_creates_candidate_action() -> None:
     assert action.amount == 30000
 
 
+def test_retire_after_exit_default_false() -> None:
+    position = PositionState(code="005930", name="Test")
+
+    assert position.retire_after_exit is False
+    assert position.retire_reason == ""
+
+
 def test_minus_four_percent_add_buy_under_600k() -> None:
     _, _, positions, strategy, risk, snapshot = setup_strategy()
     add_lot(positions, "005930", 10000, 3)
@@ -53,6 +60,40 @@ def test_minus_four_percent_add_buy_under_600k() -> None:
     assert action is not None
     assert action.amount == 30000
     assert "4%" in action.reason
+
+
+def test_retire_after_exit_blocks_add_buy_but_allows_profit_take_sell() -> None:
+    _, _, positions, strategy, risk, snapshot = setup_strategy()
+    add_lot(positions, "005930", 10000, 3)
+    position = positions.refresh_from_lots("005930", 9600)
+    position.retire_after_exit = True
+
+    buy = strategy.decide(position, 9600, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+
+    assert buy is None
+    assert position.skip_reason == "ADD_BUY_BLOCKED_RETIRE_AFTER_EXIT"
+
+    position.skip_reason = ""
+    sell = strategy.decide(position, 10600, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+
+    assert sell is not None
+    assert sell.side is OrderSide.SELL
+    assert sell.sell_reason == SellReason.PROFIT_TAKE.value
+
+
+def test_retire_after_exit_allows_auto_decay_cleanup_sell() -> None:
+    strategy_config = StrategyConfig(cleanup_enabled=True, estimated_fee_tax_pct=0)
+    _, _, positions, strategy, risk, snapshot = setup_strategy(strategy_config, daily_profit_loss=10_000)
+    lot = add_lot(positions, "005930", 10000, 1)
+    age_lot(lot, 20)
+    position = positions.refresh_from_lots("005930", 9800)
+    position.retire_after_exit = True
+
+    action = strategy.decide(position, 9800, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+
+    assert action is not None
+    assert action.side is OrderSide.SELL
+    assert action.sell_reason == SellReason.AUTO_DECAY_CLEANUP_SELL.value
 
 
 def test_minus_five_percent_after_60k_exposure() -> None:
@@ -215,6 +256,28 @@ def test_profit_take_full_exit_sets_wait_reentry() -> None:
     position = positions.apply_fill(TradeFill("005930", "Test", OrderSide.SELL, 1, 10600, "SELL-1", datetime.now(), lot.lot_id, sell_reason=action.sell_reason))
     assert position.position_state == PositionLifecycle.WAIT_REENTRY.value
     assert position.exit_anchor_price == 10600
+
+
+def test_retire_after_exit_last_profit_sell_transitions_to_trade_stopped() -> None:
+    _, _, positions, strategy, risk, snapshot = setup_strategy()
+    lot = add_lot(positions, "005930", 10000, 1)
+    position = positions.refresh_from_lots("005930", 10600)
+    position.retire_after_exit = True
+    position.retire_reason = "replacement"
+
+    action = strategy.decide(position, 10600, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    assert action is not None
+    assert action.sell_reason == SellReason.PROFIT_TAKE.value
+
+    updated = positions.apply_fill(TradeFill("005930", "Test", OrderSide.SELL, 1, 10600, "SELL-1", datetime.now(), lot.lot_id, sell_reason=action.sell_reason))
+
+    assert updated.position_state == PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value
+    assert updated.skip_reason == "TRADE_STOPPED_AFTER_EXIT"
+    assert updated.auto_buy_enabled is False
+    assert updated.exit_time == ""
+    assert updated.normal_exit_anchor_price == 0
+    assert updated.trailing_exit_anchor_price == 0
+    assert updated.reentry_anchor_price == 0
 
 
 def test_multi_fill_profit_exit_sets_vwap_median_reentry_anchors() -> None:
@@ -1075,6 +1138,40 @@ def test_wait_reentry_missing_exit_time_blocks_reentry_and_force_timeout() -> No
     assert context.force_reentry_eligible is False
     assert context.days_since_wait_reentry_started == 0
     assert context.skip_reason == "REENTRY_BLOCKED_MISSING_EXIT_TIME"
+
+
+def test_wait_reentry_retire_after_exit_becomes_trade_stopped_and_blocks_reentry() -> None:
+    _, _, positions, strategy, risk, snapshot = setup_strategy(StrategyConfig(force_reentry_timeout_days=0))
+    position = positions.get("005930", "Test")
+    position.position_state = PositionLifecycle.WAIT_REENTRY.value
+    position.retire_after_exit = True
+    position.exit_time = (datetime.now() - timedelta(days=30)).isoformat(timespec="seconds")
+    position.normal_exit_anchor_price = 10_000
+    position.trailing_exit_anchor_price = 10_000
+
+    refreshed = positions.refresh_from_lots("005930", 10_000)
+    action = strategy.decide(refreshed, 10_000, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(refreshed))
+    context = strategy.context(refreshed, 10_000)
+
+    assert refreshed.position_state == PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value
+    assert action is None
+    assert context.skip_reason == "TRADE_STOPPED_AFTER_EXIT"
+    assert context.reentry_condition_met is False
+    assert context.force_reentry_eligible is False
+
+
+def test_trade_stopped_after_exit_blocks_initial_buy() -> None:
+    _, _, positions, strategy, risk, snapshot = setup_strategy()
+    position = positions.get("005930", "Test")
+    position.retire_after_exit = True
+    position.position_state = PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value
+
+    action = strategy.decide(position, 10_000, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
+    context = strategy.context(position, 10_000)
+
+    assert action is None
+    assert position.skip_reason == "TRADE_STOPPED_AFTER_EXIT"
+    assert context.trade_stop_after_exit_state == PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value
 
 
 def test_partial_profit_sell_keeps_holding_and_does_not_start_wait_reentry_decay() -> None:

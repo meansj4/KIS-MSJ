@@ -23,6 +23,8 @@ class StockConfig:
     note: str = ""
     reason: str = ""
     manual_only: bool = False
+    retire_after_exit: bool = False
+    retire_reason: str = ""
     priority: int = 0
     group: str = ""
     trading_halted: bool = False

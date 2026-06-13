@@ -77,6 +77,12 @@ class StrategyContext:
     force_reentry_starts_new_cycle: bool = False
     old_cycle_id: str = ""
     new_cycle_id: str = ""
+    retire_after_exit: bool = False
+    retire_reason: str = ""
+    trade_stop_after_exit_eligible: bool = False
+    trade_stop_after_exit_state: str = ""
+    buy_blocked_by_retire_after_exit: bool = False
+    reentry_blocked_by_retire_after_exit: bool = False
     sell_reason: str = SellReason.UNKNOWN.value
     realized_pnl_rate: float = 0.0
     net_realized_pnl: int = 0
@@ -177,6 +183,10 @@ class LotGridStrategy:
         sell = self._sell_action(position, current_price, snapshot)
         if sell:
             return sell
+        retire_block = self._retire_buy_block_reason(position, lifecycle, current_price)
+        if retire_block:
+            position.skip_reason = retire_block
+            return None
         if not account_risk.allowed or not symbol_risk.allowed:
             position.skip_reason = "|".join(account_risk.reasons + symbol_risk.reasons)
             return None
@@ -484,6 +494,12 @@ class LotGridStrategy:
             force_reentry_starts_new_cycle=bool(reentry_details["force_reentry_starts_new_cycle"]),
             old_cycle_id=str(reentry_details["old_cycle_id"]),
             new_cycle_id=str(reentry_details["new_cycle_id"]),
+            retire_after_exit=position.retire_after_exit,
+            retire_reason=position.retire_reason,
+            trade_stop_after_exit_eligible=position.retire_after_exit and not bool(self.lot_manager.open_lots(position.code)),
+            trade_stop_after_exit_state=PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value if self._position_state(position) == PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value else "",
+            buy_blocked_by_retire_after_exit=self._retire_buy_block_reason(position, self._position_state(position), current_price) != "",
+            reentry_blocked_by_retire_after_exit=position.retire_after_exit and self._position_state(position) == PositionLifecycle.WAIT_REENTRY.value,
             sell_reason=sell_candidate[1] if sell_candidate else SellReason.UNKNOWN.value,
             realized_pnl_rate=(sell_candidate[0].profit_pct_at(current_price) / 100.0) if sell_candidate else 0.0,
             net_realized_pnl=self._net_pnl(sell_candidate[0], current_price, sell_candidate[0].remaining_quantity) if sell_candidate else 0,
@@ -547,10 +563,12 @@ class LotGridStrategy:
             return PositionLifecycle.RISK_BLOCKED.value
         if position.needs_review:
             return PositionLifecycle.REVIEW_REQUIRED.value
-        if position.position_state == PositionLifecycle.COOLDOWN_AFTER_CLEANUP.value:
-            return PositionLifecycle.COOLDOWN_AFTER_CLEANUP.value
         if self.lot_manager.open_lots(position.code):
             return PositionLifecycle.HOLDING.value
+        if position.position_state == PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value or position.retire_after_exit:
+            return PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value
+        if position.position_state == PositionLifecycle.COOLDOWN_AFTER_CLEANUP.value:
+            return PositionLifecycle.COOLDOWN_AFTER_CLEANUP.value
         if position.position_state == PositionLifecycle.WAIT_REENTRY.value or position.last_fill_side == OrderSide.SELL.value:
             return PositionLifecycle.WAIT_REENTRY.value
         return PositionLifecycle.NEVER_BOUGHT.value
@@ -748,6 +766,9 @@ class LotGridStrategy:
             return buy_block
         if state in {PositionLifecycle.SYNC_REQUIRED.value, PositionLifecycle.REVIEW_REQUIRED.value, PositionLifecycle.RISK_BLOCKED.value}:
             return state.lower()
+        retire_block = self._retire_buy_block_reason(position, state, current_price)
+        if retire_block:
+            return retire_block
         if state == PositionLifecycle.COOLDOWN_AFTER_CLEANUP.value:
             return "cleanup_cooldown"
         if state == PositionLifecycle.WAIT_REENTRY.value and _parse_time(position.exit_time) is None:
@@ -776,6 +797,21 @@ class LotGridStrategy:
                 elapsed = datetime.now() - last_order_time
             if elapsed is not None and elapsed < timedelta(minutes=self.config.strategy.reentry_buy_cooldown_minutes):
                 return "reentry_buy_cooldown"
+        return ""
+
+    def _retire_buy_block_reason(self, position: PositionState, lifecycle: str, current_price: int = 0) -> str:
+        if not position.retire_after_exit:
+            return ""
+        if lifecycle == PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value:
+            return "TRADE_STOPPED_AFTER_EXIT"
+        if lifecycle == PositionLifecycle.WAIT_REENTRY.value:
+            if current_price and self.force_reentry_eligible(position, current_price):
+                return "FORCE_REENTRY_BLOCKED_RETIRE_AFTER_EXIT"
+            return "REENTRY_BLOCKED_RETIRE_AFTER_EXIT"
+        if lifecycle == PositionLifecycle.HOLDING.value:
+            return "ADD_BUY_BLOCKED_RETIRE_AFTER_EXIT"
+        if lifecycle == PositionLifecycle.NEVER_BOUGHT.value:
+            return "BUY_BLOCKED_RETIRE_AFTER_EXIT"
         return ""
 
     def cleanup_loss_budget(self, snapshot: AccountSnapshot) -> int:

@@ -158,6 +158,7 @@ const LABELS = {
   code:'종목코드', name:'종목명', enabled:'사용 여부', position_state:'보유 상태',
   current_price:'현재가', open_lot_count:'OPEN LOT 수', invested_amount:'투입금',
   profit_loss_pct:'평가손익률', risk_block_reasons:'위험 사유', last_decision:'최근 판단',
+  retire_after_exit:'교체대기', retire_reason:'교체 사유',
   skip_reason:'스킵 사유', final_block_reason:'최종 차단 사유',
   lot_id:'LOT ID', status:'상태', buy_price:'매수가', buy_quantity:'매수 수량',
   remaining_quantity:'잔여 수량', buy_amount:'매수 금액', buy_filled_at:'매수 체결시각',
@@ -188,7 +189,8 @@ const LABELS = {
 };
 const VALUE_LABELS = {
   HOLDING:'보유 중', NEVER_BOUGHT:'미매수', WAIT_REENTRY:'재진입 대기',
-  COOLDOWN_AFTER_CLEANUP:'Cleanup 후 쿨다운', REVIEW_REQUIRED:'수동 검토 필요',
+  COOLDOWN_AFTER_CLEANUP:'Cleanup 후 쿨다운', TRADE_STOPPED_AFTER_EXIT:'거래중지(청산후)',
+  REVIEW_REQUIRED:'수동 검토 필요',
   RISK_BLOCKED:'위험 차단', SYNC_REQUIRED:'동기화 필요',
   PROFIT_TAKE:'본전/수익 매도', CLEANUP_SELL:'손실 정리 매도', AUTO_DECAY_CLEANUP_SELL:'Decay 정리 매도', UNKNOWN:'알 수 없음',
   BUY:'매수', SELL:'매도', REQUESTED:'요청됨', PARTIAL:'부분체결', FILLED:'체결완료',
@@ -197,6 +199,11 @@ const VALUE_LABELS = {
   runtime_sell_paused:'매도 일시정지로 차단', runtime_cleanup_paused:'Cleanup 일시정지로 차단',
   runtime_reentry_paused:'재진입 일시정지로 차단', open_order_exists_for_cleanup:'미체결 주문이 있어 cleanup 매도 차단',
   risk_blocked_buy_sell_blocked:'위험 차단 상태라 매수/매도 모두 차단', sync_required:'동기화 필요로 차단',
+  BUY_BLOCKED_RETIRE_AFTER_EXIT:'교체대기 종목 신규매수 차단',
+  ADD_BUY_BLOCKED_RETIRE_AFTER_EXIT:'교체대기 종목 추가매수 차단',
+  REENTRY_BLOCKED_RETIRE_AFTER_EXIT:'교체대기 종목 재진입 차단',
+  FORCE_REENTRY_BLOCKED_RETIRE_AFTER_EXIT:'교체대기 종목 강제 재진입 차단',
+  TRADE_STOPPED_AFTER_EXIT:'청산 후 거래중지',
   review_required:'수동 검토 필요로 매수 차단'
 };
 Object.assign(LABELS, {
@@ -232,7 +239,8 @@ Object.assign(LABELS, {
 });
 Object.assign(VALUE_LABELS, {
   HOLDING:'보유 중', NEVER_BOUGHT:'미매수', WAIT_REENTRY:'재진입 대기',
-  COOLDOWN_AFTER_CLEANUP:'Cleanup 후 쿨다운', REVIEW_REQUIRED:'수동 검토 필요',
+  COOLDOWN_AFTER_CLEANUP:'Cleanup 후 쿨다운', TRADE_STOPPED_AFTER_EXIT:'거래중지(청산후)',
+  REVIEW_REQUIRED:'수동 검토 필요',
   RISK_BLOCKED:'위험 차단', SYNC_REQUIRED:'동기화 필요', OPEN:'미청산',
   CLOSED:'청산 완료', REQUESTED:'요청됨', PARTIAL:'부분체결', FILLED:'체결완료',
   CANCELED:'취소됨', REJECTED:'거절됨', BUY:'매수', SELL:'매도',
@@ -290,7 +298,7 @@ function formatNumber(value) {
 }
 const sortState = {};
 const DEFAULT_COLUMNS = {
-  stocks: ['code','name','enabled','position_state','current_price','open_lot_count','lot_unit_amount','max_symbol_amount','max_lots_per_symbol','lot_sizing_bucket','invested_amount','profit_loss_pct','risk_block_reasons','skip_reason','final_block_reason'],
+  stocks: ['code','name','enabled','retire_after_exit','retire_reason','position_state','current_price','open_lot_count','lot_unit_amount','max_symbol_amount','max_lots_per_symbol','lot_sizing_bucket','invested_amount','profit_loss_pct','risk_block_reasons','skip_reason','final_block_reason'],
   lots: ['lot_id','code','name','status','buy_price','remaining_quantity','current_price','unrealized_pnl','unrealized_pnl_rate','age_weeks','effective_target_profit_rate','sell_trigger_price','cleanup_candidate','stale_lot','last_sell_reason'],
   stockLots: ['lot_id','code','name','status','buy_price','remaining_quantity','current_price','unrealized_pnl','unrealized_pnl_rate','age_weeks','effective_target_profit_rate','sell_trigger_price','cleanup_candidate','stale_lot','last_sell_reason'],
   orders: ['order_id','code','name','side','status','quantity','filled_quantity','remaining_quantity','fill_count','cancel_requested','cancel_confirmed','cancel_rejected','post_cancel_execution_checked','order_sync_warning','limit_price','reason','requested_at','updated_at','lot_id'],

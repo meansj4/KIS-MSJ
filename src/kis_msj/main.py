@@ -17,7 +17,7 @@ from .kis_client import KisApiError, KisClient, MockKisClient
 from .logger import configure_trade_logger, log_decision
 from .lot_manager import LotManager
 from .loop_profile import LoopProfile, key_value_line
-from .models import AccountSnapshot, OrderSide, PositionState, Quote, SellReason
+from .models import AccountSnapshot, OrderSide, PositionState, Quote, ReentryType, SellReason
 from .models import PositionLifecycle
 from .notifier import LogNotifier
 from .order_manager import OrderManager
@@ -157,6 +157,16 @@ class AutoTrader:
         self._last_account_snapshot_at = 0.0
         self.logger.info("account_snapshot_cache_invalidated reason=%s", reason)
 
+    def stock_config_for_code(self, code: str):
+        code = str(code).zfill(6)
+        return next((stock for stock in self.config.stocks if stock.code == code), None)
+
+    def apply_stock_retirement_config(self, position: PositionState, stock) -> None:
+        if stock is None:
+            return
+        position.retire_after_exit = bool(getattr(stock, "retire_after_exit", False))
+        position.retire_reason = str(getattr(stock, "retire_reason", "") or "")
+
     def run_once(self) -> str:
         self._loop_id += 1
         profile = (
@@ -233,6 +243,7 @@ class AutoTrader:
                             profile.symbols_skipped += 1
                         continue
                     position = self.position_manager.get(stock.code, stock.name)
+                    self.apply_stock_retirement_config(position, stock)
                     if stock.danger_state:
                         position.danger_state = True
                         position.position_state = PositionLifecycle.RISK_BLOCKED.value
@@ -329,6 +340,7 @@ class AutoTrader:
             code = str(manual["code"]).zfill(6)
             side = OrderSide(str(manual["side"]))
             position = self.position_manager.get(code)
+            self.apply_stock_retirement_config(position, self.stock_config_for_code(code))
             try:
                 block_reason = self.manual_request_block_reason(manual, position, account_risk)
                 if block_reason:
@@ -539,6 +551,7 @@ class AutoTrader:
         if current_price <= 0:
             self.logger.info("trade_blocked code=%s price=%s reason=current_price_lookup_failed", position.code, current_price)
             return
+        previous_position_state = position.position_state
         if profile:
             with profile.stage("lot_manager"):
                 position = self.position_manager.refresh_from_lots(position.code, current_price)
@@ -613,6 +626,7 @@ class AutoTrader:
                 final_block_reason,
                 action_created,
                 samples=final_samples,
+                previous_position_state=previous_position_state,
             )
         if action is None:
             return
@@ -671,6 +685,7 @@ class AutoTrader:
         action_created: bool = False,
         *,
         samples: Sequence[Quote] = (),
+        previous_position_state: str = "",
     ) -> None:
         last_lot = self.lot_manager.last_buy_lot(position.code)
         last_lot_drop = (current_price - last_lot.buy_price) / last_lot.buy_price * 100.0 if last_lot else 0.0
@@ -709,6 +724,17 @@ class AutoTrader:
             price_context_error=price_context["error"],
             price_context_collected_at=price_context["collected_at"],
             position_state=context.position_state,
+            previous_position_state=previous_position_state,
+            new_position_state=context.position_state,
+            transitioned_to_trade_stopped_after_exit=previous_position_state != PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value
+            and context.position_state == PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value,
+            retire_after_exit=context.retire_after_exit,
+            retire_reason=context.retire_reason,
+            trade_stop_after_exit_eligible=context.trade_stop_after_exit_eligible,
+            trade_stop_after_exit_state=context.trade_stop_after_exit_state,
+            buy_blocked_by_retire_after_exit=context.buy_blocked_by_retire_after_exit,
+            reentry_blocked_by_retire_after_exit=context.reentry_blocked_by_retire_after_exit,
+            open_lot_count=context.current_open_lot_count,
             position_pnl_rate=f"{context.position_pnl_rate:.4f}",
             pnl_mode=context.pnl_mode,
             average_price=f"{position.average_price:.2f}",
@@ -905,6 +931,9 @@ class AutoTrader:
             return "risk_blocked"
         if self.review_required_block_reason(position, action):
             return "review_required"
+        retire_block = self.retire_after_exit_block_reason(position, action)
+        if retire_block:
+            return retire_block
         partial = self.partial_order_block_reason(position)
         if partial:
             return partial
@@ -934,6 +963,19 @@ class AutoTrader:
         if action.side is OrderSide.SELL and action.sell_reason == SellReason.CLEANUP_SELL.value:
             return "review_required"
         return ""
+
+    def retire_after_exit_block_reason(self, position: PositionState, action) -> str:
+        if not position.retire_after_exit or action.side is not OrderSide.BUY:
+            return ""
+        if position.position_state == PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value:
+            return "TRADE_STOPPED_AFTER_EXIT"
+        if action.reentry_type == ReentryType.FORCE_REENTRY_TIMEOUT_NEW_CYCLE.value:
+            return "FORCE_REENTRY_BLOCKED_RETIRE_AFTER_EXIT"
+        if action.reentry_type != ReentryType.NONE.value:
+            return "REENTRY_BLOCKED_RETIRE_AFTER_EXIT"
+        if self.lot_manager.open_lots(position.code):
+            return "ADD_BUY_BLOCKED_RETIRE_AFTER_EXIT"
+        return "BUY_BLOCKED_RETIRE_AFTER_EXIT"
 
     def log_pre_request_block(self, position: PositionState, reason: str) -> None:
         self.logger.info("trade_blocked code=%s name=%s reason=%s", position.code, position.name, reason)

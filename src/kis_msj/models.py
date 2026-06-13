@@ -37,6 +37,7 @@ class PositionLifecycle(str, Enum):
     HOLDING = "HOLDING"
     WAIT_REENTRY = "WAIT_REENTRY"
     COOLDOWN_AFTER_CLEANUP = "COOLDOWN_AFTER_CLEANUP"
+    TRADE_STOPPED_AFTER_EXIT = "TRADE_STOPPED_AFTER_EXIT"
     REVIEW_REQUIRED = "REVIEW_REQUIRED"
     RISK_BLOCKED = "RISK_BLOCKED"
     SYNC_REQUIRED = "SYNC_REQUIRED"
@@ -125,6 +126,9 @@ class PositionState:
     sync_status: str = "OK"
     trading_paused: bool = False
     position_state: str = PositionLifecycle.NEVER_BOUGHT.value
+    retire_after_exit: bool = False
+    retire_reason: str = ""
+    trade_stop_after_exit_at: str = ""
     last_sell_price: int = 0
     reentry_anchor_price: int = 0
     exit_anchor_price: int = 0

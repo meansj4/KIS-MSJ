@@ -483,6 +483,20 @@ REVIEW_REQUIRED는 자동 BUY를 멈추고 사람이 확인해야 하는 상태�
 
 REVIEW_REQUIRED의 차단 단위는 BUY 계열과 SELL 계열을 구분한다. initial/add/NORMAL_REENTRY/TRAILING_REENTRY/FORCE_REENTRY_TIMEOUT_NEW_CYCLE 같은 BUY 계열은 `review_required`로 차단한다. 반면 수익 실현 목적의 `PROFIT_TAKE` SELL은 계속 허용될 수 있다. 손실 확정 성격의 일반 `CLEANUP_SELL`은 `symbol_state == HOLDING` 조건 때문에 REVIEW_REQUIRED에서는 차단한다. age-decay로 effective target이 음수가 된 `AUTO_DECAY_CLEANUP_SELL`은 fatal block이 없으면 REVIEW_REQUIRED에서도 SELL 후보가 될 수 있으므로, 운영자는 review 화면에서 profit-take와 cleanup 성격을 구분해 확인해야 한다.
 
+## 14-1. retire_after_exit / TRADE_STOPPED_AFTER_EXIT
+
+`retire_after_exit`는 종목 교체를 위해 보유 LOT은 정리하되 새 BUY를 막는 stock config flag다. 기본값은 `false`이며 선택적으로 `retire_reason`을 기록할 수 있다. 이 기능은 `manual_only`와 다르다. `manual_only`는 자동 평가 자체를 건너뛰는 운영 정지에 가깝고, `retire_after_exit`는 기존 보유 LOT의 `PROFIT_TAKE` SELL 및 허용된 cleanup SELL은 계속 평가한 뒤 OPEN LOT이 0개가 되면 종목을 멈춘다.
+
+상태 전환:
+
+- `retire_after_exit=true`이고 OPEN LOT이 있으면 보유 lifecycle은 유지한다. SELL 후보는 기존 정책대로 허용한다.
+- 같은 상태에서 BUY 계열은 모두 차단한다. initial BUY는 `BUY_BLOCKED_RETIRE_AFTER_EXIT`, add BUY는 `ADD_BUY_BLOCKED_RETIRE_AFTER_EXIT`, normal/trailing reentry는 `REENTRY_BLOCKED_RETIRE_AFTER_EXIT`, 30일 timeout force reentry는 `FORCE_REENTRY_BLOCKED_RETIRE_AFTER_EXIT`를 남긴다.
+- `retire_after_exit=true`이고 OPEN LOT이 0개가 되면 `TRADE_STOPPED_AFTER_EXIT`로 전환한다. 이 상태는 `REVIEW_REQUIRED`가 아니며, WAIT_REENTRY로 대기하지 않는다.
+- 최종 청산 뒤에는 `normal_exit_anchor_price`, `trailing_exit_anchor_price`, `reentry_anchor_price`, `exit_anchor_price`, `post_exit_high_price`, `exit_time`을 비워 old cycle 값이 다음 판단에 섞이지 않게 한다.
+- `TRADE_STOPPED_AFTER_EXIT`에서는 자동 BUY가 계속 차단되고 skip/block reason은 `TRADE_STOPPED_AFTER_EXIT`로 표시한다.
+
+decision log/UI에는 `retire_after_exit`, `retire_reason`, `trade_stop_after_exit_eligible`, `trade_stop_after_exit_state`, `buy_blocked_by_retire_after_exit`, `reentry_blocked_by_retire_after_exit`, `transitioned_to_trade_stopped_after_exit`, `previous_position_state`, `new_position_state`, `open_lot_count`를 남긴다.
+
 진입 조건 예:
 
 | reason | 의미 |

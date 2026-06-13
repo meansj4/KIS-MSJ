@@ -157,6 +157,9 @@ class PositionManager:
             return PositionLifecycle.REVIEW_REQUIRED.value
         if has_open_lots:
             return PositionLifecycle.HOLDING.value
+        if position.retire_after_exit:
+            self._mark_trade_stopped_after_exit(position)
+            return PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value
         if position.position_state == PositionLifecycle.COOLDOWN_AFTER_CLEANUP.value:
             cooldown_until = _parse_time(position.cleanup_reentry_cooldown_until)
             if cooldown_until is not None and datetime.now() < cooldown_until:
@@ -170,6 +173,18 @@ class PositionManager:
         if position.last_fill_side == OrderSide.SELL.value or any(lot.code == position.code for lot in self.lot_manager.lots.values()):
             return PositionLifecycle.WAIT_REENTRY.value
         return PositionLifecycle.NEVER_BOUGHT.value
+
+    def _mark_trade_stopped_after_exit(self, position: PositionState) -> None:
+        if not position.trade_stop_after_exit_at:
+            position.trade_stop_after_exit_at = datetime.now().isoformat(timespec="seconds")
+        position.auto_buy_enabled = False
+        position.skip_reason = "TRADE_STOPPED_AFTER_EXIT"
+        position.normal_exit_anchor_price = 0
+        position.trailing_exit_anchor_price = 0
+        position.reentry_anchor_price = 0
+        position.exit_anchor_price = 0
+        position.post_exit_high_price = 0
+        position.exit_time = ""
 
     def sync_account(self, snapshot: AccountSnapshot) -> None:
         self.account_mismatch_detected = False
