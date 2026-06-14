@@ -150,7 +150,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "theme_rebalance_1m_aggressive_retire_after_exit: theme amount overweight and low relative score"
     },
     {
       "code": "300720",
@@ -188,7 +190,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "theme_rebalance_1m_aggressive_retire_after_exit: theme amount overweight and low relative score"
     },
     {
       "code": "284740",
@@ -380,7 +384,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "theme_rebalance_1m_aggressive_retire_after_exit: theme amount overweight and low relative score"
     },
     {
       "code": "033270",
@@ -439,7 +445,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "theme_rebalance_1m_aggressive_retire_after_exit: matched with higher-scoring same-theme replacement"
     },
     {
       "code": "005500",
@@ -540,7 +548,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "theme_rebalance_1m_aggressive_retire_after_exit: matched with higher-scoring same-theme replacement"
     },
     {
       "code": "234080",
@@ -833,7 +843,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "theme_rebalance_1m_aggressive_retire_after_exit: matched with higher-scoring same-theme replacement"
     },
     {
       "code": "003690",
@@ -909,7 +921,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "theme_rebalance_1m_aggressive_retire_after_exit: small_lot_lower_priority_and_finance_overweight"
     },
     {
       "code": "003470",
@@ -928,7 +942,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "theme_rebalance_1m_aggressive_retire_after_exit: theme amount overweight and low relative score"
     },
     {
       "code": "030610",
@@ -947,7 +963,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "theme_rebalance_1m_aggressive_retire_after_exit: lowest_non_uncertain_quality_among_remaining_finance"
     },
     {
       "code": "085620",
@@ -966,7 +984,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "theme_rebalance_1m_aggressive_retire_after_exit: lower_priority_with_no_open_lot_and_finance_overweight"
     },
     {
       "code": "011760",
@@ -1101,7 +1121,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "theme_rebalance_1m_aggressive_retire_after_exit: matched with higher-scoring same-theme replacement"
     },
     {
       "code": "079430",
@@ -1202,7 +1224,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "theme_rebalance_1m_aggressive_retire_after_exit: matched with higher-scoring same-theme replacement"
     },
     {
       "code": "101530",
@@ -1541,7 +1565,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "theme_rebalance_1m_aggressive_retire_after_exit: matched with higher-scoring same-theme replacement"
     },
     {
       "code": "001940",
@@ -1739,7 +1765,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "theme_rebalance_1m_aggressive_retire_after_exit: rechecked_pbr_high_and_negative_profitability"
     },
     {
       "code": "000430",
@@ -1779,7 +1807,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "theme_rebalance_1m_aggressive_retire_after_exit: rechecked_negative_profitability_and_low_liquidity"
     },
     {
       "code": "123700",
@@ -1817,7 +1847,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "theme_rebalance_1m_aggressive_retire_after_exit: rechecked_liquidity_below_threshold"
     },
     {
       "code": "163560",
@@ -1899,7 +1931,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "theme_rebalance_1m_aggressive_retire_after_exit: matched with higher-scoring same-theme replacement"
     },
     {
       "code": "058430",
@@ -2185,7 +2219,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "theme_rebalance_1m_aggressive_retire_after_exit: matched with higher-scoring same-theme replacement"
     },
     {
       "code": "286940",
@@ -2244,7 +2280,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "theme_rebalance_1m_aggressive_retire_after_exit: theme amount overweight and low relative score"
     },
     {
       "code": "097520",
@@ -2263,7 +2301,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "theme_rebalance_1m_aggressive_retire_after_exit: theme amount overweight and low relative score"
     },
     {
       "code": "077500",
@@ -2303,7 +2343,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "theme_rebalance_1m_aggressive_retire_after_exit: rechecked_negative_profitability_and_pbr_above_1"
     },
     {
       "code": "094280",
@@ -2343,7 +2385,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "theme_rebalance_1m_aggressive_retire_after_exit: theme amount overweight and low relative score"
     },
     {
       "code": "053690",
@@ -2362,7 +2406,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "theme_rebalance_1m_aggressive_retire_after_exit: theme amount overweight and low relative score"
     },
     {
       "code": "012630",
@@ -2457,7 +2503,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "theme_rebalance_1m_aggressive_retire_after_exit: theme amount overweight and low relative score"
     },
     {
       "code": "294870",
@@ -2666,7 +2714,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "theme_rebalance_1m_aggressive_retire_after_exit: current quality acceptable or no better replacement within target range"
     },
     {
       "code": "001060",
@@ -2742,7 +2792,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "theme_rebalance_1m_aggressive_retire_after_exit: matched with higher-scoring same-theme replacement"
     },
     {
       "code": "000080",
@@ -2856,7 +2908,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "theme_rebalance_1m_aggressive_retire_after_exit: matched with higher-scoring same-theme replacement"
     },
     {
       "code": "319400",
@@ -2875,7 +2929,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "theme_rebalance_1m_aggressive_retire_after_exit: theme amount overweight and low relative score"
     },
     {
       "code": "030200",
@@ -3160,7 +3216,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "theme_rebalance_1m_aggressive_retire_after_exit: large_lot_lower_priority_with_no_open_lot_after_recheck"
     },
     {
       "code": "060980",
@@ -3179,7 +3237,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "theme_rebalance_1m_aggressive_retire_after_exit: large_lot_lower_priority_sufficient_to_enter_tolerance"
     },
     {
       "code": "011210",
@@ -3192,6 +3252,246 @@
       "manual_only": false,
       "priority": 164,
       "group": "operator_add_20260613",
+      "trading_halted": false,
+      "administrative_issue": false,
+      "investment_alert": false,
+      "audit_opinion_issue": false,
+      "delisting_risk": false,
+      "accounting_issue": false,
+      "liquidity_warning": false
+    },
+    {
+      "code": "090460",
+      "name": "비에이치",
+      "enabled": true,
+      "market": "KOSPI",
+      "sector": "IT/전자",
+      "note": "Aggressive 1M theme rebalance add 2026-06-14; 1LOT 100000 KRW; max 1200000 KRW",
+      "reason": "theme_rebalance_1m_aggressive_new_add",
+      "manual_only": false,
+      "priority": 165,
+      "group": "theme_rebalance_1m_aggressive_20260614",
+      "retire_after_exit": false,
+      "trading_halted": false,
+      "administrative_issue": false,
+      "investment_alert": false,
+      "audit_opinion_issue": false,
+      "delisting_risk": false,
+      "accounting_issue": false,
+      "liquidity_warning": false
+    },
+    {
+      "code": "033240",
+      "name": "자화전자",
+      "enabled": true,
+      "market": "KOSPI",
+      "sector": "IT/전자",
+      "note": "Aggressive 1M theme rebalance add 2026-06-14; 1LOT 300000 KRW; max 3600000 KRW",
+      "reason": "theme_rebalance_1m_aggressive_new_add",
+      "manual_only": false,
+      "priority": 166,
+      "group": "theme_rebalance_1m_aggressive_20260614",
+      "retire_after_exit": false,
+      "trading_halted": false,
+      "administrative_issue": false,
+      "investment_alert": false,
+      "audit_opinion_issue": false,
+      "delisting_risk": false,
+      "accounting_issue": false,
+      "liquidity_warning": false
+    },
+    {
+      "code": "001120",
+      "name": "LX인터내셔널",
+      "enabled": true,
+      "market": "KOSPI",
+      "sector": "산업재/운송",
+      "note": "Aggressive 1M theme rebalance add 2026-06-14; 1LOT 300000 KRW; max 3600000 KRW",
+      "reason": "theme_rebalance_1m_aggressive_new_add",
+      "manual_only": false,
+      "priority": 167,
+      "group": "theme_rebalance_1m_aggressive_20260614",
+      "retire_after_exit": false,
+      "trading_halted": false,
+      "administrative_issue": false,
+      "investment_alert": false,
+      "audit_opinion_issue": false,
+      "delisting_risk": false,
+      "accounting_issue": false,
+      "liquidity_warning": false
+    },
+    {
+      "code": "126720",
+      "name": "수산인더스트리",
+      "enabled": true,
+      "market": "KOSPI",
+      "sector": "유틸/에너지",
+      "note": "Aggressive 1M theme rebalance add 2026-06-14; 1LOT 100000 KRW; max 1200000 KRW",
+      "reason": "theme_rebalance_1m_aggressive_new_add",
+      "manual_only": false,
+      "priority": 168,
+      "group": "theme_rebalance_1m_aggressive_20260614",
+      "retire_after_exit": false,
+      "trading_halted": false,
+      "administrative_issue": false,
+      "investment_alert": false,
+      "audit_opinion_issue": false,
+      "delisting_risk": false,
+      "accounting_issue": false,
+      "liquidity_warning": false
+    },
+    {
+      "code": "014820",
+      "name": "동원시스템즈",
+      "enabled": true,
+      "market": "KOSPI",
+      "sector": "음식료/필수소비",
+      "note": "Aggressive 1M theme rebalance add 2026-06-14; 1LOT 100000 KRW; max 1200000 KRW",
+      "reason": "theme_rebalance_1m_aggressive_new_add",
+      "manual_only": false,
+      "priority": 169,
+      "group": "theme_rebalance_1m_aggressive_20260614",
+      "retire_after_exit": false,
+      "trading_halted": false,
+      "administrative_issue": false,
+      "investment_alert": false,
+      "audit_opinion_issue": false,
+      "delisting_risk": false,
+      "accounting_issue": false,
+      "liquidity_warning": false
+    },
+    {
+      "code": "008490",
+      "name": "서흥",
+      "enabled": true,
+      "market": "KOSPI",
+      "sector": "제약/헬스케어",
+      "note": "Aggressive 1M theme rebalance add 2026-06-14; 1LOT 100000 KRW; max 1200000 KRW",
+      "reason": "theme_rebalance_1m_aggressive_new_add",
+      "manual_only": false,
+      "priority": 170,
+      "group": "theme_rebalance_1m_aggressive_20260614",
+      "retire_after_exit": false,
+      "trading_halted": false,
+      "administrative_issue": false,
+      "investment_alert": false,
+      "audit_opinion_issue": false,
+      "delisting_risk": false,
+      "accounting_issue": false,
+      "liquidity_warning": false
+    },
+    {
+      "code": "003090",
+      "name": "대웅",
+      "enabled": true,
+      "market": "KOSPI",
+      "sector": "제약/헬스케어",
+      "note": "Aggressive 1M theme rebalance add 2026-06-14; 1LOT 100000 KRW; max 1200000 KRW",
+      "reason": "theme_rebalance_1m_aggressive_new_add",
+      "manual_only": false,
+      "priority": 171,
+      "group": "theme_rebalance_1m_aggressive_20260614",
+      "retire_after_exit": false,
+      "trading_halted": false,
+      "administrative_issue": false,
+      "investment_alert": false,
+      "audit_opinion_issue": false,
+      "delisting_risk": false,
+      "accounting_issue": false,
+      "liquidity_warning": false
+    },
+    {
+      "code": "000640",
+      "name": "동아쏘시오홀딩스",
+      "enabled": true,
+      "market": "KOSPI",
+      "sector": "제약/헬스케어",
+      "note": "Aggressive 1M theme rebalance add 2026-06-14; 1LOT 300000 KRW; max 3600000 KRW",
+      "reason": "theme_rebalance_1m_aggressive_new_add",
+      "manual_only": false,
+      "priority": 172,
+      "group": "theme_rebalance_1m_aggressive_20260614",
+      "retire_after_exit": false,
+      "trading_halted": false,
+      "administrative_issue": false,
+      "investment_alert": false,
+      "audit_opinion_issue": false,
+      "delisting_risk": false,
+      "accounting_issue": false,
+      "liquidity_warning": false
+    },
+    {
+      "code": "185750",
+      "name": "종근당",
+      "enabled": true,
+      "market": "KOSPI",
+      "sector": "제약/헬스케어",
+      "note": "Aggressive 1M theme rebalance add 2026-06-14; 1LOT 300000 KRW; max 3600000 KRW",
+      "reason": "theme_rebalance_1m_aggressive_new_add",
+      "manual_only": false,
+      "priority": 173,
+      "group": "theme_rebalance_1m_aggressive_20260614",
+      "retire_after_exit": false,
+      "trading_halted": false,
+      "administrative_issue": false,
+      "investment_alert": false,
+      "audit_opinion_issue": false,
+      "delisting_risk": false,
+      "accounting_issue": false,
+      "liquidity_warning": false
+    },
+    {
+      "code": "069260",
+      "name": "TKG휴켐스",
+      "enabled": true,
+      "market": "KOSPI",
+      "sector": "철강/소재",
+      "note": "Aggressive 1M theme rebalance add 2026-06-14; 1LOT 100000 KRW; max 1200000 KRW",
+      "reason": "theme_rebalance_1m_aggressive_new_add",
+      "manual_only": false,
+      "priority": 174,
+      "group": "theme_rebalance_1m_aggressive_20260614",
+      "retire_after_exit": false,
+      "trading_halted": false,
+      "administrative_issue": false,
+      "investment_alert": false,
+      "audit_opinion_issue": false,
+      "delisting_risk": false,
+      "accounting_issue": false,
+      "liquidity_warning": false
+    },
+    {
+      "code": "007690",
+      "name": "국도화학",
+      "enabled": true,
+      "market": "KOSPI",
+      "sector": "철강/소재",
+      "note": "Aggressive 1M theme rebalance add 2026-06-14; 1LOT 300000 KRW; max 3600000 KRW",
+      "reason": "theme_rebalance_1m_aggressive_new_add",
+      "manual_only": false,
+      "priority": 175,
+      "group": "theme_rebalance_1m_aggressive_20260614",
+      "retire_after_exit": false,
+      "trading_halted": false,
+      "administrative_issue": false,
+      "investment_alert": false,
+      "audit_opinion_issue": false,
+      "delisting_risk": false,
+      "accounting_issue": false,
+      "liquidity_warning": false
+    },
+    {
+      "code": "023590",
+      "name": "다우기술",
+      "enabled": true,
+      "market": "KOSPI",
+      "sector": "통신/데이터",
+      "note": "Aggressive 1M theme rebalance add 2026-06-14; 1LOT 300000 KRW; max 3600000 KRW",
+      "reason": "theme_rebalance_1m_aggressive_new_add",
+      "manual_only": false,
+      "priority": 176,
+      "group": "theme_rebalance_1m_aggressive_20260614",
+      "retire_after_exit": false,
       "trading_halted": false,
       "administrative_issue": false,
       "investment_alert": false,
@@ -3383,13 +3683,13 @@
     "max_consecutive_api_errors": 5,
     "max_price_sample_volatility_pct": 1,
     "block_on_lot_mismatch": true,
-    "max_active_symbols": 164,
-    "max_total_open_lots": 1968,
-    "max_total_invested_amount": 190800000,
-    "max_new_buy_per_day": 164,
-    "max_new_buy_amount_per_day": 36000000,
-    "max_total_initial_buy_amount_per_day": 36000000,
-    "profile": "expansion_100_safe"
+    "max_active_symbols": 152,
+    "max_total_open_lots": 1248,
+    "max_total_invested_amount": 152040000,
+    "max_new_buy_per_day": 104,
+    "max_new_buy_amount_per_day": 12670000,
+    "max_total_initial_buy_amount_per_day": 12670000,
+    "profile": "aggressive_1m_rebalance_transition_safe"
   },
   "order": {
     "live_trading": true,
