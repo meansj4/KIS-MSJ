@@ -990,9 +990,10 @@ class UIService:
         lots = self.lots()
         orders = self.orders()
         fills = self.fills()
-        price_snapshots = self._table("price_snapshots")
         positions_by_code = {str(row.get("code") or ""): row for row in positions}
+        price_snapshots = self._latest_price_snapshot_rows(set(positions_by_code))
         latest_prices = self._latest_prices(price_snapshots, positions_by_code)
+        price_snapshot_count = self._price_snapshot_count()
         open_lots = [lot for lot in lots if _to_int(lot.get("remaining_quantity")) > 0 and str(lot.get("status") or "") != "CLOSED"]
         buy_fills = [fill for fill in fills if str(fill.get("side") or "") == OrderSide.BUY.value]
         sell_fills = [fill for fill in fills if str(fill.get("side") or "") == OrderSide.SELL.value]
@@ -1044,7 +1045,7 @@ class UIService:
             "risk_status_counts": risk_counts,
             "data_quality": {
                 "latest_price_source_at": latest_price_at,
-                "price_snapshot_count": len(price_snapshots),
+                "price_snapshot_count": price_snapshot_count,
                 "fee_tax_estimated": True,
                 "notes": self._portfolio_data_quality_notes(price_snapshots, latest_prices, open_lots),
             },
@@ -1127,8 +1128,8 @@ class UIService:
         filters = filters or {}
         positions = self.positions()
         lots = self.lots()
-        price_snapshots = self._table("price_snapshots")
         positions_by_code = {str(row.get("code") or ""): row for row in positions}
+        price_snapshots = self._latest_price_snapshot_rows(set(positions_by_code))
         latest_prices = self._latest_prices(price_snapshots, positions_by_code)
         open_lots = [lot for lot in lots if _to_int(lot.get("remaining_quantity")) > 0 and str(lot.get("status") or "") != "CLOSED"]
         lot_states = {str(lot.get("lot_id") or ""): _lot_state_from_row(lot) for lot in open_lots}
@@ -1506,7 +1507,7 @@ class UIService:
         latest_decisions = self.latest_decisions_by_code()
         lots = self._table("lots")
         fills = self._table("fills")
-        price_snapshots = self._table("price_snapshots")
+        price_snapshots = self._latest_price_snapshot_rows({str(item.get("code") or "") for item in position_rows})
         pnl_by_code = self._symbol_pnl_summary(position_rows, lots, fills, price_snapshots)
         open_lots_by_code: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for lot in lots:
@@ -2465,6 +2466,57 @@ class UIService:
         normalized = [_normalize_row(dict(row)) for row in rows]
         self._cache_set(key, normalized)
         return [dict(row) for row in normalized]
+
+    def _latest_price_snapshot_rows(self, codes: set[str] | None = None) -> list[dict[str, Any]]:
+        db_path = self._db_path()
+        if not db_path.exists():
+            return []
+        normalized_codes = tuple(sorted({str(code).zfill(6) for code in (codes or set()) if str(code or "").strip()}))
+        db_mtime = self._db_mtime()
+        key = ("latest_price_snapshots", str(db_path), normalized_codes, db_mtime)
+        cached = self._cache_get(key)
+        if cached is not None:
+            return [dict(row) for row in cached]
+        where = ""
+        params: tuple[Any, ...] = ()
+        if normalized_codes:
+            placeholders = ",".join("?" for _ in normalized_codes)
+            where = f"WHERE code IN ({placeholders})"
+            params = normalized_codes
+        sql = f"""
+            SELECT ps.*
+            FROM price_snapshots ps
+            JOIN (
+                SELECT code, MAX(id) AS id
+                FROM price_snapshots
+                {where}
+                GROUP BY code
+            ) latest ON latest.id = ps.id
+            ORDER BY ps.id DESC
+        """
+        with sqlite3.connect(db_path) as connection:
+            connection.row_factory = sqlite3.Row
+            try:
+                rows = connection.execute(sql, params).fetchall()
+            except sqlite3.Error:
+                return []
+        normalized = [_normalize_row(dict(row)) for row in rows]
+        self._cache_set(key, normalized)
+        return [dict(row) for row in normalized]
+
+    def _price_snapshot_count(self) -> int:
+        db_path = self._db_path()
+        if not db_path.exists():
+            return 0
+        db_mtime = self._db_mtime()
+        key = ("price_snapshot_count", str(db_path), db_mtime)
+        cached = self._cache_get(key)
+        if cached is not None:
+            return int(cached)
+        with sqlite3.connect(db_path) as connection:
+            count = self._scalar_int(connection, "SELECT MAX(id) FROM price_snapshots")
+        self._cache_set(key, count)
+        return count
 
     def _db_path(self) -> Path:
         return Path(self.config.storage_path)

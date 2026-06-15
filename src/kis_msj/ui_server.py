@@ -142,17 +142,24 @@ async function api(path, options={}) {
 }
 function esc(v) { return String(v ?? '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 let autoRefreshTimer = null;
+let refreshInFlight = false;
 function setupAutoRefresh() {
   if (autoRefreshTimer) clearInterval(autoRefreshTimer);
   const enabled = document.getElementById('autoRefreshEnabled')?.checked;
   const seconds = Math.max(3, Number(document.getElementById('autoRefreshSeconds')?.value || 10));
-  if (enabled) autoRefreshTimer = setInterval(() => { if (currentView !== 'config') manualRefresh(); }, seconds * 1000);
+  if (enabled) autoRefreshTimer = setInterval(() => { if (currentView !== 'config' && !refreshInFlight) manualRefresh(); }, seconds * 1000);
 }
 async function manualRefresh() {
-  const status = await refreshBanner();
-  await reloadCurrent(status);
-  const target = document.getElementById('lastRefreshAt');
-  if (target) target.textContent = '마지막 갱신: ' + new Date().toLocaleTimeString();
+  if (refreshInFlight) return;
+  refreshInFlight = true;
+  try {
+    const status = await refreshBanner();
+    await reloadCurrent(status);
+    const target = document.getElementById('lastRefreshAt');
+    if (target) target.textContent = '마지막 갱신: ' + new Date().toLocaleTimeString();
+  } finally {
+    refreshInFlight = false;
+  }
 }
 const LABELS = {
   code:'종목코드', name:'종목명', enabled:'사용 여부', position_state:'보유 상태',

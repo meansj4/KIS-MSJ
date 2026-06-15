@@ -536,6 +536,7 @@ def test_config_form_and_table_sorting_scripts_are_present():
     assert "columnControls" in INDEX_HTML
     assert "function setupAutoRefresh" in INDEX_HTML
     assert "function manualRefresh" in INDEX_HTML
+    assert "refreshInFlight" in INDEX_HTML
     assert "manualRefresh" in INDEX_HTML
     assert "autoRefresh" in INDEX_HTML
     assert "/api/runtime/start-loop" in INDEX_HTML
