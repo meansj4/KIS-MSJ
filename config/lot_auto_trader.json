@@ -3683,7 +3683,7 @@
     "max_consecutive_api_errors": 5,
     "max_price_sample_volatility_pct": 1,
     "block_on_lot_mismatch": true,
-    "max_active_symbols": 152,
+    "max_active_symbols": 176,
     "max_total_open_lots": 1248,
     "max_total_invested_amount": 152040000,
     "max_new_buy_per_day": 104,

@@ -237,6 +237,13 @@ Object.assign(LABELS, {
   current_open_lot_count:'현재 OPEN LOT 수', remaining_buy_capacity_amount:'남은 매수 가능 금액',
   price_lot_band:'가격대 LOT 구간'
 });
+Object.assign(LABELS, {
+  realized_pnl_rate:'실현 PnL %',
+  realized_pnl:'실현 PnL',
+  unrealized_pnl_rate:'평가 PnL %',
+  unrealized_pnl:'평가 PnL',
+  retire_reason:'중지 예정 사유'
+});
 Object.assign(VALUE_LABELS, {
   HOLDING:'보유 중', NEVER_BOUGHT:'미매수', WAIT_REENTRY:'재진입 대기',
   COOLDOWN_AFTER_CLEANUP:'Cleanup 후 쿨다운', TRADE_STOPPED_AFTER_EXIT:'거래중지(청산후)',
@@ -285,6 +292,8 @@ function displayCell(key, value) {
   if (key === 'retire_after_exit') {
     return value ? '<span class="badge warn">청산 후 중지 예정</span><span class="key">true</span>' : '<span class="badge neutral">-</span><span class="key">false</span>';
   }
+  if (key === 'realized_pnl' || key === 'unrealized_pnl') return esc(formatSignedKrw(value));
+  if (key === 'realized_pnl_rate' || key === 'unrealized_pnl_rate') return esc(formatSignedRate(value));
   if (typeof value === 'number') return esc(formatNumber(value));
   const translated = valueLabel(value);
   if (/state|status|reason|side|dedupe|flag|enabled|paused|candidate|stale|duplicate|reflected/i.test(key)) {
@@ -299,9 +308,22 @@ function formatNumber(value) {
   if (Number.isInteger(n)) return String(n);
   return String(Math.round(n * 1000) / 1000);
 }
+function formatSignedKrw(value) {
+  const n = Number(value || 0);
+  if (!Number.isFinite(n)) return value;
+  const rounded = Math.round(n);
+  const sign = rounded > 0 ? '+' : '';
+  return sign + rounded.toLocaleString('ko-KR') + '원';
+}
+function formatSignedRate(value) {
+  const n = Number(value || 0) * 100;
+  if (!Number.isFinite(n)) return value;
+  const sign = n > 0 ? '+' : '';
+  return sign + n.toFixed(2) + '%';
+}
 const sortState = {};
 const DEFAULT_COLUMNS = {
-  stocks: ['code','name','enabled','retire_after_exit','retire_reason','position_state','current_price','open_lot_count','lot_unit_amount','max_symbol_amount','max_lots_per_symbol','lot_sizing_bucket','invested_amount','profit_loss_pct','risk_block_reasons','skip_reason','final_block_reason'],
+  stocks: ['code','name','enabled','retire_after_exit','position_state','current_price','open_lot_count','lot_unit_amount','max_symbol_amount','max_lots_per_symbol','lot_sizing_bucket','invested_amount','realized_pnl_rate','realized_pnl','unrealized_pnl_rate','unrealized_pnl','profit_loss_pct','risk_block_reasons','skip_reason','final_block_reason'],
   lots: ['lot_id','code','name','status','buy_price','remaining_quantity','current_price','unrealized_pnl','unrealized_pnl_rate','age_weeks','effective_target_profit_rate','sell_trigger_price','cleanup_candidate','stale_lot','last_sell_reason'],
   stockLots: ['lot_id','code','name','status','buy_price','remaining_quantity','current_price','unrealized_pnl','unrealized_pnl_rate','age_weeks','effective_target_profit_rate','sell_trigger_price','cleanup_candidate','stale_lot','last_sell_reason'],
   orders: ['order_id','code','name','side','status','quantity','filled_quantity','remaining_quantity','fill_count','cancel_requested','cancel_confirmed','cancel_rejected','post_cancel_execution_checked','order_sync_warning','limit_price','reason','requested_at','updated_at','lot_id'],
@@ -709,7 +731,8 @@ async function openStockLots(code) {
   const lots = detail.lots || [];
   const stock = detail.stock || {};
   window.stockLotRows = lots;
-  document.getElementById('stockLotPanel').innerHTML = `<div class="detailPanel"><h3>${esc(stock.name || '')} ${esc(code)} 보유 LOT</h3><p class="muted">종목별 LOT 수익률, 잔여 수량, cleanup/stale 상태를 확인하고 OPEN LOT은 수동 매도 요청 화면으로 보낼 수 있습니다.</p>${table(lots, 'stockLots', {actions:true})}</div>`;
+  const retireReason = stock.retire_reason ? `<details><summary>중지 예정 사유</summary><p class="muted">${esc(stock.retire_reason)}</p></details>` : '';
+  document.getElementById('stockLotPanel').innerHTML = `<div class="detailPanel"><h3>${esc(stock.name || '')} ${esc(code)} 보유 LOT</h3><p class="muted">종목별 LOT 수익률, 잔여 수량, cleanup/stale 상태를 확인하고 OPEN LOT은 수동 매도 요청 화면으로 보낼 수 있습니다.</p>${retireReason}${table(lots, 'stockLots', {actions:true})}</div>`;
 }
 async function openManualBuy(code) {
   await loadManualOrders();

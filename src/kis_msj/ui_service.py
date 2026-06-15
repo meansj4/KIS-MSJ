@@ -1385,6 +1385,62 @@ class UIService:
             row["usage_level"] = _usage_level(max(row["max_symbol_amount_usage_pct"] or 0, row["max_lots_per_symbol_usage_pct"] or 0))
         return sorted(by_code.values(), key=lambda row: max(row["max_symbol_amount_usage_pct"] or 0, row["max_lots_per_symbol_usage_pct"] or 0), reverse=True)
 
+    def _symbol_pnl_summary(
+        self,
+        positions: list[dict[str, Any]],
+        lots: list[dict[str, Any]],
+        fills: list[dict[str, Any]],
+        price_snapshots: list[dict[str, Any]],
+    ) -> dict[str, dict[str, Any]]:
+        positions_by_code = {str(position.get("code") or ""): position for position in positions}
+        latest_prices = self._latest_prices(price_snapshots, positions_by_code)
+        lot_by_id = {str(lot.get("lot_id") or ""): lot for lot in lots}
+        rows: dict[str, dict[str, Any]] = defaultdict(
+            lambda: {
+                "realized_pnl": 0,
+                "realized_cost": 0,
+                "realized_pnl_rate": 0.0,
+                "unrealized_pnl": 0,
+                "unrealized_cost": 0,
+                "unrealized_pnl_rate": 0.0,
+            }
+        )
+        realized_codes_from_fills: set[str] = set()
+        for fill in fills:
+            if str(fill.get("side") or "") != OrderSide.SELL.value:
+                continue
+            lot = lot_by_id.get(str(fill.get("lot_id") or ""))
+            if not lot:
+                continue
+            code = str(fill.get("code") or lot.get("code") or "")
+            quantity = _to_int(fill.get("quantity"))
+            sell_price = _to_int(fill.get("price"))
+            buy_price = _to_int(lot.get("buy_price"))
+            fee_tax = int(round(sell_price * quantity * self.config.strategy.estimated_fee_tax_pct / 100.0))
+            rows[code]["realized_pnl"] += (sell_price - buy_price) * quantity - fee_tax
+            rows[code]["realized_cost"] += buy_price * quantity
+            realized_codes_from_fills.add(code)
+        for lot in lots:
+            code = str(lot.get("code") or "")
+            quantity = _to_int(lot.get("remaining_quantity"))
+            buy_price = _to_int(lot.get("buy_price"))
+            buy_quantity = _to_int(lot.get("buy_quantity"))
+            if quantity > 0 and str(lot.get("status") or "") != "CLOSED":
+                current_price = _current_price_for_lot(lot, latest_prices)
+                cost = quantity * buy_price
+                rows[code]["unrealized_cost"] += cost
+                rows[code]["unrealized_pnl"] += (current_price - buy_price) * quantity if current_price else 0
+            if code not in realized_codes_from_fills:
+                sold_quantity = max(0, buy_quantity - quantity)
+                stored_realized = _to_int(lot.get("realized_profit_loss"))
+                if sold_quantity > 0 or stored_realized:
+                    rows[code]["realized_pnl"] += stored_realized
+                    rows[code]["realized_cost"] += sold_quantity * buy_price
+        for row in rows.values():
+            row["realized_pnl_rate"] = _safe_rate(_to_int(row.get("realized_pnl")), _to_int(row.get("realized_cost")))
+            row["unrealized_pnl_rate"] = _safe_rate(_to_int(row.get("unrealized_pnl")), _to_int(row.get("unrealized_cost")))
+        return rows
+
     def _risk_status_counts(self, positions: list[dict[str, Any]], open_lots: list[dict[str, Any]]) -> dict[str, int]:
         return {
             "review_required_count": sum(1 for position in positions if position.get("needs_review") or position.get("position_state") == PositionLifecycle.REVIEW_REQUIRED.value),
@@ -1445,15 +1501,24 @@ class UIService:
 
     def stocks(self) -> list[dict[str, Any]]:
         config = self.config
-        positions = {item["code"]: item for item in self.positions()}
+        position_rows = self.positions()
+        positions = {item["code"]: item for item in position_rows}
         latest_decisions = self.latest_decisions_by_code()
-        lots = self.lots()
+        lots = self._table("lots")
+        fills = self._table("fills")
+        price_snapshots = self._table("price_snapshots")
+        pnl_by_code = self._symbol_pnl_summary(position_rows, lots, fills, price_snapshots)
+        open_lots_by_code: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for lot in lots:
+            if _to_int(lot.get("remaining_quantity")) > 0 and str(lot.get("status") or "") != "CLOSED":
+                open_lots_by_code[str(lot.get("code") or "")].append(lot)
         result = []
         for stock in config.stocks:
             position = positions.get(stock.code, {})
-            open_lots = [lot for lot in lots if lot.get("code") == stock.code and lot.get("remaining_quantity", 0) > 0 and lot.get("status") != "CLOSED"]
+            open_lots = open_lots_by_code.get(stock.code, [])
             risk_reasons = [flag for flag in RISK_FLAGS if getattr(stock, flag)]
             decision = latest_decisions.get(stock.code, {})
+            pnl = pnl_by_code.get(stock.code, {})
             result.append({
                 **asdict(stock),
                 "risk_block_reasons": ",".join(risk_reasons),
@@ -1462,6 +1527,10 @@ class UIService:
                 "open_lot_count": len(open_lots),
                 "invested_amount": sum(int(lot.get("buy_price", 0)) * int(lot.get("remaining_quantity", 0)) for lot in open_lots),
                 "profit_loss_pct": position.get("profit_loss_pct", 0.0),
+                "realized_pnl_rate": pnl.get("realized_pnl_rate", 0.0),
+                "realized_pnl": pnl.get("realized_pnl", 0),
+                "unrealized_pnl_rate": pnl.get("unrealized_pnl_rate", 0.0),
+                "unrealized_pnl": pnl.get("unrealized_pnl", 0),
                 "last_decision": decision.get("action", ""),
                 "skip_reason": decision.get("skip_reason", ""),
                 "final_block_reason": decision.get("final_block_reason", ""),

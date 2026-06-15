@@ -112,6 +112,86 @@ def _seed_store(db_path):
     return store
 
 
+def _write_multi_stock_config(tmp_path):
+    db_path = tmp_path / "state.sqlite3"
+    log_path = tmp_path / "bot.log"
+    stocks = (
+        StockConfig("100001", "Open Only"),
+        StockConfig("100002", "Closed Only"),
+        StockConfig("100003", "Open Closed"),
+        StockConfig("100004", "Open Loss"),
+        StockConfig("100005", "Mixed PnL"),
+        StockConfig("100006", "Retire Planned", retire_after_exit=True, retire_reason="rebalance after exit"),
+        StockConfig("100007", "Stopped After Exit", retire_after_exit=True, retire_reason="already exited"),
+    )
+    raw = asdict(
+        BotConfig(
+            stocks=stocks,
+            storage_path=str(db_path),
+            log_path=str(log_path),
+            ui_manual_trading_enabled=False,
+        )
+    )
+    config_path = tmp_path / "lot_auto_trader.json"
+    config_path.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+    return config_path, db_path
+
+
+def _save_test_position(store, code, name, *, current_price, quantity=0, state=PositionLifecycle.HOLDING.value):
+    store.save_position(
+        PositionState(
+            code,
+            name,
+            quantity=quantity,
+            current_price=current_price,
+            position_state=state,
+        )
+    )
+
+
+def _save_test_lot(
+    store,
+    lot_id,
+    code,
+    *,
+    buy_price=1000,
+    buy_quantity=1,
+    remaining_quantity=1,
+    status="OPEN",
+):
+    store.save_lot(
+        LotState(
+            lot_id,
+            code,
+            "2026-05-01T09:05:00",
+            buy_price=buy_price,
+            buy_quantity=buy_quantity,
+            buy_amount=buy_price * buy_quantity,
+            remaining_quantity=remaining_quantity,
+            target_profit_pct=6.0,
+            target_sell_price=int(buy_price * 1.06),
+            status=status,
+        )
+    )
+
+
+def _record_sell_fill(store, code, name, lot_id, *, quantity, price):
+    store.record_fill(
+        TradeFill(
+            code,
+            name,
+            OrderSide.SELL,
+            quantity,
+            price,
+            f"SELL-{lot_id}",
+            datetime(2026, 5, 25, 10, 0),
+            lot_id=lot_id,
+            execution_id=f"EXEC-{lot_id}",
+            sell_reason=SellReason.PROFIT_TAKE.value,
+        )
+    )
+
+
 def test_state_store_ignores_deferred_market_session_columns(tmp_path):
     db_path = tmp_path / "state.sqlite3"
     store = StateStore(db_path)
@@ -183,6 +263,78 @@ def test_ui_status_masks_and_shows_core_tables(tmp_path):
     assert "appsecret=***" in log_text
     assert "token=secret" not in log_text
     assert "appsecret=secret" not in log_text
+
+
+def test_stocks_include_batch_realized_and_unrealized_pnl(tmp_path):
+    config_path, db_path = _write_multi_stock_config(tmp_path)
+    store = StateStore(db_path)
+
+    _save_test_position(store, "100001", "Open Only", current_price=1100, quantity=10)
+    _save_test_lot(store, "OPENP-1", "100001", buy_price=1000, buy_quantity=10, remaining_quantity=10)
+
+    _save_test_position(store, "100002", "Closed Only", current_price=1200, quantity=0, state=PositionLifecycle.WAIT_REENTRY.value)
+    _save_test_lot(store, "CLOSED-1", "100002", buy_price=1000, buy_quantity=5, remaining_quantity=0, status="CLOSED")
+    _record_sell_fill(store, "100002", "Closed Only", "CLOSED-1", quantity=5, price=1200)
+
+    _save_test_position(store, "100003", "Open Closed", current_price=900, quantity=3)
+    _save_test_lot(store, "BOTH-CLOSED", "100003", buy_price=1000, buy_quantity=2, remaining_quantity=0, status="CLOSED")
+    _record_sell_fill(store, "100003", "Open Closed", "BOTH-CLOSED", quantity=2, price=1050)
+    _save_test_lot(store, "BOTH-OPEN", "100003", buy_price=1000, buy_quantity=3, remaining_quantity=3)
+
+    _save_test_position(store, "100004", "Open Loss", current_price=800, quantity=4)
+    _save_test_lot(store, "LOSS-1", "100004", buy_price=1000, buy_quantity=4, remaining_quantity=4)
+
+    _save_test_position(store, "100005", "Mixed PnL", current_price=900, quantity=1)
+    _save_test_lot(store, "MIXED-CLOSED", "100005", buy_price=1000, buy_quantity=1, remaining_quantity=0, status="CLOSED")
+    _record_sell_fill(store, "100005", "Mixed PnL", "MIXED-CLOSED", quantity=1, price=1100)
+    _save_test_lot(store, "MIXED-OPEN", "100005", buy_price=1000, buy_quantity=1, remaining_quantity=1)
+
+    _save_test_position(store, "100006", "Retire Planned", current_price=1000, quantity=1)
+    _save_test_lot(store, "RETIRE-1", "100006", buy_price=1000, buy_quantity=1, remaining_quantity=1)
+
+    _save_test_position(
+        store,
+        "100007",
+        "Stopped After Exit",
+        current_price=0,
+        quantity=0,
+        state=PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value,
+    )
+
+    service = UIService(config_path)
+    rows = {row["code"]: row for row in service.stocks()}
+
+    assert rows["100001"]["realized_pnl"] == 0
+    assert rows["100001"]["realized_pnl_rate"] == 0
+    assert rows["100001"]["unrealized_pnl"] == 1000
+    assert rows["100001"]["unrealized_pnl_rate"] == 0.10
+
+    assert rows["100002"]["realized_pnl"] == 985
+    assert rows["100002"]["realized_pnl_rate"] == 0.197
+    assert rows["100002"]["unrealized_pnl"] == 0
+    assert rows["100002"]["unrealized_pnl_rate"] == 0
+
+    assert rows["100003"]["realized_pnl"] == 95
+    assert rows["100003"]["realized_pnl_rate"] == 0.0475
+    assert rows["100003"]["unrealized_pnl"] == -300
+    assert rows["100003"]["unrealized_pnl_rate"] == -0.10
+
+    assert rows["100004"]["unrealized_pnl"] == -800
+    assert rows["100004"]["unrealized_pnl_rate"] == -0.20
+
+    assert rows["100005"]["realized_pnl"] == 97
+    assert rows["100005"]["realized_pnl_rate"] == 0.097
+    assert rows["100005"]["unrealized_pnl"] == -100
+    assert rows["100005"]["unrealized_pnl_rate"] == -0.10
+
+    assert rows["100006"]["retire_after_exit"] is True
+    assert rows["100006"]["retire_reason"] == "rebalance after exit"
+    assert rows["100007"]["position_state"] == PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value
+    assert rows["100007"]["unrealized_pnl"] == 0
+    assert rows["100007"]["unrealized_pnl_rate"] == 0
+
+    detail = service.stock_detail("100006")
+    assert detail["stock"]["retire_reason"] == "rebalance after exit"
 
 
 def test_analysis_status_reports_market_data_readiness(tmp_path):
@@ -330,6 +482,12 @@ def test_config_form_and_table_sorting_scripts_are_present():
     assert "function renderReadableObject" in INDEX_HTML
     assert "function renderResult" in INDEX_HTML
     assert "function formatNumber" in INDEX_HTML
+    assert "function formatSignedKrw" in INDEX_HTML
+    assert "function formatSignedRate" in INDEX_HTML
+    assert "'realized_pnl_rate','realized_pnl','unrealized_pnl_rate','unrealized_pnl'" in INDEX_HTML
+    assert "stocks: ['code','name','enabled','retire_after_exit','retire_reason'" not in INDEX_HTML
+    assert "중지 예정 사유" in INDEX_HTML
+    assert "stock.retire_reason" in INDEX_HTML
     assert "readableWrap" in INDEX_HTML
     assert "--config-current-width" in INDEX_HTML
     assert "kisTableColumnWidths" in INDEX_HTML
