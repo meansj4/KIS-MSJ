@@ -165,6 +165,11 @@ def is_rate_limit_error(error: RuntimeError) -> bool:
         "거래건수",
         "허용 가능한",
         "egw00201",
+        "egw00215",
+        "opsq0008",
+        "apbk1350",
+        "호출 후처리",
+        "조회 오류",
         "429",
     )
     return any(marker in message for marker in rate_limit_markers)

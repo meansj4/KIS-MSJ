@@ -89,6 +89,12 @@ def test_korean_ledger_rate_limit_message_is_retryable() -> None:
     assert is_rate_limit_error(error)
 
 
+def test_kis_transient_balance_processing_error_is_retryable() -> None:
+    error = RuntimeError('{"msg_cd":"OPSQ0008","msg1":"호출 후처리(MCI전송) 오류 입니다."}')
+
+    assert is_rate_limit_error(error)
+
+
 def test_request_refreshes_token_once_when_kis_reports_expired_token(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _client()
     calls = []
