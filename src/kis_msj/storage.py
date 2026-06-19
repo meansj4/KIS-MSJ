@@ -741,8 +741,22 @@ class StateStore:
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(order_id) DO UPDATE SET
+                    code=CASE WHEN excluded.status = 'REQUESTED' OR orders.code != excluded.code OR orders.side != excluded.side THEN excluded.code ELSE orders.code END,
+                    side=CASE WHEN excluded.status = 'REQUESTED' OR orders.code != excluded.code OR orders.side != excluded.side THEN excluded.side ELSE orders.side END,
+                    quantity=CASE WHEN excluded.status = 'REQUESTED' OR orders.code != excluded.code OR orders.side != excluded.side THEN excluded.quantity ELSE orders.quantity END,
+                    limit_price=CASE WHEN excluded.status = 'REQUESTED' OR orders.code != excluded.code OR orders.side != excluded.side THEN excluded.limit_price ELSE orders.limit_price END,
+                    reason=CASE WHEN excluded.status = 'REQUESTED' OR orders.code != excluded.code OR orders.side != excluded.side THEN excluded.reason ELSE orders.reason END,
+                    lot_id=CASE WHEN excluded.status = 'REQUESTED' OR orders.code != excluded.code OR orders.side != excluded.side THEN excluded.lot_id ELSE orders.lot_id END,
                     status=excluded.status,
                     message=excluded.message,
+                    sell_reason=CASE WHEN excluded.status = 'REQUESTED' OR orders.code != excluded.code OR orders.side != excluded.side THEN excluded.sell_reason ELSE orders.sell_reason END,
+                    reentry_type=CASE WHEN excluded.status = 'REQUESTED' OR orders.code != excluded.code OR orders.side != excluded.side THEN excluded.reentry_type ELSE orders.reentry_type END,
+                    cleanup_flag=CASE WHEN excluded.status = 'REQUESTED' OR orders.code != excluded.code OR orders.side != excluded.side THEN excluded.cleanup_flag ELSE orders.cleanup_flag END,
+                    config_hash=CASE WHEN excluded.status = 'REQUESTED' OR orders.code != excluded.code OR orders.side != excluded.side THEN excluded.config_hash ELSE orders.config_hash END,
+                    config_version=CASE WHEN excluded.status = 'REQUESTED' OR orders.code != excluded.code OR orders.side != excluded.side THEN excluded.config_version ELSE orders.config_version END,
+                    run_id=CASE WHEN excluded.status = 'REQUESTED' OR orders.code != excluded.code OR orders.side != excluded.side THEN excluded.run_id ELSE orders.run_id END,
+                    experiment_name=CASE WHEN excluded.status = 'REQUESTED' OR orders.code != excluded.code OR orders.side != excluded.side THEN excluded.experiment_name ELSE orders.experiment_name END,
+                    requested_at=CASE WHEN excluded.status = 'REQUESTED' OR orders.code != excluded.code OR orders.side != excluded.side THEN excluded.requested_at ELSE orders.requested_at END,
                     cancel_requested=MAX(orders.cancel_requested, excluded.cancel_requested),
                     cancel_confirmed=MAX(orders.cancel_confirmed, excluded.cancel_confirmed),
                     cancel_rejected=MAX(orders.cancel_rejected, excluded.cancel_rejected),
@@ -908,12 +922,53 @@ class StateStore:
             orders.append(OrderResult(request, str(row["order_id"]), OrderStatus(str(row["status"])), str(row["message"]), str(row["requested_at"])))
         return tuple(orders)
 
-    def find_order(self, order_id: str) -> OrderResult | None:
+    def closed_partial_buy_orders(self, code: str) -> tuple[OrderResult, ...]:
+        statuses = (
+            OrderStatus.CANCELED_AFTER_PARTIAL_FILL.value,
+            OrderStatus.FILLED_AFTER_CANCEL_REQUEST.value,
+            OrderStatus.PARTIAL_CANCELED.value,
+        )
+        placeholders = ", ".join("?" for _ in statuses)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT *
+                FROM orders
+                WHERE code = ?
+                  AND side = ?
+                  AND status IN ({placeholders})
+                ORDER BY requested_at DESC, updated_at DESC
+                """,
+                (code, OrderSide.BUY.value, *statuses),
+            ).fetchall()
+        orders = []
+        for row in rows:
+            request = OrderRequest(
+                str(row["code"]),
+                "",
+                OrderSide(str(row["side"])),
+                int(row["quantity"]),
+                int(row["limit_price"]),
+                str(row["reason"]),
+                str(row["lot_id"]),
+                False,
+                str(row["sell_reason"]),
+                str(row["reentry_type"]),
+                bool(row["cleanup_flag"]),
+            )
+            orders.append(OrderResult(request, str(row["order_id"]), OrderStatus(str(row["status"])), str(row["message"]), str(row["requested_at"])))
+        return tuple(orders)
+
+    def find_order(self, order_id: str, *, code: str = "", side: OrderSide | None = None) -> OrderResult | None:
         normalized = _normalize_order_id(order_id)
         with self._connect() as connection:
             rows = connection.execute("SELECT * FROM orders").fetchall()
         for row in rows:
             if _normalize_order_id(str(row["order_id"])) != normalized:
+                continue
+            if code and str(row["code"]).zfill(6) != str(code).zfill(6):
+                continue
+            if side is not None and str(row["side"]) != side.value:
                 continue
             request = OrderRequest(
                 str(row["code"]),
@@ -984,11 +1039,22 @@ class StateStore:
             ).fetchone()
         return int(row["amount"] or 0)
 
-    def filled_quantity_for_order(self, order_id: str) -> int:
+    def filled_quantity_for_order(self, order_id: str, *, code: str = "", side: OrderSide | None = None, lot_id: str = "") -> int:
+        filters = ["order_id = ?"]
+        params: list[object] = [order_id]
+        if code:
+            filters.append("code = ?")
+            params.append(str(code).zfill(6))
+        if side is not None:
+            filters.append("side = ?")
+            params.append(side.value)
+        if lot_id:
+            filters.append("lot_id = ?")
+            params.append(lot_id)
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT COALESCE(SUM(quantity), 0) AS quantity FROM fills WHERE order_id = ?",
-                (order_id,),
+                f"SELECT COALESCE(SUM(quantity), 0) AS quantity FROM fills WHERE {' AND '.join(filters)}",
+                params,
             ).fetchone()
         return int(row["quantity"] or 0)
 

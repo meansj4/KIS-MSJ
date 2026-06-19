@@ -11,6 +11,11 @@ from .lot_manager import LotManager
 from .models import AccountSnapshot, OrderSide, PositionLifecycle, PositionState, ReentryType, SellReason, TradeFill
 
 
+def _is_tradable_stock_code(code: str) -> bool:
+    code = str(code)
+    return len(code) == 6 and code.isdigit()
+
+
 class PositionManager:
     def __init__(self, config: StrategyConfig, lot_manager: LotManager, positions: dict[str, PositionState] | None = None) -> None:
         self.config = config
@@ -191,7 +196,7 @@ class PositionManager:
 
     def sync_account(self, snapshot: AccountSnapshot) -> None:
         self.account_mismatch_detected = False
-        actual = {item.code: item for item in snapshot.positions}
+        actual = {item.code: item for item in snapshot.positions if _is_tradable_stock_code(item.code)}
         for code, item in actual.items():
             position = self.refresh_from_lots(code, item.current_price)
             position.name = item.name or position.name
@@ -207,6 +212,9 @@ class PositionManager:
             else:
                 self._clear_sync_flags(position, bool(self.lot_manager.open_lots(code)))
         for code, position in self.positions.items():
+            if not _is_tradable_stock_code(code):
+                self._clear_non_tradable_sync_artifact(position)
+                continue
             if code in actual:
                 continue
             position = self.refresh_from_lots(code, position.current_price)
@@ -220,6 +228,16 @@ class PositionManager:
                 self.account_mismatch_detected = True
             else:
                 self._clear_sync_flags(position, has_open_lots)
+
+    def _clear_non_tradable_sync_artifact(self, position: PositionState) -> None:
+        position.quantity = 0
+        position.lot_quantity_mismatch = False
+        position.sync_status = "OK"
+        position.trading_paused = False
+        position.auto_buy_enabled = False
+        if position.position_state == PositionLifecycle.SYNC_REQUIRED.value:
+            position.position_state = PositionLifecycle.NEVER_BOUGHT.value
+        position.last_update_time = datetime.now().isoformat(timespec="seconds")
 
     def _clear_sync_flags(self, position: PositionState, has_open_lots: bool) -> None:
         if position.sync_status != PositionLifecycle.SYNC_REQUIRED.value and not position.lot_quantity_mismatch:

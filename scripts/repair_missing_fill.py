@@ -291,7 +291,12 @@ def _mark_repaired_order(store: StateStore, order_no: str) -> None:
     order = store.find_order(order_no)
     if order is None:
         return
-    filled_quantity = store.filled_quantity_for_order(order_no)
+    filled_quantity = store.filled_quantity_for_order(
+        order_no,
+        code=order.request.code,
+        side=order.request.side,
+        lot_id=order.request.lot_id if order.request.side is OrderSide.SELL else "",
+    )
     if filled_quantity <= 0:
         return
     status = OrderStatus.FILLED_AFTER_CANCEL_REQUEST if filled_quantity >= order.request.quantity else OrderStatus.CANCELED_AFTER_PARTIAL_FILL

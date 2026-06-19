@@ -146,7 +146,7 @@ class OrderManager:
                     applied.append(fill)
                 else:
                     duplicate_fill_count += 1
-            filled_quantity = self.store.filled_quantity_for_order(result.order_id)
+            filled_quantity = self._filled_quantity_for_result(result)
             if filled_quantity >= result.request.quantity:
                 self.store.record_order(OrderResult(result.request, result.order_id, OrderStatus.FILLED, result.message))
                 continue
@@ -194,7 +194,7 @@ class OrderManager:
                     applied.append(fill)
                 else:
                     duplicate_fill_count += 1
-            filled_quantity = self.store.filled_quantity_for_order(result.order_id)
+            filled_quantity = self._filled_quantity_for_result(result)
             final_status = self._post_cancel_status(result, status, filled_quantity)
             self.store.record_order(OrderResult(result.request, result.order_id, final_status, "cancel_or_reprice"))
         if open_orders:
@@ -215,7 +215,7 @@ class OrderManager:
         duplicate_fill_count = 0
         ignored_unmatched_count = 0
         for fill in fetched_fills:
-            order = self.store.find_order(fill.order_id)
+            order = self.store.find_order(fill.order_id, code=fill.code, side=fill.side)
             if order is None or order.request.code != fill.code or order.request.side != fill.side:
                 ignored_unmatched_count += 1
                 continue
@@ -240,7 +240,7 @@ class OrderManager:
                 continue
             if self._record_new_fill(matched, "startup_reconcile"):
                 applied.append(matched)
-                filled_quantity = self.store.filled_quantity_for_order(order.order_id)
+                filled_quantity = self._filled_quantity_for_result(order)
                 status = OrderStatus.FILLED if filled_quantity >= order.request.quantity else OrderStatus.PARTIAL
                 if order.status in {OrderStatus.CANCELED, OrderStatus.CANCELED_NO_FILL, OrderStatus.CANCEL_REJECTED}:
                     status = OrderStatus.FILLED_AFTER_CANCEL_REQUEST if filled_quantity >= order.request.quantity else OrderStatus.CANCELED_AFTER_PARTIAL_FILL
@@ -262,7 +262,12 @@ class OrderManager:
 
     def _dedupe_or_delta_fill(self, fill: TradeFill) -> TradeFill | None:
         if fill.execution_id.startswith("AGG:"):
-            already_filled = self.store.filled_quantity_for_order(fill.order_id)
+            already_filled = self.store.filled_quantity_for_order(
+                fill.order_id,
+                code=fill.code,
+                side=fill.side,
+                lot_id=fill.lot_id if fill.side is OrderSide.SELL else "",
+            )
             delta_quantity = fill.quantity - already_filled
             if delta_quantity <= 0:
                 return None
@@ -327,6 +332,15 @@ class OrderManager:
                 result.request.quantity,
             )
         return recorded, fill
+
+    def _filled_quantity_for_result(self, result: OrderResult) -> int:
+        request = result.request
+        return self.store.filled_quantity_for_order(
+            result.order_id,
+            code=request.code,
+            side=request.side,
+            lot_id=request.lot_id if request.side is OrderSide.SELL else "",
+        )
 
     def _post_cancel_status(self, result: OrderResult, cancel_status: OrderStatus, filled_quantity: int) -> OrderStatus:
         if filled_quantity >= result.request.quantity:

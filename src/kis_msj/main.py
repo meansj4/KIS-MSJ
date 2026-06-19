@@ -7,7 +7,7 @@ import json
 import sys
 import time
 from contextlib import nullcontext
-from datetime import datetime, time as day_time
+from datetime import datetime, time as day_time, timedelta
 from pathlib import Path
 from typing import Sequence
 
@@ -18,7 +18,7 @@ from .logger import configure_trade_logger, log_decision
 from .lot_manager import LotManager
 from .loop_profile import LoopProfile, key_value_line
 from .models import AccountSnapshot, OrderSide, PositionState, Quote, ReentryType, SellReason
-from .models import PositionLifecycle
+from .models import OrderResult, OrderStatus, PositionLifecycle, TradeFill
 from .notifier import LogNotifier
 from .order_manager import OrderManager
 from .position_manager import PositionManager
@@ -132,6 +132,9 @@ class AutoTrader:
                 self.logger.warning("open_orders skipped reason=account_snapshot_rate_limited_using_cache")
             else:
                 self.position_manager.sync_account(snapshot)
+                if self.position_manager.account_mismatch_detected:
+                    self.auto_repair_sync_mismatch(snapshot)
+                    self.position_manager.sync_account(snapshot)
                 self.risk_manager.data_mismatch_detected = self.position_manager.account_mismatch_detected
                 if self.position_manager.account_mismatch_detected:
                     self.notifier.notify("SYNC_REQUIRED", "Lot quantity differs from KIS account balance. Trading is paused for mismatched symbols.")
@@ -535,6 +538,90 @@ class AutoTrader:
             fill.order_id,
             fill.execution_id,
         )
+
+    def auto_repair_sync_mismatch(self, snapshot: AccountSnapshot) -> int:
+        repaired = 0
+        for item in snapshot.positions:
+            code = str(item.code).zfill(6)
+            position = self.position_manager.positions.get(code)
+            if position is None or not (position.lot_quantity_mismatch or position.sync_status == PositionLifecycle.SYNC_REQUIRED.value):
+                continue
+            actual_quantity = int(item.quantity)
+            open_quantity = sum(lot.remaining_quantity for lot in self.lot_manager.open_lots(code))
+            gap = actual_quantity - open_quantity
+            if gap <= 0:
+                continue
+            candidate = self._single_safe_missing_buy_candidate(code, gap)
+            if candidate is None:
+                self.logger.warning(
+                    "auto_sync_repair_skipped code=%s name=%s gap=%s reason=no_single_safe_missing_buy_candidate",
+                    code,
+                    item.name,
+                    gap,
+                )
+                continue
+            fill = self._missing_buy_fill_from_order(candidate, item.name or position.name, gap)
+            if not self.store.record_fill(fill):
+                self.logger.warning(
+                    "auto_sync_repair_skipped code=%s order_id=%s gap=%s reason=duplicate_or_existing_fill execution_id=%s",
+                    code,
+                    candidate.order_id,
+                    gap,
+                    fill.execution_id,
+                )
+                continue
+            updated = self.position_manager.apply_fill(fill)
+            self.store.save_position(updated)
+            self.store.save_lots(self.lot_manager.lots.values())
+            self._mark_auto_repaired_order(candidate)
+            repaired += 1
+            self.logger.warning(
+                "auto_sync_repair_applied code=%s name=%s order_id=%s qty=%s price=%s execution_id=%s source=closed_partial_buy_gap",
+                code,
+                fill.name,
+                fill.order_id,
+                fill.quantity,
+                fill.price,
+                fill.execution_id,
+            )
+            self.notifier.notify("SYNC_AUTO_REPAIRED", f"{code} {fill.name}: missing BUY fill auto-repaired qty={fill.quantity} order={fill.order_id}.")
+        return repaired
+
+    def _single_safe_missing_buy_candidate(self, code: str, gap: int) -> OrderResult | None:
+        if self.store.has_any_open_order(code):
+            return None
+        candidates = []
+        for order in self.store.closed_partial_buy_orders(code):
+            filled_quantity = self.store.filled_quantity_for_order(order.order_id, code=code, side=OrderSide.BUY)
+            missing_quantity = order.request.quantity - filled_quantity
+            if filled_quantity <= 0:
+                continue
+            if missing_quantity == gap:
+                candidates.append(order)
+        return candidates[0] if len(candidates) == 1 else None
+
+    def _missing_buy_fill_from_order(self, order: OrderResult, name: str, quantity: int) -> TradeFill:
+        filled_quantity = self.store.filled_quantity_for_order(order.order_id, code=order.request.code, side=OrderSide.BUY)
+        filled_at = _parse_datetime(order.requested_at) + timedelta(microseconds=max(1, filled_quantity))
+        return TradeFill(
+            order.request.code,
+            name,
+            OrderSide.BUY,
+            quantity,
+            order.request.limit_price,
+            order.order_id,
+            filled_at,
+            "",
+            f"AUTO_SYNC_REPAIR:{order.order_id}:{order.request.code}:{filled_quantity}->{filled_quantity + quantity}",
+            order.request.sell_reason,
+            order.request.reentry_type,
+        )
+
+    def _mark_auto_repaired_order(self, order: OrderResult) -> None:
+        filled_quantity = self.store.filled_quantity_for_order(order.order_id, code=order.request.code, side=OrderSide.BUY)
+        status = OrderStatus.FILLED_AFTER_CANCEL_REQUEST if filled_quantity >= order.request.quantity else OrderStatus.CANCELED_AFTER_PARTIAL_FILL
+        self.store.record_order(OrderResult(order.request, order.order_id, status, "auto_sync_missing_fill_repair", order.requested_at))
+        self.store.mark_order_cancel_check(order.order_id, filled_after_cancel_request=filled_quantity > 0, post_cancel_execution_checked=True)
 
     def evaluate(self, position: PositionState, snapshot: AccountSnapshot, account_risk, profile: LoopProfile | None = None) -> None:
         profile = profile or self._active_loop_profile
@@ -1083,6 +1170,13 @@ class AutoTrader:
                 reasons = [name for name in flag_names if getattr(stock, name)]
                 return ",".join(reasons) or ("danger_state" if position.danger_state else "")
         return "danger_state" if position.danger_state else ""
+
+
+def _parse_datetime(value: str) -> datetime:
+    try:
+        return datetime.fromisoformat(str(value).strip())
+    except (TypeError, ValueError):
+        return datetime.now()
 
 
 def in_trade_window(config: BotConfig) -> bool:

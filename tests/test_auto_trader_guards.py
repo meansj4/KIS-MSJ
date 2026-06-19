@@ -132,6 +132,119 @@ def test_rate_limited_cached_account_snapshot_does_not_mark_sync_required(tmp_pa
     assert position.position_state == PositionLifecycle.HOLDING.value
 
 
+def test_startup_sync_ignores_non_tradable_balance_items(tmp_path) -> None:
+    config = BotConfig(
+        order=OrderConfig(live_trading=True, account_snapshot_min_interval_seconds=0),
+        storage_path=str(tmp_path / "state.sqlite3"),
+        log_path=str(tmp_path / "trader.log"),
+    )
+    bot = AutoTrader(config, use_mock_client=True)
+    bot.apply_reconciled_fill(TradeFill("005930", "Test", OrderSide.BUY, 3, 10000, "BUY-1", datetime.now()))
+    stale_right = PositionState(
+        code="J0047101G",
+        name="+한솔테크닉스 39R",
+        quantity=8,
+        position_state=PositionLifecycle.SYNC_REQUIRED.value,
+        sync_status=PositionLifecycle.SYNC_REQUIRED.value,
+        lot_quantity_mismatch=True,
+        trading_paused=True,
+    )
+    bot.position_manager.positions[stale_right.code] = stale_right
+
+    bot.client.account_snapshot = lambda: AccountSnapshot(
+        1_000_000,
+        1_000_000,
+        0,
+        0,
+        (
+            BalanceItem("005930", "Test", 3, 10000, 10000),
+            BalanceItem("J0047101G", "+한솔테크닉스 39R", 8, 0, 0),
+        ),
+    )
+
+    bot.startup_sync()
+
+    assert not bot.position_manager.account_mismatch_detected
+    assert bot.risk_manager.data_mismatch_detected is False
+    assert bot.position_manager.positions["005930"].sync_status == "OK"
+    right = bot.position_manager.positions["J0047101G"]
+    assert right.quantity == 0
+    assert right.sync_status == "OK"
+    assert right.lot_quantity_mismatch is False
+    assert right.position_state == PositionLifecycle.NEVER_BOUGHT.value
+
+
+def test_startup_sync_auto_repairs_single_closed_partial_buy_gap(tmp_path) -> None:
+    config = BotConfig(
+        order=OrderConfig(live_trading=True, account_snapshot_min_interval_seconds=0),
+        storage_path=str(tmp_path / "state.sqlite3"),
+        log_path=str(tmp_path / "trader.log"),
+    )
+    bot = AutoTrader(config, use_mock_client=True)
+    request = OrderRequest("009070", "KCTC", OrderSide.BUY, 7, 4175, "add_buy_drop_6%")
+    bot.store.record_order(OrderResult(request, "0029867200", OrderStatus.CANCELED_AFTER_PARTIAL_FILL, "cancel_rejected_no_cancelable_quantity_after_partial_fill"))
+    first_fill = TradeFill("009070", "KCTC", OrderSide.BUY, 1, 4175, "0029867200", datetime.now(), execution_id="AGG:0029867200:009070:1:4175:141510")
+    assert bot.store.record_fill(first_fill)
+    updated = bot.position_manager.apply_fill(first_fill)
+    bot.store.save_position(updated)
+    bot.store.save_lots(bot.lot_manager.lots.values())
+    bot.client.account_snapshot = lambda: AccountSnapshot(
+        1_000_000,
+        1_000_000,
+        0,
+        0,
+        (BalanceItem("009070", "KCTC", 7, 4175, 4175),),
+    )
+    bot.client.open_orders = lambda: ()
+
+    bot.startup_sync()
+
+    position = bot.position_manager.positions["009070"]
+    assert bot.position_manager.account_mismatch_detected is False
+    assert bot.risk_manager.data_mismatch_detected is False
+    assert position.quantity == 7
+    assert position.sync_status == "OK"
+    assert not position.lot_quantity_mismatch
+    assert not position.trading_paused
+    assert sum(lot.remaining_quantity for lot in bot.lot_manager.open_lots("009070")) == 7
+    assert bot.store.filled_quantity_for_order("0029867200", code="009070", side=OrderSide.BUY) == 7
+    assert bot.store.find_order("0029867200").status is OrderStatus.FILLED_AFTER_CANCEL_REQUEST
+
+
+def test_startup_sync_keeps_sync_required_when_auto_repair_candidate_is_ambiguous(tmp_path) -> None:
+    config = BotConfig(
+        order=OrderConfig(live_trading=True, account_snapshot_min_interval_seconds=0),
+        storage_path=str(tmp_path / "state.sqlite3"),
+        log_path=str(tmp_path / "trader.log"),
+    )
+    bot = AutoTrader(config, use_mock_client=True)
+    for order_id in ("BUY-1", "BUY-2"):
+        request = OrderRequest("009070", "KCTC", OrderSide.BUY, 7, 4175, "add_buy_drop_6%")
+        bot.store.record_order(OrderResult(request, order_id, OrderStatus.CANCELED_AFTER_PARTIAL_FILL, "partial"))
+        fill = TradeFill("009070", "KCTC", OrderSide.BUY, 1, 4175, order_id, datetime.now(), execution_id=f"AGG:{order_id}:009070:1:4175:141510")
+        assert bot.store.record_fill(fill)
+        bot.position_manager.apply_fill(fill)
+    bot.store.save_position(bot.position_manager.positions["009070"])
+    bot.store.save_lots(bot.lot_manager.lots.values())
+    bot.client.account_snapshot = lambda: AccountSnapshot(
+        1_000_000,
+        1_000_000,
+        0,
+        0,
+        (BalanceItem("009070", "KCTC", 8, 4175, 4175),),
+    )
+    bot.client.open_orders = lambda: ()
+
+    bot.startup_sync()
+
+    position = bot.position_manager.positions["009070"]
+    assert bot.position_manager.account_mismatch_detected is True
+    assert bot.risk_manager.data_mismatch_detected is True
+    assert position.sync_status == PositionLifecycle.SYNC_REQUIRED.value
+    assert position.lot_quantity_mismatch is True
+    assert sum(lot.remaining_quantity for lot in bot.lot_manager.open_lots("009070")) == 2
+
+
 def test_evaluate_clears_stale_skip_reason_when_no_current_block(tmp_path, monkeypatch) -> None:
     _force_trade_window(monkeypatch)
     bot = trader(tmp_path)

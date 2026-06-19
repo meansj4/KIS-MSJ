@@ -254,6 +254,41 @@ def test_aggregate_execution_reconcile_records_only_delta_quantity(tmp_path) -> 
     assert store.find_order("000001").status is OrderStatus.FILLED
 
 
+def test_aggregate_delta_ignores_same_order_number_from_other_symbols(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    result = order(code="365550", side=OrderSide.SELL, quantity=7, lot_id="ESR-LOT")
+    store.record_order(result)
+    filled_at = datetime.now().replace(microsecond=0)
+    store.record_fill(TradeFill("028670", "Pan Ocean", OrderSide.SELL, 5, 5440, "000001", filled_at, "PAN-LOT", "AGG:000001:028670:5:5440:092604"))
+    store.record_fill(TradeFill("365550", "ESR", OrderSide.SELL, 1, 4025, "000001", filled_at, "ESR-LOT", "AGG:000001:365550:1:4025:093441"))
+    cumulative = TradeFill("365550", "ESR", OrderSide.SELL, 7, 4025, "000001", filled_at, "ESR-LOT", "AGG:000001:365550:7:4025:093441")
+    client = ReconcileClient((cumulative,))
+    manager = OrderManager(BotConfig(order=OrderConfig(limit_order_timeout_seconds=999)), client, store, logging.getLogger("test"))
+
+    fills = manager.reconcile_open_orders()
+
+    assert len(fills) == 1
+    assert fills[0].quantity == 6
+    assert store.filled_quantity_for_order("000001") == 12
+    assert store.filled_quantity_for_order("000001", code="365550", side=OrderSide.SELL, lot_id="ESR-LOT") == 7
+    assert store.find_order("000001", code="365550", side=OrderSide.SELL).status is OrderStatus.FILLED
+
+
+def test_reused_kis_order_number_replaces_request_fields_for_new_requested_order(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    old = order(code="028670", side=OrderSide.SELL, quantity=5, lot_id="PAN-LOT")
+    store.record_order(OrderResult(old.request, old.order_id, OrderStatus.FILLED, "old"))
+    new = order(code="365550", side=OrderSide.SELL, quantity=7, lot_id="ESR-LOT")
+    store.record_order(new)
+
+    assert store.find_order("000001", code="028670", side=OrderSide.SELL) is None
+    current = store.find_order("000001", code="365550", side=OrderSide.SELL)
+    assert current is not None
+    assert current.request.quantity == 7
+    assert current.request.lot_id == "ESR-LOT"
+    assert current.status is OrderStatus.REQUESTED
+
+
 def test_aggregate_delta_with_same_quantity_and_time_is_inserted(tmp_path) -> None:
     store = StateStore(tmp_path / "state.sqlite3")
     result = order(code="053690", side=OrderSide.SELL, quantity=2, lot_id="LOT-1")
