@@ -157,6 +157,64 @@ def test_cancel_rejected_order_remains_reconciliation_candidate(tmp_path) -> Non
     assert store.has_open_order("005930", OrderSide.BUY)
 
 
+def test_missing_original_order_cancel_rejected_closes_after_execution_check(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    store.record_order(order(quantity=6))
+    client = ReconcileClient((), cancel_error=RuntimeError("APBK0344 원주문정보가 존재하지않습니다."))
+    manager = OrderManager(BotConfig(order=OrderConfig(limit_order_timeout_seconds=0)), client, store, __import__("logging").getLogger("test"))
+
+    fills = manager.reconcile_open_orders()
+
+    assert fills == ()
+    stored = store.find_order("000001")
+    assert stored.status is OrderStatus.CANCELED_NO_FILL
+    assert not store.has_open_order("005930", OrderSide.BUY)
+    with store._connect() as connection:
+        row = connection.execute(
+            "SELECT cancel_retry_count, cancel_rejected, post_cancel_execution_checked_at FROM orders WHERE order_id = '000001'"
+        ).fetchone()
+    assert row["cancel_retry_count"] == 1
+    assert row["cancel_rejected"] == 1
+    assert row["post_cancel_execution_checked_at"]
+
+
+def test_cancel_rejected_retry_is_throttled_between_checks(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    store.record_order(order(quantity=6))
+    client = ReconcileClient((), cancel_error=RuntimeError("40330000 KRX cancel rejected"))
+    config = BotConfig(order=OrderConfig(limit_order_timeout_seconds=0, cancel_rejected_retry_interval_seconds=3600))
+    manager = OrderManager(config, client, store, __import__("logging").getLogger("test"))
+
+    manager.reconcile_open_orders()
+    manager.reconcile_open_orders()
+
+    assert client.canceled == [("000001", 6)]
+    assert store.find_order("000001").status is OrderStatus.CANCEL_REJECTED
+    assert store.has_open_order("005930", OrderSide.BUY)
+
+
+def test_cancel_rejected_retry_limit_closes_order(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    result = order(quantity=6)
+    store.record_order(result)
+    store.record_order(OrderResult(result.request, result.order_id, OrderStatus.CANCEL_REJECTED, "stale"))
+    with store._connect() as connection:
+        connection.execute(
+            "UPDATE orders SET cancel_retry_count = 3, cancel_checked_at = ? WHERE order_id = ?",
+            ((datetime.now() - timedelta(hours=2)).isoformat(timespec="seconds"), result.order_id),
+        )
+    client = ReconcileClient(())
+    config = BotConfig(order=OrderConfig(limit_order_timeout_seconds=0, cancel_rejected_max_retries=3))
+    manager = OrderManager(config, client, store, __import__("logging").getLogger("test"))
+
+    fills = manager.reconcile_open_orders()
+
+    assert fills == ()
+    assert client.canceled == []
+    assert store.find_order("000001").status is OrderStatus.CANCELED_NO_FILL
+    assert not store.has_open_order("005930", OrderSide.BUY)
+
+
 def test_cancel_rejected_no_cancelable_after_partial_fill_closes_order(tmp_path) -> None:
     store = StateStore(tmp_path / "state.sqlite3")
     result = order(quantity=2)

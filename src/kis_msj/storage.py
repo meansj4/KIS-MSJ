@@ -217,6 +217,7 @@ class StateStore:
             _ensure_column(connection, "orders", "cancel_response_message", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(connection, "orders", "cancel_checked_at", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(connection, "orders", "post_cancel_execution_checked_at", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "orders", "cancel_retry_count", "INTEGER NOT NULL DEFAULT 0")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS manual_order_requests (
@@ -431,7 +432,7 @@ class StateStore:
             },
             "lots": {"cleanup_candidate", "age_weeks", "base_target_profit_rate", "effective_target_profit_rate", "last_sell_reason"},
             "fills": {"execution_id", "sell_reason", "reentry_type", "config_hash", "config_version", "run_id", "experiment_name"},
-            "orders": {"requested_at", "sell_reason", "reentry_type", "cleanup_flag", "config_hash", "config_version", "run_id", "experiment_name", "cancel_requested", "cancel_confirmed", "cancel_rejected", "filled_after_cancel_request", "cancel_response_code", "cancel_response_message", "cancel_checked_at", "post_cancel_execution_checked_at"},
+            "orders": {"requested_at", "sell_reason", "reentry_type", "cleanup_flag", "config_hash", "config_version", "run_id", "experiment_name", "cancel_requested", "cancel_confirmed", "cancel_rejected", "filled_after_cancel_request", "cancel_response_code", "cancel_response_message", "cancel_checked_at", "post_cancel_execution_checked_at", "cancel_retry_count"},
             "manual_order_requests": {"request_id", "source", "requested_by", "requested_at", "code", "side", "current_price", "amount", "quantity", "lot_id", "order_type", "preview_json", "runtime_snapshot_json", "live_trading", "confirm_text_verified", "status", "block_reason", "linked_order_id", "processing_started_at", "processing_claimed_by", "claim_attempt_count", "last_processing_error", "stale_processing_reason", "config_hash", "config_version", "run_id", "experiment_name", "created_at", "updated_at"},
         }
         missing = False
@@ -799,6 +800,7 @@ class StateStore:
         response_code: str = "",
         response_message: str = "",
         post_cancel_execution_checked: bool = False,
+        increment_cancel_retry: bool = False,
     ) -> None:
         now = datetime.now().isoformat(timespec="seconds")
         with self._connect() as connection:
@@ -813,6 +815,7 @@ class StateStore:
                     cancel_response_message = CASE WHEN ? != '' THEN ? ELSE cancel_response_message END,
                     cancel_checked_at = CASE WHEN ? THEN ? ELSE cancel_checked_at END,
                     post_cancel_execution_checked_at = CASE WHEN ? THEN ? ELSE post_cancel_execution_checked_at END,
+                    cancel_retry_count = cancel_retry_count + ?,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE order_id = ?
                 """,
@@ -829,6 +832,7 @@ class StateStore:
                     now,
                     int(post_cancel_execution_checked),
                     now,
+                    int(increment_cancel_retry),
                     order_id,
                 ),
             )
@@ -919,7 +923,17 @@ class StateStore:
                 str(row["reentry_type"]),
                 bool(row["cleanup_flag"]),
             )
-            orders.append(OrderResult(request, str(row["order_id"]), OrderStatus(str(row["status"])), str(row["message"]), str(row["requested_at"])))
+            orders.append(
+                OrderResult(
+                    request,
+                    str(row["order_id"]),
+                    OrderStatus(str(row["status"])),
+                    str(row["message"]),
+                    str(row["requested_at"]),
+                    int(row["cancel_retry_count"] or 0),
+                    str(row["cancel_checked_at"] or ""),
+                )
+            )
         return tuple(orders)
 
     def closed_partial_buy_orders(self, code: str) -> tuple[OrderResult, ...]:
@@ -956,7 +970,17 @@ class StateStore:
                 str(row["reentry_type"]),
                 bool(row["cleanup_flag"]),
             )
-            orders.append(OrderResult(request, str(row["order_id"]), OrderStatus(str(row["status"])), str(row["message"]), str(row["requested_at"])))
+            orders.append(
+                OrderResult(
+                    request,
+                    str(row["order_id"]),
+                    OrderStatus(str(row["status"])),
+                    str(row["message"]),
+                    str(row["requested_at"]),
+                    int(row["cancel_retry_count"] or 0),
+                    str(row["cancel_checked_at"] or ""),
+                )
+            )
         return tuple(orders)
 
     def find_order(self, order_id: str, *, code: str = "", side: OrderSide | None = None) -> OrderResult | None:
@@ -983,7 +1007,15 @@ class StateStore:
                 str(row["reentry_type"]),
                 bool(row["cleanup_flag"]),
             )
-            return OrderResult(request, str(row["order_id"]), OrderStatus(str(row["status"])), str(row["message"]), str(row["requested_at"]))
+            return OrderResult(
+                request,
+                str(row["order_id"]),
+                OrderStatus(str(row["status"])),
+                str(row["message"]),
+                str(row["requested_at"]),
+                int(row["cancel_retry_count"] or 0),
+                str(row["cancel_checked_at"] or ""),
+            )
         return None
 
     def open_order_count(self, code: str | None = None) -> int:

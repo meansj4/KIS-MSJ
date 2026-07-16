@@ -152,6 +152,8 @@ class OrderManager:
                 continue
             if filled_quantity > 0:
                 self.store.record_order(OrderResult(result.request, result.order_id, OrderStatus.PARTIAL, result.message))
+            if self._close_or_throttle_cancel_rejected(result, filled_quantity):
+                continue
             elapsed = self.store.seconds_since_recent_order_request(result.request.code)
             if elapsed is None or elapsed < self.config.order.limit_order_timeout_seconds:
                 continue
@@ -176,7 +178,26 @@ class OrderManager:
                         error,
                     )
                     continue
-                self.store.mark_order_cancel_check(result.order_id, cancel_requested=True, cancel_rejected=True, response_message=str(error), post_cancel_execution_checked=False)
+                post_cancel_checked = _is_missing_original_order_error(error)
+                self.store.mark_order_cancel_check(
+                    result.order_id,
+                    cancel_requested=True,
+                    cancel_rejected=True,
+                    response_message=str(error),
+                    post_cancel_execution_checked=post_cancel_checked,
+                    increment_cancel_retry=True,
+                )
+                if post_cancel_checked:
+                    self.store.record_order(OrderResult(result.request, result.order_id, OrderStatus.CANCELED_NO_FILL, "cancel_rejected_missing_original_no_fill"))
+                    self.logger.warning(
+                        "order_cancel_rejected_closed_missing_original code=%s order_id=%s filled_qty=%s order_qty=%s error=%s",
+                        result.request.code,
+                        result.order_id,
+                        filled_quantity,
+                        result.request.quantity,
+                        error,
+                    )
+                    continue
                 self.store.record_order(OrderResult(result.request, result.order_id, OrderStatus.CANCEL_REJECTED, "cancel_rejected_pending_reconciliation"))
                 self.logger.warning("order_cancel_or_requery_failed code=%s order_id=%s error=%s", result.request.code, result.order_id, error)
                 continue
@@ -351,6 +372,43 @@ class OrderManager:
             return OrderStatus.CANCELED_NO_FILL
         return cancel_status
 
+    def _close_or_throttle_cancel_rejected(self, result: OrderResult, filled_quantity: int) -> bool:
+        if result.status is not OrderStatus.CANCEL_REJECTED:
+            return False
+        max_retries = max(1, self.config.order.cancel_rejected_max_retries)
+        if result.cancel_retry_count >= max_retries:
+            status = OrderStatus.CANCELED_AFTER_PARTIAL_FILL if filled_quantity > 0 else OrderStatus.CANCELED_NO_FILL
+            self.store.mark_order_cancel_check(result.order_id, post_cancel_execution_checked=True)
+            self.store.record_order(OrderResult(result.request, result.order_id, status, "cancel_rejected_retry_limit_no_remaining_fill"))
+            self.logger.warning(
+                "order_cancel_rejected_closed_retry_limit code=%s order_id=%s retry_count=%s filled_qty=%s order_qty=%s final_status=%s",
+                result.request.code,
+                result.order_id,
+                result.cancel_retry_count,
+                filled_quantity,
+                result.request.quantity,
+                status.value,
+            )
+            return True
+        interval = max(0, self.config.order.cancel_rejected_retry_interval_seconds)
+        if interval <= 0 or not result.cancel_checked_at:
+            return False
+        try:
+            checked_at = _parse_timestamp(result.cancel_checked_at)
+        except ValueError:
+            return False
+        retry_after = checked_at + timedelta(seconds=interval)
+        if datetime.now() >= retry_after:
+            return False
+        self.logger.info(
+            "order_cancel_rejected_retry_deferred code=%s order_id=%s retry_count=%s retry_after=%s",
+            result.request.code,
+            result.order_id,
+            result.cancel_retry_count,
+            retry_after.isoformat(timespec="seconds"),
+        )
+        return True
+
     def _record_new_fill(self, fill: TradeFill, source: str) -> bool:
         dedupe_key_type = _dedupe_key_type(fill)
         recorded = self.store.record_fill(fill)
@@ -408,6 +466,11 @@ def _normalize_order_id(order_id: str) -> str:
 def _is_no_cancelable_quantity_error(error: Exception) -> bool:
     message = str(error)
     return "APBK0927" in message or "40330000" in message
+
+
+def _is_missing_original_order_error(error: Exception) -> bool:
+    message = str(error)
+    return "APBK0344" in message or "원주문정보" in message
 
 
 def _parse_timestamp(value: str) -> datetime:

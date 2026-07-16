@@ -221,6 +221,8 @@ class OrderResult:
     status: OrderStatus
     message: str = ""
     requested_at: str = ""
+    cancel_retry_count: int = 0
+    cancel_checked_at: str = ""
 
 
 @dataclass(frozen=True)

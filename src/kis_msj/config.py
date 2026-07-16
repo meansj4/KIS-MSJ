@@ -208,6 +208,8 @@ class OrderConfig:
     cancel_unfilled_on_start: bool = False
     execution_query_buffer_minutes: int = 60
     include_previous_day_for_open_orders: bool = True
+    cancel_rejected_retry_interval_seconds: int = 3600
+    cancel_rejected_max_retries: int = 3
     enable_execution_raw_log: bool = False
     reconcile_recent_executions_on_startup: bool = True
     startup_execution_lookup_days: int = 1

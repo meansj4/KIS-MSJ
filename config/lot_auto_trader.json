@@ -4798,7 +4798,7 @@
     "market_risk_mode": false,
     "daily_account_loss_limit_pct": -1.5,
     "total_account_loss_limit_pct": -20,
-    "max_review_positions": 3,
+    "max_review_positions": 30,
     "min_cash_available": 30000,
     "max_consecutive_api_errors": 5,
     "max_price_sample_volatility_pct": 1,
@@ -4815,7 +4815,7 @@
     "live_trading": true,
     "emergency_market_order": false,
     "buy_limit_markup_pct": 0.3,
-    "sell_limit_markdown_pct": 0.3,
+    "sell_limit_markdown_pct": 0.5,
     "price_sample_count": 5,
     "price_sample_interval_seconds": 2,
     "limit_order_timeout_seconds": 30,
@@ -4835,7 +4835,7 @@
   "market_hours": {
     "open_time": "09:00",
     "close_time": "15:30",
-    "block_after_open_minutes": 10,
+    "block_after_open_minutes": 2,
     "block_before_close_minutes": 2
   },
   "kis_account": {
