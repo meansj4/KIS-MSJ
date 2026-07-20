@@ -22,11 +22,11 @@ class OrderManager:
 
     def build_request(self, position: PositionState, action: StrategyAction, current_price: int) -> OrderRequest | None:
         if action.side is OrderSide.BUY:
+            limit_price = action.limit_price if action.limit_price > 0 else self.buy_limit_price(current_price)
             quantity = action.amount // current_price
-            limit_price = self.buy_limit_price(current_price)
         else:
             quantity = action.quantity or 0
-            limit_price = self.sell_limit_price(current_price)
+            limit_price = action.limit_price if action.limit_price > 0 else self.sell_limit_price(current_price)
         if quantity < 1:
             return None
         return OrderRequest(

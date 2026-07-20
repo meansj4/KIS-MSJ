@@ -60,6 +60,7 @@ def test_minus_four_percent_add_buy_under_600k() -> None:
     assert action is not None
     assert action.amount == 30000
     assert "4%" in action.reason
+    assert action.limit_price == 9600
 
 
 def test_retire_after_exit_allows_add_buy_and_profit_take_during_holding_cycle() -> None:
@@ -78,6 +79,7 @@ def test_retire_after_exit_allows_add_buy_and_profit_take_during_holding_cycle()
     sell = strategy.decide(position, 10600, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
 
     assert sell is not None
+    assert sell.limit_price == 10600
     assert sell.side is OrderSide.SELL
     assert sell.sell_reason == SellReason.PROFIT_TAKE.value
 
@@ -243,6 +245,7 @@ def test_sold_out_wait_reentry_allows_reentry_after_drop() -> None:
     assert action.side is OrderSide.BUY
     assert action.reason == "reentry_buy"
     assert action.reentry_type == ReentryType.NORMAL_REENTRY.value
+    assert action.limit_price == 10070
 
 
 def test_profit_take_full_exit_sets_wait_reentry() -> None:

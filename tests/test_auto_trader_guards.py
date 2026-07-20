@@ -512,6 +512,23 @@ def test_final_quote_recalculates_order_quantity_from_final_price(tmp_path, monk
     assert submitted[0].limit_price == bot.order_manager.buy_limit_price(15000)
 
 
+def test_order_request_prefers_strategy_limit_price(tmp_path, monkeypatch) -> None:
+    _force_trade_window(monkeypatch)
+    bot = trader(tmp_path)
+    submitted = []
+    quotes = iter([Quote("005930", 10000, datetime.now(), "Test"), Quote("005930", 15000, datetime.now(), "Test")])
+    bot.client.quote = lambda code, name="": next(quotes)
+    bot.price_sampler.sample = lambda code, name="": tuple(Quote(code, 10000, datetime.now(), name) for _ in range(5))
+    bot.strategy.decide = lambda position, current_price, snapshot, account_risk, symbol_risk: StrategyAction(OrderSide.BUY, 30_000, None, "add_buy_drop_4%", limit_price=14_900)
+    bot.order_manager.submit_and_confirm = lambda request: submitted.append(request) or (OrderResult(request, "TEST-ORDER", OrderStatus.REQUESTED, "test"), None)
+
+    bot.evaluate(PositionState(code="005930", name="Test"), AccountSnapshot(1_000_000, 1_000_000, 0, 0, ()), RiskDecision(True))
+
+    assert submitted
+    assert submitted[0].quantity == 2
+    assert submitted[0].limit_price == 14_900
+
+
 def test_final_quote_rechecks_open_order_guard(tmp_path, monkeypatch) -> None:
     _force_trade_window(monkeypatch)
     bot = trader(tmp_path)

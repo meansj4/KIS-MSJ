@@ -4626,7 +4626,7 @@
     "max_open_lots_before_review": 12,
     "pnl_minus_threshold": -0.01,
     "pnl_plus_threshold": 0.01,
-    "normal_reentry_drop_rate": 0.05,
+    "normal_reentry_drop_rate": 0.04,
     "trailing_activation_gain": 0.05,
     "trailing_reentry_drop_rate": 0.1,
     "min_reentry_wait_minutes": 60,
@@ -4659,64 +4659,64 @@
       {
         "min_price": 0,
         "max_price": 300,
-        "lot_unit_amount": 1000,
-        "max_symbol_amount": 12000,
+        "lot_unit_amount": 750,
+        "max_symbol_amount": 9000,
         "enabled": true
       },
       {
         "min_price": 301,
         "max_price": 1000,
-        "lot_unit_amount": 3000,
-        "max_symbol_amount": 36000,
+        "lot_unit_amount": 2250,
+        "max_symbol_amount": 27000,
         "enabled": true
       },
       {
         "min_price": 1001,
         "max_price": 3000,
-        "lot_unit_amount": 10000,
-        "max_symbol_amount": 120000,
+        "lot_unit_amount": 7500,
+        "max_symbol_amount": 90000,
         "enabled": true
       },
       {
         "min_price": 3001,
         "max_price": 10000,
-        "lot_unit_amount": 30000,
-        "max_symbol_amount": 360000,
+        "lot_unit_amount": 22500,
+        "max_symbol_amount": 270000,
         "enabled": true
       },
       {
         "min_price": 10001,
         "max_price": 30000,
-        "lot_unit_amount": 100000,
-        "max_symbol_amount": 1200000,
+        "lot_unit_amount": 75000,
+        "max_symbol_amount": 900000,
         "enabled": true
       },
       {
         "min_price": 30001,
         "max_price": 100000,
-        "lot_unit_amount": 300000,
-        "max_symbol_amount": 3600000,
+        "lot_unit_amount": 225000,
+        "max_symbol_amount": 2700000,
         "enabled": true
       },
       {
         "min_price": 100001,
         "max_price": 300000,
-        "lot_unit_amount": 1000000,
-        "max_symbol_amount": 12000000,
+        "lot_unit_amount": 750000,
+        "max_symbol_amount": 9000000,
         "enabled": true
       },
       {
         "min_price": 300001,
         "max_price": 1000000,
-        "lot_unit_amount": 3000000,
-        "max_symbol_amount": 36000000,
+        "lot_unit_amount": 2250000,
+        "max_symbol_amount": 27000000,
         "enabled": true
       },
       {
         "min_price": 1000001,
         "max_price": 3000000,
-        "lot_unit_amount": 10000000,
-        "max_symbol_amount": 120000000,
+        "lot_unit_amount": 7500000,
+        "max_symbol_amount": 90000000,
         "enabled": true
       }
     ],
@@ -4724,37 +4724,37 @@
       {
         "min_lots": 1,
         "max_lots": 2,
-        "drop_rate": 0.03,
+        "drop_rate": 0.04,
         "add_lot_count": 1
       },
       {
         "min_lots": 3,
         "max_lots": 4,
-        "drop_rate": 0.06,
+        "drop_rate": 0.08,
         "add_lot_count": 1
       },
       {
         "min_lots": 5,
         "max_lots": 6,
-        "drop_rate": 0.09,
+        "drop_rate": 0.12,
         "add_lot_count": 1
       },
       {
         "min_lots": 7,
         "max_lots": 8,
-        "drop_rate": 0.12,
+        "drop_rate": 0.16,
         "add_lot_count": 1
       },
       {
         "min_lots": 9,
         "max_lots": 10,
-        "drop_rate": 0.15,
+        "drop_rate": 0.2,
         "add_lot_count": 1
       },
       {
         "min_lots": 11,
         "max_lots": 12,
-        "drop_rate": 0.18,
+        "drop_rate": 0.24,
         "add_lot_count": 1
       }
     ],
@@ -4762,32 +4762,32 @@
       {
         "min_lots": 1,
         "max_lots": 2,
-        "target_profit_rate": 0.06
+        "target_profit_rate": 0.03
       },
       {
         "min_lots": 3,
         "max_lots": 4,
-        "target_profit_rate": 0.05
+        "target_profit_rate": 0.025
       },
       {
         "min_lots": 5,
         "max_lots": 6,
-        "target_profit_rate": 0.04
+        "target_profit_rate": 0.02
       },
       {
         "min_lots": 7,
         "max_lots": 8,
-        "target_profit_rate": 0.03
+        "target_profit_rate": 0.015
       },
       {
         "min_lots": 9,
         "max_lots": 10,
-        "target_profit_rate": 0.02
+        "target_profit_rate": 0.01
       },
       {
         "min_lots": 11,
         "max_lots": 12,
-        "target_profit_rate": 0.01
+        "target_profit_rate": 0.005
       }
     ],
     "max_lots_per_symbol_default": 12,

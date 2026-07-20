@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from statistics import median
 
 from .config import BotConfig
-from .lot_manager import LotManager, lot_buy_timestamp
+from .lot_manager import LotManager, lot_buy_timestamp, round_price
 from .models import AccountSnapshot, LotState, OrderSide, PositionLifecycle, PositionState, ReentryType, SellReason
 from .risk_manager import RiskDecision
 
@@ -26,6 +26,7 @@ class StrategyAction:
     sell_reason: str = SellReason.UNKNOWN.value
     reentry_type: str = ReentryType.NONE.value
     cleanup_flag: bool = False
+    limit_price: int = 0
 
 
 @dataclass(frozen=True)
@@ -218,7 +219,8 @@ class LotGridStrategy:
                         amount = int(sizing["lot_unit_amount"])
                     else:
                         amount = self.config.strategy.initial_buy_amount
-                    return StrategyAction(OrderSide.BUY, amount, None, "reentry_buy", reentry_type=ReentryType.NORMAL_REENTRY.value)
+                    limit_price = int(self.reentry_details(position, current_price)["reentry_trigger_price"])
+                    return StrategyAction(OrderSide.BUY, amount, None, "reentry_buy", reentry_type=ReentryType.NORMAL_REENTRY.value, limit_price=limit_price)
                 if trailing:
                     if self._lot_sizing_enabled():
                         sizing = self.lot_sizing_for_new_cycle(current_price)
@@ -229,7 +231,8 @@ class LotGridStrategy:
                         amount = int(sizing["lot_unit_amount"])
                     else:
                         amount = self.config.strategy.initial_buy_amount
-                    return StrategyAction(OrderSide.BUY, amount, None, "reentry_buy", reentry_type=ReentryType.TRAILING_REENTRY.value)
+                    limit_price = int(self.reentry_details(position, current_price)["reentry_trigger_price"])
+                    return StrategyAction(OrderSide.BUY, amount, None, "reentry_buy", reentry_type=ReentryType.TRAILING_REENTRY.value, limit_price=limit_price)
                 if self.force_reentry_eligible(position, current_price):
                     if self._lot_sizing_enabled():
                         sizing = self.lot_sizing_for_new_cycle(current_price)
@@ -272,7 +275,8 @@ class LotGridStrategy:
                 return None
             decline = (current_price - reference_price) / reference_price
             if decline <= -drop_rate:
-                return StrategyAction(OrderSide.BUY, amount, None, f"add_buy_drop_{drop_rate * 100:g}%")
+                limit_price = round_price(reference_price * (1.0 - drop_rate))
+                return StrategyAction(OrderSide.BUY, amount, None, f"add_buy_drop_{drop_rate * 100:g}%", limit_price=limit_price)
             return None
         exposure = position.cumulative_invested_amount
         if exposure > self.config.strategy.auto_buy_limit:
@@ -293,7 +297,8 @@ class LotGridStrategy:
             return None
         decline = (current_price - reference_price) / reference_price * 100.0
         if decline <= -drop_pct:
-            return StrategyAction(OrderSide.BUY, amount, None, f"add_buy_drop_{drop_pct:g}%")
+            limit_price = round_price(reference_price * (1.0 - drop_pct / 100.0))
+            return StrategyAction(OrderSide.BUY, amount, None, f"add_buy_drop_{drop_pct:g}%", limit_price=limit_price)
         return None
 
     def _sell_action(self, position: PositionState, current_price: int, snapshot: AccountSnapshot) -> StrategyAction | None:
@@ -318,7 +323,8 @@ class LotGridStrategy:
             if sell_reason == SellReason.AUTO_DECAY_CLEANUP_SELL.value
             else ("cleanup_sell_lot" if sell_reason == SellReason.CLEANUP_SELL.value else "sell_profitable_lot")
         )
-        return StrategyAction(OrderSide.SELL, 0, quantity, reason, lot.lot_id, lot, sell_reason, cleanup_flag=expected_cleanup_loss > 0)
+        limit_price = round_price(lot.buy_price * (1.0 + lot.effective_target_profit_rate))
+        return StrategyAction(OrderSide.SELL, 0, quantity, reason, lot.lot_id, lot, sell_reason, cleanup_flag=expected_cleanup_loss > 0, limit_price=limit_price)
 
     def _sell_candidate(self, position: PositionState, current_price: int, snapshot: AccountSnapshot) -> tuple[LotState, str, int, bool] | None:
         profit_candidates: list[LotState] = []
