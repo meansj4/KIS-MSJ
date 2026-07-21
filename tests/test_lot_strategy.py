@@ -245,7 +245,29 @@ def test_sold_out_wait_reentry_allows_reentry_after_drop() -> None:
     assert action.side is OrderSide.BUY
     assert action.reason == "reentry_buy"
     assert action.reentry_type == ReentryType.NORMAL_REENTRY.value
-    assert action.limit_price == 10070
+    assert action.limit_price == 10050
+
+
+def test_reentry_limit_price_is_rounded_to_valid_krx_tick() -> None:
+    _, _, positions, strategy, risk, snapshot = setup_strategy()
+    position = positions.get("175330", "Test")
+    position.position_state = PositionLifecycle.WAIT_REENTRY.value
+    position.normal_exit_anchor_price = 27_520
+    position.trailing_exit_anchor_price = 27_520
+    position.exit_time = (datetime.now() - timedelta(days=10)).isoformat(timespec="seconds")
+
+    action = strategy.decide(
+        position,
+        26_600,
+        snapshot,
+        risk.account_buy_allowed(snapshot, positions.positions),
+        risk.symbol_buy_allowed(position),
+    )
+
+    assert action is not None
+    assert action.reentry_type == ReentryType.NORMAL_REENTRY.value
+    assert strategy.reentry_details(position, 26_600)["reentry_trigger_price"] == 26_603
+    assert action.limit_price == 26_600
 
 
 def test_profit_take_full_exit_sets_wait_reentry() -> None:

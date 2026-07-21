@@ -219,7 +219,7 @@ class LotGridStrategy:
                         amount = int(sizing["lot_unit_amount"])
                     else:
                         amount = self.config.strategy.initial_buy_amount
-                    limit_price = int(self.reentry_details(position, current_price)["reentry_trigger_price"])
+                    limit_price = round_price(self.reentry_details(position, current_price)["reentry_trigger_price"])
                     return StrategyAction(OrderSide.BUY, amount, None, "reentry_buy", reentry_type=ReentryType.NORMAL_REENTRY.value, limit_price=limit_price)
                 if trailing:
                     if self._lot_sizing_enabled():
@@ -231,7 +231,7 @@ class LotGridStrategy:
                         amount = int(sizing["lot_unit_amount"])
                     else:
                         amount = self.config.strategy.initial_buy_amount
-                    limit_price = int(self.reentry_details(position, current_price)["reentry_trigger_price"])
+                    limit_price = round_price(self.reentry_details(position, current_price)["reentry_trigger_price"])
                     return StrategyAction(OrderSide.BUY, amount, None, "reentry_buy", reentry_type=ReentryType.TRAILING_REENTRY.value, limit_price=limit_price)
                 if self.force_reentry_eligible(position, current_price):
                     if self._lot_sizing_enabled():
