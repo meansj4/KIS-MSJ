@@ -746,7 +746,10 @@ class AutoTrader:
             return position
         updated, triggers, event = self.position_manager.recheck_review_required(position, current_price)
         self.store.save_position(updated)
-        self.store.save_lots(self.lot_manager.lots.values())
+        # review_triggers() refreshes metadata only for this symbol's open lots.
+        # Persisting every lot in the portfolio here makes each review recheck
+        # perform hundreds of unnecessary SQLite transactions.
+        self.store.save_lots(self.lot_manager.open_lots(updated.code))
         self.logger.info(
             "review_required_auto_recheck code=%s name=%s event=%s active_reasons=%s trigger_values=%s",
             updated.code,

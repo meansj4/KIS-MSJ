@@ -592,6 +592,28 @@ def test_pre_request_allows_review_required_profit_take_sell(tmp_path) -> None:
     assert bot.pre_request_block_reason(position, action) == ""
 
 
+def test_review_required_recheck_saves_only_current_symbol_lots(tmp_path, monkeypatch) -> None:
+    bot = trader(tmp_path)
+    current_lot = LotState("CURRENT-LOT", "005930", datetime.now().isoformat(), 10_000, 1, 10_000, 1, 5.0, 10_500)
+    other_lot = LotState("OTHER-LOT", "000660", datetime.now().isoformat(), 20_000, 1, 20_000, 1, 5.0, 21_000)
+    bot.lot_manager.lots = {current_lot.lot_id: current_lot, other_lot.lot_id: other_lot}
+    position = PositionState(
+        code="005930",
+        name="Test",
+        quantity=1,
+        average_price=10_000,
+        current_price=8_000,
+        position_state=PositionLifecycle.REVIEW_REQUIRED.value,
+        needs_review=True,
+    )
+    saved_lots = []
+    monkeypatch.setattr(bot.store, "save_lots", lambda lots: saved_lots.extend(lots))
+
+    bot.auto_recheck_review_required(position, 8_000)
+
+    assert [lot.lot_id for lot in saved_lots] == ["CURRENT-LOT"]
+
+
 def test_pre_request_blocks_review_required_buy_and_cleanup_sell(tmp_path) -> None:
     bot = trader(tmp_path)
     position = PositionState(code="005930", name="Test", position_state=PositionLifecycle.REVIEW_REQUIRED.value, needs_review=True)
