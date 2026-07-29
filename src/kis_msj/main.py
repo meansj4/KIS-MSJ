@@ -433,6 +433,8 @@ class AutoTrader:
         if position.danger_state or position.position_state == PositionLifecycle.RISK_BLOCKED.value or (stock_config is not None and stock_config.danger_state):
             return "risk_blocked_buy_sell_blocked"
         side = OrderSide(str(manual["side"]))
+        if side is OrderSide.BUY and stock_config is not None and stock_config.buy_blocked:
+            return "BUY_BLOCKED_BY_STOCK_FLAG"
         if side is OrderSide.BUY and not account_risk.allowed:
             return "|".join(account_risk.reasons) or "account_risk_blocked"
         if side is OrderSide.BUY and self.config.strategy.lot_sizing_mode == "cycle_locked_by_entry_price":
@@ -1040,6 +1042,9 @@ class AutoTrader:
             return "review_required"
         if position.position_state == PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value and action.side is OrderSide.BUY:
             return "TRADE_STOPPED_AFTER_EXIT"
+        stock_buy_block = self.stock_buy_block_reason(position, action)
+        if stock_buy_block:
+            return stock_buy_block
         retire_block = self.retire_after_exit_block_reason(position, action)
         if retire_block:
             return retire_block
@@ -1062,6 +1067,14 @@ class AutoTrader:
             cooldown = self.order_cooldown_reason(position)
             if cooldown:
                 return cooldown
+        return ""
+
+    def stock_buy_block_reason(self, position: PositionState, action) -> str:
+        if action.side is not OrderSide.BUY:
+            return ""
+        stock = self.stock_config_for_code(position.code)
+        if stock is not None and stock.buy_blocked:
+            return "BUY_BLOCKED_BY_STOCK_FLAG"
         return ""
 
     def review_required_block_reason(self, position: PositionState, action) -> str:

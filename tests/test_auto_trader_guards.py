@@ -344,6 +344,7 @@ def test_stock_config_retire_after_exit_defaults_false() -> None:
 
     assert stock.retire_after_exit is False
     assert stock.retire_reason == ""
+    assert stock.buy_blocked is False
 
 
 def test_pre_request_blocks_retire_after_exit_buy_but_not_sell(tmp_path) -> None:
@@ -364,6 +365,25 @@ def test_pre_request_allows_retire_after_exit_add_buy_while_holding(tmp_path) ->
     add_buy = StrategyAction(OrderSide.BUY, 30_000, None, "add_buy_drop_4%")
 
     assert bot.pre_request_block_reason(position, add_buy) == ""
+
+
+def test_stock_buy_block_flag_blocks_all_buys_but_allows_sell(tmp_path) -> None:
+    config = BotConfig(
+        stocks=(StockConfig("005930", "Test", retire_after_exit=True, buy_blocked=True),),
+        order=OrderConfig(price_sample_interval_seconds=0),
+        storage_path=str(tmp_path / "state.sqlite3"),
+        log_path=str(tmp_path / "trader.log"),
+    )
+    bot = AutoTrader(config, use_mock_client=True)
+    bot.position_manager.apply_fill(TradeFill("005930", "Test", OrderSide.BUY, 3, 10_000, "BUY-1", datetime.now()))
+    position = bot.position_manager.refresh_from_lots("005930", 9_600)
+    add_buy = StrategyAction(OrderSide.BUY, 30_000, None, "add_buy_drop_4%")
+    reentry = StrategyAction(OrderSide.BUY, 30_000, None, "normal_reentry", reentry_type=ReentryType.NORMAL_REENTRY.value)
+    sell = StrategyAction(OrderSide.SELL, 0, 1, "sell_profitable_lot", sell_reason=SellReason.PROFIT_TAKE.value)
+
+    assert bot.pre_request_block_reason(position, add_buy) == "BUY_BLOCKED_BY_STOCK_FLAG"
+    assert bot.pre_request_block_reason(position, reentry) == "BUY_BLOCKED_BY_STOCK_FLAG"
+    assert bot.pre_request_block_reason(position, sell) == ""
 
 
 def test_pre_request_keeps_trade_stopped_block_when_retire_flag_removed(tmp_path) -> None:

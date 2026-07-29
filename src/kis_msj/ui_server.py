@@ -170,7 +170,7 @@ const LABELS = {
   code:'종목코드', name:'종목명', enabled:'사용 여부', position_state:'보유 상태',
   current_price:'현재가', open_lot_count:'OPEN LOT 수', invested_amount:'투입금',
   profit_loss_pct:'평가손익률', risk_block_reasons:'위험 사유', last_decision:'최근 판단',
-  retire_after_exit:'청산 후 중지 예정', retire_reason:'중지 예정 사유',
+  retire_after_exit:'청산 후 중지 예정', retire_reason:'중지 예정 사유', buy_blocked:'매수 차단',
   skip_reason:'스킵 사유', final_block_reason:'최종 차단 사유',
   lot_id:'LOT ID', status:'상태', buy_price:'매수가', buy_quantity:'매수 수량',
   remaining_quantity:'잔여 수량', buy_amount:'매수 금액', buy_filled_at:'매수 체결시각',
@@ -335,7 +335,7 @@ function formatSignedRate(value) {
 }
 const sortState = {};
 const DEFAULT_COLUMNS = {
-  stocks: ['code','name','enabled','retire_after_exit','position_state','current_price','open_lot_count','lot_unit_amount','max_symbol_amount','max_lots_per_symbol','lot_sizing_bucket','invested_amount','realized_pnl_rate','realized_pnl','unrealized_pnl_rate','unrealized_pnl','profit_loss_pct','risk_block_reasons','skip_reason','final_block_reason'],
+  stocks: ['code','name','enabled','retire_after_exit','buy_blocked','position_state','current_price','open_lot_count','lot_unit_amount','max_symbol_amount','max_lots_per_symbol','lot_sizing_bucket','invested_amount','realized_pnl_rate','realized_pnl','unrealized_pnl_rate','unrealized_pnl','profit_loss_pct','risk_block_reasons','skip_reason','final_block_reason'],
   lots: ['lot_id','code','name','status','buy_price','remaining_quantity','current_price','unrealized_pnl','unrealized_pnl_rate','age_weeks','effective_target_profit_rate','sell_trigger_price','cleanup_candidate','stale_lot','last_sell_reason'],
   stockLots: ['lot_id','code','name','status','buy_price','remaining_quantity','current_price','unrealized_pnl','unrealized_pnl_rate','age_weeks','effective_target_profit_rate','sell_trigger_price','cleanup_candidate','stale_lot','last_sell_reason'],
   orders: ['order_id','code','name','side','status','quantity','filled_quantity','remaining_quantity','fill_count','cancel_requested','cancel_confirmed','cancel_rejected','post_cancel_execution_checked','order_sync_warning','limit_price','reason','requested_at','updated_at','lot_id'],

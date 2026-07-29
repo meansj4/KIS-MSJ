@@ -2542,7 +2542,7 @@ class UIService:
         stocks = raw.setdefault("stocks", [])
         for stock in stocks:
             if str(stock.get("code", "")).zfill(6) == code:
-                for key in ("enabled", *RISK_FLAGS):
+                for key in ("enabled", "buy_blocked", *RISK_FLAGS):
                     if key in updates:
                         stock[key] = bool(updates[key])
                 return self.save_config_patch({"stocks": stocks})

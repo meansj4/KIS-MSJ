@@ -1619,7 +1619,7 @@ def test_bot_loop_continues_after_one_symbol_evaluate_error(tmp_path):
     trader.process_manual_order_requests = lambda snapshot, account_risk: None
     trader.evaluate = fake_evaluate
 
-    with patch("kis_msj.main.load_runtime_control", return_value=RuntimeControl()):
+    with patch("kis_msj.main.load_runtime_control", return_value=RuntimeControl()), patch("kis_msj.main.in_trade_window", return_value=True):
         assert trader.run_once() == ""
 
     assert seen == ["005930", "000660"]
@@ -1651,7 +1651,7 @@ def test_bot_loop_marks_kis_trading_halted_symbol_and_continues(tmp_path):
     trader.process_manual_order_requests = lambda snapshot, account_risk: None
     trader.evaluate = fake_evaluate
 
-    with patch("kis_msj.main.load_runtime_control", return_value=RuntimeControl()):
+    with patch("kis_msj.main.load_runtime_control", return_value=RuntimeControl()), patch("kis_msj.main.in_trade_window", return_value=True):
         assert trader.run_once() == ""
 
     blocked = trader.store.load_positions()["001230"]
