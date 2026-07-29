@@ -160,6 +160,52 @@ class OrderManager:
             try:
                 status = self.client.cancel_order(result.order_id, max(1, result.request.quantity - filled_quantity))
             except RuntimeError as error:
+                if filled_quantity == 0 and "APBK0927" in str(error):
+                    # KIS reports that there is no remaining cancelable quantity when
+                    # the order either completed or was already closed at the venue.
+                    # Re-query executions once before deciding which terminal state to
+                    # persist so this order does not remain open and get canceled again
+                    # on every subsequent loop.
+                    fetched_after_rejection = self.client.executions(since=query_start.date())
+                    self.store.mark_order_cancel_check(
+                        result.order_id,
+                        cancel_requested=True,
+                        cancel_rejected=True,
+                        response_code="APBK0927",
+                        response_message=str(error),
+                        post_cancel_execution_checked=True,
+                    )
+                    fills_after_rejection = self._matching_fills(result, fetched_after_rejection)
+                    for original_fill in fills_after_rejection:
+                        fill = self._dedupe_or_delta_fill(original_fill)
+                        if fill is None:
+                            duplicate_fill_count += 1
+                            self._log_duplicate_fill(original_fill, "reconcile_after_cancel_rejected_delta")
+                            continue
+                        if self._record_new_fill(fill, "reconcile_after_cancel_rejected"):
+                            applied.append(fill)
+                        else:
+                            duplicate_fill_count += 1
+                    filled_quantity = self._filled_quantity_for_result(result)
+                    final_status = (
+                        OrderStatus.FILLED_AFTER_CANCEL_REQUEST
+                        if filled_quantity >= result.request.quantity
+                        else OrderStatus.CANCELED_AFTER_PARTIAL_FILL
+                        if filled_quantity > 0
+                        else OrderStatus.CANCELED_NO_FILL
+                    )
+                    self.store.record_order(
+                        OrderResult(result.request, result.order_id, final_status, "cancel_rejected_no_cancelable_quantity_reconciled")
+                    )
+                    self.logger.warning(
+                        "order_cancel_rejected_no_cancelable_reconciled code=%s order_id=%s filled_qty=%s order_qty=%s final_status=%s",
+                        result.request.code,
+                        result.order_id,
+                        filled_quantity,
+                        result.request.quantity,
+                        final_status.value,
+                    )
+                    continue
                 if filled_quantity > 0 and _is_no_cancelable_quantity_error(error):
                     self.store.mark_order_cancel_check(
                         result.order_id,

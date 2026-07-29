@@ -222,6 +222,23 @@ class AutoTrader:
                 account_risk = self.risk_manager.account_buy_allowed(snapshot, self.position_manager.positions)
             with profile.stage("manual_request") if profile else _null_stage():
                 self.process_manual_order_requests(snapshot, account_risk)
+            if not in_trade_window(self.config):
+                # Reconciliation, account sync, and manual-request handling above still
+                # run outside market hours. Avoid walking and repeatedly writing the
+                # entire symbol/lot universe when no automatic decision can trade.
+                for stock in self.config.stocks:
+                    position = self.position_manager.positions.get(stock.code)
+                    if position is not None:
+                        self.apply_stock_retirement_config(position, stock)
+                with profile.stage("db") if profile else _null_stage():
+                    self.store.save_positions(self.position_manager.positions.values())
+                self.logger.info(
+                    "market_idle_loop symbols_skipped=%s reason=outside_trade_window reconciliation_completed=true",
+                    len(self.config.stocks),
+                )
+                if profile:
+                    profile.symbols_skipped += len(self.config.stocks)
+                return ""
             for stock in self.config.stocks:
                 with profile.stage("runtime_control") if profile else _null_stage():
                     interrupt = self.runtime_interrupt_reason(f"before_symbol_{stock.code}")

@@ -4817,7 +4817,7 @@
     "buy_limit_markup_pct": 0.3,
     "sell_limit_markdown_pct": 0.5,
     "price_sample_count": 5,
-    "price_sample_interval_seconds": 2,
+    "price_sample_interval_seconds": 0.5,
     "limit_order_timeout_seconds": 30,
     "order_cooldown_seconds": 600,
     "min_order_request_interval_seconds": 10,
@@ -4828,9 +4828,9 @@
     "reconcile_recent_executions_on_startup": true,
     "startup_execution_lookup_days": 1,
     "account_snapshot_min_interval_seconds": 30,
-    "account_snapshot_rate_limit_cooldown_seconds": 3,
+    "account_snapshot_rate_limit_cooldown_seconds": 30,
     "kis_min_request_interval_seconds": 0.25,
-    "kis_balance_page_interval_seconds": 1.0
+    "kis_balance_page_interval_seconds": 1.5
   },
   "market_hours": {
     "open_time": "09:00",

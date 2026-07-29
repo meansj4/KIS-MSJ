@@ -5,6 +5,7 @@ from pathlib import Path
 
 from kis_msj.config import BotConfig, OrderConfig, StockConfig, config_to_dict
 from kis_msj.main import AutoTrader
+from kis_msj import main as trader_main
 from kis_msj.models import AccountSnapshot
 from kis_msj.risk_manager import RiskDecision
 
@@ -26,6 +27,7 @@ def _config(tmp_path, *, loop_interval_seconds: float = 3.0, loop_profiling_enab
 def test_loop_profile_log_records_duration_and_symbols(tmp_path, monkeypatch, caplog) -> None:
     config = _config(tmp_path)
     trader = AutoTrader(config, use_mock_client=True)
+    monkeypatch.setattr(trader_main, "in_trade_window", lambda config: True)
     trader.startup_sync = lambda: AccountSnapshot(1_000_000, 1_000_000, 0, 0, ())
     trader.strategy.decide = lambda position, current_price, snapshot, account_risk, symbol_risk: None
 

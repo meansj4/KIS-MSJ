@@ -233,6 +233,44 @@ def test_cancel_rejected_no_cancelable_after_partial_fill_closes_order(tmp_path)
     assert row["post_cancel_execution_checked_at"]
 
 
+def test_cancel_rejected_no_cancelable_without_fill_requeries_and_closes_order(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    store.record_order(order(quantity=2))
+    client = ReconcileClient((), cancel_error=RuntimeError("APBK0927 no cancelable quantity"))
+    manager = OrderManager(BotConfig(order=OrderConfig(limit_order_timeout_seconds=0)), client, store, logging.getLogger("test"))
+
+    fills = manager.reconcile_open_orders()
+
+    assert fills == ()
+    assert store.find_order("000001").status is OrderStatus.CANCELED_NO_FILL
+    assert not store.has_open_order("005930", OrderSide.BUY)
+    with store._connect() as connection:
+        row = connection.execute(
+            "SELECT cancel_rejected, cancel_response_code, post_cancel_execution_checked_at FROM orders WHERE order_id = '000001'"
+        ).fetchone()
+    assert row["cancel_rejected"] == 1
+    assert row["cancel_response_code"] == "APBK0927"
+    assert row["post_cancel_execution_checked_at"]
+
+
+def test_cancel_rejected_no_cancelable_requery_records_late_fill(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    store.record_order(order(quantity=2))
+    fill = TradeFill("005930", "Test", OrderSide.BUY, 2, 10000, "000001", datetime.now(), execution_id="E-LATE")
+    client = ReconcileClient(
+        cancel_error=RuntimeError("APBK0927 no cancelable quantity"),
+        execution_batches=((), (fill,)),
+    )
+    manager = OrderManager(BotConfig(order=OrderConfig(limit_order_timeout_seconds=0)), client, store, logging.getLogger("test"))
+
+    fills = manager.reconcile_open_orders()
+
+    assert fills == (fill,)
+    assert store.find_order("000001").status is OrderStatus.FILLED_AFTER_CANCEL_REQUEST
+    assert store.filled_quantity_for_order("000001") == 2
+    assert not store.has_open_order("005930", OrderSide.BUY)
+
+
 def test_canceled_order_no_longer_counts_as_open(tmp_path) -> None:
     store = StateStore(tmp_path / "state.sqlite3")
     result = order()

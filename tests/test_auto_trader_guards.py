@@ -311,6 +311,34 @@ def test_run_once_skips_manual_only_stock(tmp_path, monkeypatch) -> None:
     assert bot.run_once() == ""
 
 
+def test_run_once_outside_trade_window_skips_symbol_quotes_and_lot_bulk_save(tmp_path, monkeypatch) -> None:
+    config = BotConfig(
+        stocks=(StockConfig("005930", "Test"),),
+        order=OrderConfig(live_trading=True),
+        storage_path=str(tmp_path / "state.sqlite3"),
+        log_path=str(tmp_path / "trader.log"),
+    )
+    bot = AutoTrader(config, use_mock_client=True)
+    snapshot = AccountSnapshot(1_000_000, 1_000_000, 0, 0, ())
+    bot.client.account_snapshot = lambda: snapshot
+    bot.client.open_orders = lambda: ()
+    bot.client.quote = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("quote must not be called"))
+    monkeypatch.setattr(trader_main, "in_trade_window", lambda config: False)
+    original_save_lots = bot.store.save_lots
+    save_lot_calls = {"count": 0}
+
+    def count_save_lots(*args, **kwargs):
+        save_lot_calls["count"] += 1
+        return original_save_lots(*args, **kwargs)
+
+    monkeypatch.setattr(bot.store, "save_lots", count_save_lots)
+
+    assert bot.run_once() == ""
+    # startup_sync persists the reconciled account once; the market-idle path
+    # must not perform the second end-of-loop bulk lot write.
+    assert save_lot_calls["count"] == 1
+
+
 def test_stock_config_retire_after_exit_defaults_false() -> None:
     stock = StockConfig("005930", "Test")
 
