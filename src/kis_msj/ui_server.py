@@ -67,6 +67,11 @@ INDEX_HTML = r"""<!doctype html>
     .dashboardCard { border: 1px solid #e2e7ec; border-radius: 8px; padding: 12px; background: #fff; }
     .dashboardCard h3 { margin: 0 0 8px; font-size: 14px; }
     .dashboardValue { font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; }
+    .historyChart { width: 100%; min-width: 760px; height: 390px; display: block; }
+    .historyChart .chartPoint { cursor: pointer; stroke: white; stroke-width: 1; }
+    .historyChart .chartPoint:hover { r: 5; stroke: #111827; stroke-width: 1.5; }
+    .chartLegend { display: flex; gap: 14px; flex-wrap: wrap; margin: 8px 0; font-size: 13px; }
+    .chartLegend span::before { content: ''; display: inline-block; width: 18px; height: 3px; margin-right: 6px; vertical-align: middle; background: var(--line); }
     .pos { color: #15803d; font-weight: 700; }
     .neg { color: #b91c1c; font-weight: 700; }
     .muted { color: #7b8794; }
@@ -632,6 +637,8 @@ async function loadPortfolioDashboard() {
       ${summaryCard('평가 수익', summary.unrealized_pnl, 'KRW', 'saved current price basis')}
       ${summaryCard('평가 수익률', summary.unrealized_pnl_rate, 'RATE', 'unrealized_pnl / open cost')}
     </div>
+    <h3>거래 시작 이후 손익 추이</h3>
+    <div id="portfolioHistoryChart"><p class="muted">차트 계산 중...</p></div>
     <div class="manualBox">
       <strong>손익 상세 drill-down</strong>
       <p class="muted">상세 내역은 버튼을 누를 때만 별도 read-only API로 가져옵니다.</p>
@@ -651,6 +658,41 @@ async function loadPortfolioDashboard() {
     ${metrics(d.data_quality || {})}
     <details><summary>지표 정의 보기</summary>${renderReadableObject(d.definitions || {})}</details>
   `;
+  loadPortfolioHistoryChart();
+}
+
+async function loadPortfolioHistoryChart() {
+  const host = document.getElementById('portfolioHistoryChart');
+  if (!host) return;
+  try {
+    const result = await api('/api/portfolio-dashboard/history-chart');
+    host.innerHTML = renderPortfolioHistoryChart(result);
+  } catch (error) {
+    host.innerHTML = `<p class="bad">차트를 불러오지 못했습니다: ${esc(error.message || error)}</p>`;
+  }
+}
+function renderPortfolioHistoryChart(result) {
+  const rows = result.rows || [];
+  if (!rows.length) return '<p class="muted">표시할 거래 이력이 없습니다.</p>';
+  const W=1100, H=390, L=82, R=86, T=24, B=54, PW=W-L-R, PH=H-T-B;
+  const principalMax = Math.max(...rows.map(r=>Number(r.holding_principal||0)), 1) * 1.08;
+  const pnlValues = rows.flatMap(r=>[r.realized_pnl,r.unrealized_pnl,r.realized_plus_unrealized].map(Number));
+  let pnlMin=Math.min(0,...pnlValues), pnlMax=Math.max(0,...pnlValues);
+  if (pnlMin===pnlMax) pnlMax=pnlMin+1;
+  const pad=(pnlMax-pnlMin)*0.08; pnlMin-=pad; pnlMax+=pad;
+  const x=i=>L+(rows.length===1?PW/2:i*PW/(rows.length-1));
+  const yPrincipal=v=>T+PH-(Number(v||0)/principalMax)*PH;
+  const yPnl=v=>T+PH-((Number(v||0)-pnlMin)/(pnlMax-pnlMin))*PH;
+  const path=(key,y)=>rows.map((r,i)=>`${i?'L':'M'}${x(i).toFixed(1)},${y(r[key]).toFixed(1)}`).join(' ');
+  const money=v=>Math.round(v).toLocaleString('ko-KR');
+  let grid='';
+  for(let i=0;i<=4;i++){const yy=T+PH*i/4; const pv=principalMax*(1-i/4); const rv=pnlMax-(pnlMax-pnlMin)*i/4; grid+=`<line x1="${L}" y1="${yy}" x2="${W-R}" y2="${yy}" stroke="#e5e7eb"/><text x="${L-8}" y="${yy+4}" text-anchor="end" font-size="11" fill="#64748b">${esc(money(pv))}</text><text x="${W-R+8}" y="${yy+4}" font-size="11" fill="#64748b">${esc(money(rv))}</text>`;}
+  const tickIndexes=[...new Set([0,Math.floor((rows.length-1)/4),Math.floor((rows.length-1)/2),Math.floor((rows.length-1)*3/4),rows.length-1])];
+  const ticks=tickIndexes.map(i=>`<text x="${x(i)}" y="${H-18}" text-anchor="middle" font-size="11" fill="#64748b">${esc(rows[i].date.slice(5))}</text>`).join('');
+  const tooltip=r=>`${esc(r.date)}\n보유 원금 ${esc(money(r.holding_principal))}원\n실현 수익 ${esc(money(r.realized_pnl))}원\n평가 수익 ${esc(money(r.unrealized_pnl))}원\n총손익 ${esc(money(r.realized_plus_unrealized))}원`;
+  const pointSeries=[['holding_principal',yPrincipal,'#2563eb'],['realized_pnl',yPnl,'#16a34a'],['unrealized_pnl',yPnl,'#f59e0b'],['realized_plus_unrealized',yPnl,'#9333ea']];
+  const points=pointSeries.map(([key,y,color])=>rows.map((r,i)=>`<circle class="chartPoint" cx="${x(i)}" cy="${y(r[key])}" r="3.2" fill="${color}"><title>${tooltip(r)}</title></circle>`).join('')).join('');
+  return `<div class="chartLegend"><span style="--line:#2563eb">현재 보유 원금 (왼쪽 축)</span><span style="--line:#16a34a">누적 실현 수익</span><span style="--line:#f59e0b">평가 수익</span><span style="--line:#9333ea">실현 수익 + 평가 수익 (총손익, 오른쪽 축)</span></div><div class="tableWrap" style="max-height:none"><svg class="historyChart" viewBox="0 0 ${W} ${H}" role="img" aria-label="거래 시작 이후 포트폴리오 손익 차트">${grid}<line x1="${L}" y1="${yPnl(0)}" x2="${W-R}" y2="${yPnl(0)}" stroke="#94a3b8" stroke-dasharray="4 4"/><path d="${path('holding_principal',yPrincipal)}" fill="none" stroke="#2563eb" stroke-width="2"/><path d="${path('realized_pnl',yPnl)}" fill="none" stroke="#16a34a" stroke-width="1.5"/><path d="${path('unrealized_pnl',yPnl)}" fill="none" stroke="#f59e0b" stroke-width="1.5"/><path d="${path('realized_plus_unrealized',yPnl)}" fill="none" stroke="#9333ea" stroke-width="1.5"/>${points}${ticks}</svg></div><p class="muted">${esc(result.first_trade_date)} ~ ${esc(result.last_date)} · 왼쪽 축: 원금, 오른쪽 축: 손익 · 날짜별 점에 마우스를 올리면 값을 확인할 수 있습니다.</p><details><summary>계산 기준 보기</summary>${renderReadableObject({price_basis:result.price_basis, ...(result.definitions||{})})}</details>`;
 }
 function summaryCard(title, value, unit, help) {
   const cls = Number(value || 0) < 0 ? 'neg' : (Number(value || 0) > 0 && title.includes('수익') ? 'pos' : '');
@@ -1391,6 +1433,8 @@ class UIHandler(BaseHTTPRequestHandler):
             if len(parts) >= 5 and parts[-3] == "daily":
                 filters["date"] = parts[-2]
             return self.service.portfolio_unrealized_detail(filters)
+        if parts[-1] == "history-chart":
+            return self.service.portfolio_history_chart()
         return {"error": "not_found"}
 
     def do_POST(self) -> None:  # noqa: N802

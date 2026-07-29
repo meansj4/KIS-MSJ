@@ -4798,7 +4798,7 @@
     "market_risk_mode": false,
     "daily_account_loss_limit_pct": -1.5,
     "total_account_loss_limit_pct": -20,
-    "max_review_positions": 30,
+    "max_review_positions": 60,
     "min_cash_available": 30000,
     "max_consecutive_api_errors": 5,
     "max_price_sample_volatility_pct": 1,

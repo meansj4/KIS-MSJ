@@ -1018,6 +1018,9 @@ class UIService:
             "holding_symbol_count": len({str(lot.get("code") or "") for lot in open_lots}),
             "realized_pnl": realized["realized_pnl"],
             "realized_pnl_rate": _safe_rate(realized["realized_pnl"], realized["sold_cost"]),
+            "realized_gain": realized["realized_gain"],
+            "realized_loss": realized["realized_loss"],
+            "realized_loss_fill_count": realized["realized_loss_fill_count"],
             "unrealized_pnl": unrealized_pnl,
             "unrealized_pnl_rate": _safe_rate(unrealized_pnl, holding_buy_amount),
             "today_buy_fill_count": sum(1 for fill in buy_fills if _date_key(fill.get("filled_at")) == today),
@@ -1108,7 +1111,9 @@ class UIService:
             rows.append(row)
         rows = self._filter_detail_rows(rows, filters)
         total = len(rows)
-        rows = self._sort_and_page(rows, filters, default_sort="-realized_pnl")
+        # Newest first keeps recent cleanup/loss sells visible on the first page.
+        # Users can still sort the rendered table by realized PnL when desired.
+        rows = self._sort_and_page(rows, filters, default_sort="-sell_filled_at")
         return {
             "rows": rows,
             "total_count": total,
@@ -1258,6 +1263,9 @@ class UIService:
     def _realized_pnl_from_sell_fills(self, sell_fills: list[dict[str, Any]], lot_by_id: dict[str, dict[str, Any]]) -> dict[str, int]:
         realized_pnl = 0
         sold_cost = 0
+        realized_gain = 0
+        realized_loss = 0
+        realized_loss_fill_count = 0
         for fill in sell_fills:
             lot = lot_by_id.get(str(fill.get("lot_id") or ""))
             if not lot:
@@ -1266,9 +1274,146 @@ class UIService:
             sell_price = _to_int(fill.get("price"))
             buy_price = _to_int(lot.get("buy_price"))
             fee_tax = int(round(sell_price * quantity * self.config.strategy.estimated_fee_tax_pct / 100.0))
-            realized_pnl += (sell_price - buy_price) * quantity - fee_tax
+            fill_pnl = (sell_price - buy_price) * quantity - fee_tax
+            realized_pnl += fill_pnl
+            if fill_pnl < 0:
+                realized_loss += fill_pnl
+                realized_loss_fill_count += 1
+            else:
+                realized_gain += fill_pnl
             sold_cost += buy_price * quantity
-        return {"realized_pnl": realized_pnl, "sold_cost": sold_cost}
+        return {
+            "realized_pnl": realized_pnl,
+            "sold_cost": sold_cost,
+            "realized_gain": realized_gain,
+            "realized_loss": realized_loss,
+            "realized_loss_fill_count": realized_loss_fill_count,
+        }
+
+    def portfolio_history_chart(self) -> dict[str, Any]:
+        """Reconstruct end-of-day principal and PnL from LOT/fill history and saved prices."""
+        db_path = self._db_path()
+        if not db_path.exists():
+            return {"rows": [], "generated_at": datetime.now().isoformat(timespec="seconds")}
+        cache_key = ("portfolio_history_chart", str(db_path), self._db_mtime())
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return dict(cached)
+        lots = self.lots()
+        fills = self.fills()
+        buy_dates = [_date_key(lot.get("buy_filled_at")) for lot in lots]
+        first_date = min((day for day in buy_dates if day), default="")
+        if not first_date:
+            return {"rows": [], "generated_at": datetime.now().isoformat(timespec="seconds")}
+
+        daily_prices: dict[tuple[str, str], tuple[int, str]] = {}
+        with sqlite3.connect(db_path) as connection:
+            connection.row_factory = sqlite3.Row
+            try:
+                for row in connection.execute(
+                    "SELECT code, date, close FROM daily_prices WHERE date >= ? AND close > 0",
+                    (first_date,),
+                ):
+                    daily_prices[(str(row["date"]), str(row["code"]))] = (_to_int(row["close"]), "daily_close")
+                snapshot_rows = connection.execute(
+                    """
+                    SELECT ps.code, substr(ps.sampled_at, 1, 10) AS date, ps.current_price
+                    FROM price_snapshots AS ps
+                    JOIN (
+                        SELECT code, substr(sampled_at, 1, 10) AS date, MAX(id) AS id
+                        FROM price_snapshots
+                        WHERE sampled_at >= ? AND current_price > 0
+                        GROUP BY code, substr(sampled_at, 1, 10)
+                    ) AS latest ON latest.id = ps.id
+                    ORDER BY date, ps.code
+                    """,
+                    (first_date,),
+                ).fetchall()
+            except sqlite3.Error:
+                snapshot_rows = []
+        snapshot_dates: set[str] = set()
+        for row in snapshot_rows:
+            day = str(row["date"] or "")
+            code = str(row["code"] or "")
+            price = _to_int(row["current_price"])
+            if day and code and price > 0:
+                snapshot_dates.add(day)
+                daily_prices.setdefault((day, code), (price, "last_daily_snapshot"))
+
+        sell_events: dict[str, list[tuple[str, int, int]]] = defaultdict(list)
+        realized_by_date: dict[str, int] = defaultdict(int)
+        lot_by_id = {str(lot.get("lot_id") or ""): lot for lot in lots}
+        for fill in fills:
+            if str(fill.get("side") or "") != OrderSide.SELL.value:
+                continue
+            lot_id = str(fill.get("lot_id") or "")
+            lot = lot_by_id.get(lot_id)
+            day = _date_key(fill.get("filled_at"))
+            if not lot or not day:
+                continue
+            quantity = _to_int(fill.get("quantity"))
+            sell_price = _to_int(fill.get("price"))
+            buy_price = _to_int(lot.get("buy_price"))
+            fee_tax = int(round(sell_price * quantity * self.config.strategy.estimated_fee_tax_pct / 100.0))
+            sell_events[lot_id].append((day, quantity, sell_price))
+            realized_by_date[day] += (sell_price - buy_price) * quantity - fee_tax
+
+        chart_dates = sorted(day for day in snapshot_dates | {day for day in realized_by_date if day >= first_date} if day >= first_date)
+        rows: list[dict[str, Any]] = []
+        cumulative_realized = 0
+        last_prices: dict[str, int] = {}
+        for day in chart_dates:
+            for (price_day, code), (price, _) in daily_prices.items():
+                if price_day == day:
+                    last_prices[code] = price
+            cumulative_realized += realized_by_date.get(day, 0)
+            holding_principal = 0
+            market_value = 0
+            missing_price_codes: list[str] = []
+            for lot in lots:
+                buy_day = _date_key(lot.get("buy_filled_at"))
+                if not buy_day or buy_day > day:
+                    continue
+                lot_id = str(lot.get("lot_id") or "")
+                quantity = _to_int(lot.get("buy_quantity"))
+                quantity -= sum(sold_quantity for sell_day, sold_quantity, _ in sell_events.get(lot_id, []) if sell_day <= day)
+                quantity = max(0, quantity)
+                if not quantity:
+                    continue
+                code = str(lot.get("code") or "")
+                buy_price = _to_int(lot.get("buy_price"))
+                holding_principal += buy_price * quantity
+                price = daily_prices.get((day, code), (last_prices.get(code, 0), "carried_forward"))[0]
+                if price > 0:
+                    market_value += price * quantity
+                else:
+                    market_value += buy_price * quantity
+                    missing_price_codes.append(code)
+            unrealized_pnl = market_value - holding_principal
+            rows.append({
+                "date": day,
+                "holding_principal": holding_principal,
+                "realized_pnl": cumulative_realized,
+                "unrealized_pnl": unrealized_pnl,
+                "realized_plus_unrealized": cumulative_realized + unrealized_pnl,
+                "missing_price_count": len(set(missing_price_codes)),
+            })
+        result = {
+            "rows": rows,
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "first_trade_date": first_date,
+            "last_date": rows[-1]["date"] if rows else "",
+            "definitions": {
+                "holding_principal": "해당 날짜 장 종료 기준 보유수량 × 각 LOT 매수가",
+                "realized_pnl": "해당 날짜까지 누적 SELL 체결손익에서 추정 수수료·세금을 차감한 값",
+                "unrealized_pnl": "해당 날짜 저장 종가/마지막 스냅샷 기준 평가금액 - 보유원금",
+                "realized_plus_unrealized": "누적 실현수익 + 평가수익(총손익)",
+            },
+            "price_basis": "daily_prices.close 우선, 없으면 해당 날짜 마지막 price_snapshots.current_price, 그래도 없으면 직전 저장가격",
+            "read_only": True,
+        }
+        self._cache_set(cache_key, result)
+        return dict(result)
 
     def _daily_realized(self, sell_fills: list[dict[str, Any]], lot_by_id: dict[str, dict[str, Any]]) -> dict[str, dict[str, int]]:
         daily: dict[str, dict[str, int]] = defaultdict(lambda: {"realized_pnl": 0, "sold_cost": 0})

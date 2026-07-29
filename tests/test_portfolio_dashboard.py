@@ -89,6 +89,9 @@ def test_portfolio_dashboard_calculates_overall_daily_and_limits(tmp_path) -> No
     assert overall["current_holding_lot_count"] == 2
     assert overall["realized_pnl"] == 7880
     assert round(overall["realized_pnl_rate"], 4) == 0.197
+    assert overall["realized_gain"] == 7880
+    assert overall["realized_loss"] == 0
+    assert overall["realized_loss_fill_count"] == 0
     assert overall["unrealized_pnl"] == 5000
     assert round(overall["unrealized_pnl_rate"], 4) == 0.0714
 
@@ -137,6 +140,8 @@ def test_portfolio_dashboard_ui_contains_tab_and_progress_bar() -> None:
     assert "usageBar" in INDEX_HTML
     assert "usage_pct" in INDEX_HTML
     assert "loadPortfolioDetail" in INDEX_HTML
+    assert "loadPortfolioHistoryChart" in INDEX_HTML
+    assert "/api/portfolio-dashboard/history-chart" in INDEX_HTML
 
 
 def test_portfolio_realized_detail_returns_sell_fill_lot_pnl_and_pagination(tmp_path) -> None:
@@ -156,6 +161,45 @@ def test_portfolio_realized_detail_returns_sell_fill_lot_pnl_and_pagination(tmp_
     assert row["fee_tax_estimate"] == 120
     assert row["realized_pnl"] == 7880
     assert row["pnl_basis"] == "sell_fill_net_estimate"
+
+
+def test_portfolio_dashboard_and_detail_include_loss_sells(tmp_path) -> None:
+    service, store = _service(tmp_path)
+    _seed_dashboard_data(store)
+    loss_lot = LotState("LOT-LOSS", "000660", "2026-05-28T11:00:00", 10000, 2, 20000, 0, 6.0, 10600, status=LotStatus.CLOSED.value)
+    store.save_lot(loss_lot)
+    store.record_fill(TradeFill("000660", "Hynix", OrderSide.SELL, 2, 9000, "ORDER-SELL-LOSS", datetime(2026, 5, 29, 10, 0), "LOT-LOSS", "EXEC-SELL-LOSS"))
+
+    overall = service.portfolio_dashboard()["overall_summary"]
+    assert overall["realized_pnl"] == 5835
+    assert overall["realized_gain"] == 7880
+    assert overall["realized_loss"] == -2045
+    assert overall["realized_loss_fill_count"] == 1
+
+    detail = service.portfolio_realized_detail()
+    assert detail["rows"][0]["lot_id"] == "LOT-LOSS"
+    assert detail["rows"][0]["realized_pnl"] == -2045
+
+
+def test_portfolio_history_chart_reconstructs_daily_principal_and_pnl(tmp_path) -> None:
+    service, store = _service(tmp_path)
+    _seed_dashboard_data(store)
+    store.record_price_snapshot({"code": "000660", "sampled_at": "2026-05-27T15:20:00", "current_price": 9000})
+    store.record_price_snapshot({"code": "000660", "sampled_at": "2026-05-28T15:20:00", "current_price": 9000})
+
+    result = service.portfolio_history_chart()
+
+    assert result["first_trade_date"] == "2026-05-27"
+    by_date = {row["date"]: row for row in result["rows"]}
+    assert by_date["2026-05-27"]["holding_principal"] == 10000
+    assert by_date["2026-05-27"]["realized_pnl"] == 0
+    assert by_date["2026-05-27"]["unrealized_pnl"] == -1000
+    assert by_date["2026-05-28"]["holding_principal"] == 70000
+    assert by_date["2026-05-28"]["realized_pnl"] == 7880
+    assert by_date["2026-05-28"]["unrealized_pnl"] == 5000
+    assert by_date["2026-05-28"]["realized_plus_unrealized"] == 12880
+    assert by_date["2026-05-28"]["missing_price_count"] == 0
+    assert result["read_only"] is True
 
 
 def test_portfolio_unrealized_detail_returns_open_lot_targets_and_price_source(tmp_path) -> None:
