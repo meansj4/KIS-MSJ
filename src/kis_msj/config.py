@@ -125,6 +125,10 @@ class StrategyConfig:
     cleanup_buy_cooldown_days: int = 3
     cleanup_reentry_cooldown_days: int = 5
     cleanup_auto_return_to_wait_reentry: bool = False
+    deep_loss_timeout_enabled: bool = False
+    deep_loss_threshold_rate: float = -0.40
+    deep_loss_reset_rate: float = -0.38
+    deep_loss_required_days: int = 7
     stale_lot_loss_rate: float = -0.15
     stale_lot_min_age_weeks: int = 8
     stale_lot_price_gap_rate: float = -0.10

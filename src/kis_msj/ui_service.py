@@ -100,6 +100,10 @@ CONFIG_METADATA: tuple[dict[str, Any], ...] = (
     {"section": "Strategy", "key": "strategy.cleanup_buy_cooldown_days", "label_ko": "Cleanup 후 매수 쿨다운", "description_ko": "일부 cleanup 후 같은 종목 매수를 막는 캘린더 일수입니다.", "type": "number", "unit": "일", "display_format": "integer", "config_format": "integer", "warning_level": "warning", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.cleanup_reentry_cooldown_days", "label_ko": "전량 cleanup 후 재진입 쿨다운", "description_ko": "전량 cleanup 후 모든 BUY를 막는 캘린더 일수입니다.", "type": "number", "unit": "일", "display_format": "integer", "config_format": "integer", "warning_level": "warning", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.cleanup_auto_return_to_wait_reentry", "label_ko": "Cleanup 후 자동 WAIT_REENTRY 복귀", "description_ko": "false가 기본입니다. true이면 cleanup cooldown 후 자동 재진입 대기로 갈 수 있습니다.", "type": "boolean", "unit": "bool", "display_format": "boolean", "config_format": "boolean", "warning_level": "danger", "requires_restart": True, "danger_confirm_required": True},
+    {"section": "Strategy", "key": "strategy.deep_loss_timeout_enabled", "label_ko": "심각손실 지속 LOT 정리", "description_ko": "완료된 거래일 종가 기준 심각손실이 지정 일수 누적된 LOT을 종목당 하루 1개 정리합니다.", "type": "boolean", "unit": "bool", "display_format": "boolean", "config_format": "boolean", "warning_level": "danger", "requires_restart": True, "danger_confirm_required": True},
+    {"section": "Strategy", "key": "strategy.deep_loss_threshold_rate", "label_ko": "심각손실 진입 기준", "description_ko": "이 수익률 이하로 마감한 거래일을 심각손실 지속일로 계산합니다.", "type": "number", "unit": "%", "display_format": "decimal_percent", "config_format": "decimal_rate", "warning_level": "danger", "requires_restart": True},
+    {"section": "Strategy", "key": "strategy.deep_loss_reset_rate", "label_ko": "심각손실 추적 초기화 기준", "description_ko": "이 수익률 이상으로 회복 마감하면 누적 거래일을 초기화합니다.", "type": "number", "unit": "%", "display_format": "decimal_percent", "config_format": "decimal_rate", "warning_level": "warning", "requires_restart": True},
+    {"section": "Strategy", "key": "strategy.deep_loss_required_days", "label_ko": "심각손실 지속기간", "description_ko": "심각손실 상태가 시작된 날짜부터 이 달력 일수가 지나면 매도 후보가 됩니다.", "type": "number", "unit": "일", "display_format": "integer", "config_format": "integer", "warning_level": "danger", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.stale_lot_loss_rate", "label_ko": "STALE LOT 손실률 기준", "description_ko": "오래된 손실 LOT을 stale로 표시할 손실률입니다.", "type": "number", "unit": "%", "display_format": "decimal_percent", "config_format": "decimal_rate", "warning_level": "warning", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.stale_lot_min_age_weeks", "label_ko": "STALE LOT 최소 보유기간", "description_ko": "stale LOT 판정에 필요한 최소 보유 주수입니다.", "type": "number", "unit": "주", "display_format": "integer", "config_format": "integer", "warning_level": "warning", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.stale_lot_price_gap_rate", "label_ko": "STALE LOT 가격 하락 기준", "description_ko": "매수가 대비 이 비율 이상 낮아진 LOT을 stale 후보로 봅니다.", "type": "number", "unit": "%", "display_format": "decimal_percent", "config_format": "decimal_rate", "warning_level": "warning", "requires_restart": True},
@@ -1178,6 +1182,10 @@ class UIService:
                 "target_source": target_source,
                 "current_base_target_profit_rate": current_base_rate,
                 "effective_target_profit_rate": effective_rate,
+                "deep_loss_started_on": lot.get("deep_loss_started_on", ""),
+                "deep_loss_last_observed_on": lot.get("deep_loss_last_observed_on", ""),
+                "deep_loss_observation_count": lot.get("deep_loss_observation_count", 0),
+                "deep_loss_last_close": lot.get("deep_loss_last_close", 0),
                 "target_remaining_amount": max(0, target_amount - market_value) if current_price else 0,
                 "target_remaining_rate": _safe_rate(target_price - current_price, current_price) if current_price else 0.0,
                 "stale_lot": bool(lot.get("stale_lot")),
@@ -2491,6 +2499,10 @@ class UIService:
             errors.append("cleanup_min_target_rate must be <= 0")
         if not 0 <= strategy.cleanup_profit_offset_ratio <= 1:
             errors.append("cleanup_profit_offset_ratio must be between 0 and 1")
+        if strategy.deep_loss_threshold_rate >= strategy.deep_loss_reset_rate:
+            errors.append("deep_loss_threshold_rate must be less than deep_loss_reset_rate")
+        if strategy.deep_loss_required_days < 1:
+            errors.append("deep_loss_required_days must be >= 1")
         errors.extend(_validate_bands("exposure_buy_bands", [asdict(item) for item in strategy.exposure_buy_bands], "amount"))
         errors.extend(_validate_bands("exposure_sell_bands", [asdict(item) for item in strategy.exposure_sell_bands], "target_profit_pct"))
         if risk.daily_account_loss_limit_pct > 0 or risk.total_account_loss_limit_pct > 0:

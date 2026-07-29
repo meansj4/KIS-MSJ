@@ -43,6 +43,110 @@ def test_initial_buy_creates_candidate_action() -> None:
     assert action.amount == 30000
 
 
+def test_deep_loss_timeout_counts_completed_sessions_once_and_resets_with_hysteresis() -> None:
+    strategy_config = StrategyConfig(
+        deep_loss_timeout_enabled=True,
+        deep_loss_threshold_rate=-0.40,
+        deep_loss_reset_rate=-0.38,
+        deep_loss_required_days=7,
+        estimated_fee_tax_pct=0,
+    )
+    _, _, positions, strategy, _, _ = setup_strategy(strategy_config)
+    lot = add_lot(positions, "005930", 10_000, 1)
+
+    assert strategy.observe_completed_session("005930", "2026-07-01", 6_000)
+    assert not strategy.observe_completed_session("005930", "2026-07-01", 5_900)
+    assert lot.deep_loss_observation_count == 1
+    assert lot.deep_loss_started_on == "2026-07-01"
+
+    assert strategy.observe_completed_session("005930", "2026-07-02", 6_100)
+    assert lot.deep_loss_observation_count == 1
+    assert strategy.observe_completed_session("005930", "2026-07-03", 6_200)
+    assert lot.deep_loss_observation_count == 0
+    assert lot.deep_loss_started_on == ""
+
+
+def test_deep_loss_timeout_sells_one_whole_lot_at_current_limit_price() -> None:
+    strategy_config = StrategyConfig(
+        deep_loss_timeout_enabled=True,
+        deep_loss_required_days=7,
+        estimated_fee_tax_pct=0,
+    )
+    _, _, positions, strategy, risk, snapshot = setup_strategy(strategy_config)
+    lot = add_lot(positions, "005930", 10_000, 3)
+    lot.deep_loss_started_on = "2026-07-01"
+    lot.deep_loss_last_observed_on = "2026-07-09"
+    lot.deep_loss_observation_count = 7
+    lot.deep_loss_last_close = 5_900
+    position = positions.refresh_from_lots("005930", 5_900)
+    position.needs_review = True
+    position.position_state = PositionLifecycle.REVIEW_REQUIRED.value
+
+    action = strategy.decide(
+        position,
+        5_900,
+        snapshot,
+        risk.account_buy_allowed(snapshot, positions.positions),
+        risk.symbol_buy_allowed(position),
+    )
+
+    assert action is not None
+    assert action.side is OrderSide.SELL
+    assert action.quantity == lot.remaining_quantity
+    assert action.lot_id == lot.lot_id
+    assert action.sell_reason == SellReason.DEEP_LOSS_TIMEOUT_SELL.value
+    assert action.limit_price == 0
+
+
+def test_deep_loss_timeout_uses_seven_calendar_days_not_seven_observations() -> None:
+    strategy_config = StrategyConfig(deep_loss_timeout_enabled=True, deep_loss_required_days=7, estimated_fee_tax_pct=0)
+    _, _, positions, strategy, risk, snapshot = setup_strategy(strategy_config)
+    lot = add_lot(positions, "005930", 10_000, 1)
+    lot.deep_loss_started_on = "2026-07-01"
+    lot.deep_loss_last_observed_on = "2026-07-01"
+    lot.deep_loss_observation_count = 1
+    position = positions.refresh_from_lots("005930", 5_900)
+
+    assert strategy.deep_loss_elapsed_days(lot, "2026-07-07") == 6
+    assert strategy.deep_loss_elapsed_days(lot, "2026-07-08") == 7
+
+    lot.deep_loss_started_on = (datetime.now() - timedelta(days=7)).date().isoformat()
+    action = strategy.decide(
+        position,
+        5_900,
+        snapshot,
+        risk.account_buy_allowed(snapshot, positions.positions),
+        risk.symbol_buy_allowed(position),
+    )
+
+    assert action is not None
+    assert action.sell_reason == SellReason.DEEP_LOSS_TIMEOUT_SELL.value
+
+
+def test_deep_loss_timeout_prefers_oldest_lot_when_multiple_are_eligible() -> None:
+    strategy_config = StrategyConfig(deep_loss_timeout_enabled=True, deep_loss_required_days=7, estimated_fee_tax_pct=0)
+    _, _, positions, strategy, risk, snapshot = setup_strategy(strategy_config)
+    oldest = add_lot(positions, "005930", 10_000, 1, minutes_ago=20)
+    newest = add_lot(positions, "005930", 9_500, 1, minutes_ago=10)
+    started_on = (datetime.now() - timedelta(days=7)).date().isoformat()
+    for lot in (oldest, newest):
+        lot.deep_loss_started_on = started_on
+        lot.deep_loss_last_observed_on = datetime.now().date().isoformat()
+        lot.deep_loss_observation_count = 1
+    position = positions.refresh_from_lots("005930", 5_000)
+
+    action = strategy.decide(
+        position,
+        5_000,
+        snapshot,
+        risk.account_buy_allowed(snapshot, positions.positions),
+        risk.symbol_buy_allowed(position),
+    )
+
+    assert action is not None
+    assert action.lot_id == oldest.lot_id
+
+
 def test_retire_after_exit_default_false() -> None:
     position = PositionState(code="005930", name="Test")
 

@@ -663,6 +663,18 @@ class AutoTrader:
                 position = self.position_manager.refresh_from_lots(position.code, current_price)
         else:
             position = self.position_manager.refresh_from_lots(position.code, current_price)
+        completed_session = self.store.latest_completed_session_price(position.code, datetime.now().date().isoformat())
+        if completed_session is not None:
+            session_date, close_price, close_source = completed_session
+            if self.strategy.observe_completed_session(position.code, session_date, close_price):
+                self.store.save_lots(self.lot_manager.open_lots(position.code))
+                self.logger.info(
+                    "deep_loss_session_observed code=%s session_date=%s close_price=%s source=%s",
+                    position.code,
+                    session_date,
+                    close_price,
+                    close_source,
+                )
         position = self.auto_recheck_review_required(position, current_price)
         if self.strategy.update_reentry_tracking(position, current_price):
             if profile:
@@ -1126,9 +1138,21 @@ class AutoTrader:
         return "partial_order_exists"
 
     def open_order_block_reason(self, position: PositionState, action) -> str:
-        if action.side is OrderSide.SELL and action.sell_reason in {SellReason.CLEANUP_SELL.value, SellReason.AUTO_DECAY_CLEANUP_SELL.value} and self.store.has_any_open_order(position.code):
+        cleanup_reasons = {
+            SellReason.CLEANUP_SELL.value,
+            SellReason.AUTO_DECAY_CLEANUP_SELL.value,
+            SellReason.DEEP_LOSS_TIMEOUT_SELL.value,
+        }
+        if action.side is OrderSide.SELL and action.sell_reason in cleanup_reasons and self.store.has_any_open_order(position.code):
             position.skip_reason = "open_order_exists_for_cleanup"
             return "open_order_exists_for_cleanup"
+        if (
+            action.side is OrderSide.SELL
+            and action.sell_reason == SellReason.DEEP_LOSS_TIMEOUT_SELL.value
+            and self.store.has_today_sell_reason(position.code, SellReason.DEEP_LOSS_TIMEOUT_SELL.value)
+        ):
+            position.skip_reason = "deep_loss_symbol_daily_limit"
+            return "deep_loss_symbol_daily_limit"
         if action.side is OrderSide.BUY and self.store.has_open_order(position.code, OrderSide.BUY):
             return "open_buy_order_exists"
         if action.side is OrderSide.SELL and self.store.has_open_order(position.code, OrderSide.SELL, action.lot_id):

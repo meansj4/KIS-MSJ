@@ -321,13 +321,24 @@ class LotGridStrategy:
         reason = (
             "decay_cleanup_sell_lot"
             if sell_reason == SellReason.AUTO_DECAY_CLEANUP_SELL.value
-            else ("cleanup_sell_lot" if sell_reason == SellReason.CLEANUP_SELL.value else "sell_profitable_lot")
+            else (
+                "deep_loss_timeout_sell_lot"
+                if sell_reason == SellReason.DEEP_LOSS_TIMEOUT_SELL.value
+                else ("cleanup_sell_lot" if sell_reason == SellReason.CLEANUP_SELL.value else "sell_profitable_lot")
+            )
         )
-        limit_price = round_price(lot.buy_price * (1.0 + lot.effective_target_profit_rate))
+        # A zero limit delegates pricing to OrderManager, which applies the
+        # configured sell_limit_markdown_pct to the latest validated quote.
+        limit_price = (
+            0
+            if sell_reason == SellReason.DEEP_LOSS_TIMEOUT_SELL.value
+            else round_price(lot.buy_price * (1.0 + lot.effective_target_profit_rate))
+        )
         return StrategyAction(OrderSide.SELL, 0, quantity, reason, lot.lot_id, lot, sell_reason, cleanup_flag=expected_cleanup_loss > 0, limit_price=limit_price)
 
     def _sell_candidate(self, position: PositionState, current_price: int, snapshot: AccountSnapshot) -> tuple[LotState, str, int, bool] | None:
         profit_candidates: list[LotState] = []
+        deep_loss_candidates: list[tuple[LotState, int]] = []
         decay_cleanup_candidates: list[tuple[LotState, int]] = []
         cleanup_candidates: list[tuple[LotState, int, bool]] = []
         budget = self.cleanup_loss_budget(snapshot)
@@ -337,6 +348,13 @@ class LotGridStrategy:
             realized_rate = lot.profit_pct_at(current_price) / 100.0
             quantity = lot.remaining_quantity
             net_pnl = self.calculate_expected_realized_pnl(lot, current_price, quantity)
+            if (
+                self.config.strategy.deep_loss_timeout_enabled
+                and self.deep_loss_elapsed_days(lot) >= self.config.strategy.deep_loss_required_days
+                and realized_rate < self.config.strategy.deep_loss_reset_rate
+            ):
+                deep_loss_candidates.append((lot, max(0, -net_pnl)))
+                continue
             if lot.effective_target_profit_rate < -EPSILON and realized_rate + EPSILON >= lot.effective_target_profit_rate and net_pnl < 0:
                 lot.cleanup_candidate = True
                 decay_cleanup_candidates.append((lot, max(0, -net_pnl)))
@@ -365,6 +383,16 @@ class LotGridStrategy:
                 cleanup_candidates.append((lot, expected_loss, cleanup_allowed))
         if profit_candidates:
             return (self._sort_sell_lots(profit_candidates, current_price)[0], SellReason.PROFIT_TAKE.value, 0, True)
+        if deep_loss_candidates:
+            lot, expected_loss = sorted(
+                deep_loss_candidates,
+                key=lambda item: (
+                    lot_buy_timestamp(item[0]),
+                    item[0].profit_pct_at(current_price),
+                    item[0].lot_id,
+                ),
+            )[0]
+            return (lot, SellReason.DEEP_LOSS_TIMEOUT_SELL.value, expected_loss, True)
         if decay_cleanup_candidates:
             lot, expected_loss = sorted(
                 decay_cleanup_candidates,
@@ -389,6 +417,39 @@ class LotGridStrategy:
             )[0]
             return (lot, SellReason.CLEANUP_SELL.value, expected_loss, cleanup_allowed)
         return None
+
+    def observe_completed_session(self, code: str, session_date: str, close_price: int) -> bool:
+        """Apply one completed-session close to every open lot exactly once."""
+        if not self.config.strategy.deep_loss_timeout_enabled or not session_date or close_price <= 0:
+            return False
+        changed = False
+        threshold = self.config.strategy.deep_loss_threshold_rate
+        reset_rate = self.config.strategy.deep_loss_reset_rate
+        for lot in self.lot_manager.open_lots(code):
+            if lot.deep_loss_last_observed_on >= session_date:
+                continue
+            rate = lot.profit_pct_at(close_price) / 100.0
+            lot.deep_loss_last_observed_on = session_date
+            lot.deep_loss_last_close = close_price
+            if rate <= threshold:
+                lot.deep_loss_started_on = lot.deep_loss_started_on or session_date
+                lot.deep_loss_observation_count += 1
+            elif rate >= reset_rate:
+                lot.deep_loss_started_on = ""
+                lot.deep_loss_observation_count = 0
+            changed = True
+        return changed
+
+    @staticmethod
+    def deep_loss_elapsed_days(lot: LotState, today: str | None = None) -> int:
+        if not lot.deep_loss_started_on:
+            return 0
+        try:
+            start = datetime.fromisoformat(lot.deep_loss_started_on).date()
+            end = datetime.fromisoformat(today).date() if today else datetime.now().date()
+        except ValueError:
+            return 0
+        return max(0, (end - start).days)
 
     def calculate_expected_realized_pnl(self, lot: LotState, price: int, quantity: int | None = None) -> int:
         quantity = quantity or lot.remaining_quantity

@@ -153,6 +153,10 @@ class StateStore:
             _ensure_column(connection, "lots", "base_target_profit_rate", "REAL NOT NULL DEFAULT 0")
             _ensure_column(connection, "lots", "effective_target_profit_rate", "REAL NOT NULL DEFAULT 0")
             _ensure_column(connection, "lots", "last_sell_reason", "TEXT NOT NULL DEFAULT 'UNKNOWN'")
+            _ensure_column(connection, "lots", "deep_loss_started_on", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "lots", "deep_loss_last_observed_on", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "lots", "deep_loss_observation_count", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "lots", "deep_loss_last_close", "INTEGER NOT NULL DEFAULT 0")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS fills (
@@ -430,7 +434,7 @@ class StateStore:
                 "lot_sizing_locked_at",
                 "lot_sizing_mode",
             },
-            "lots": {"cleanup_candidate", "age_weeks", "base_target_profit_rate", "effective_target_profit_rate", "last_sell_reason"},
+            "lots": {"cleanup_candidate", "age_weeks", "base_target_profit_rate", "effective_target_profit_rate", "last_sell_reason", "deep_loss_started_on", "deep_loss_last_observed_on", "deep_loss_observation_count", "deep_loss_last_close"},
             "fills": {"execution_id", "sell_reason", "reentry_type", "config_hash", "config_version", "run_id", "experiment_name"},
             "orders": {"requested_at", "sell_reason", "reentry_type", "cleanup_flag", "config_hash", "config_version", "run_id", "experiment_name", "cancel_requested", "cancel_confirmed", "cancel_rejected", "filled_after_cancel_request", "cancel_response_code", "cancel_response_message", "cancel_checked_at", "post_cancel_execution_checked_at", "cancel_retry_count"},
             "manual_order_requests": {"request_id", "source", "requested_by", "requested_at", "code", "side", "current_price", "amount", "quantity", "lot_id", "order_type", "preview_json", "runtime_snapshot_json", "live_trading", "confirm_text_verified", "status", "block_reason", "linked_order_id", "processing_started_at", "processing_claimed_by", "claim_attempt_count", "last_processing_error", "stale_processing_reason", "config_hash", "config_version", "run_id", "experiment_name", "created_at", "updated_at"},
@@ -490,6 +494,10 @@ class StateStore:
             if not data.get("effective_target_profit_rate"):
                 data["effective_target_profit_rate"] = data.get("base_target_profit_rate", data.get("target_profit_pct", 0.0) / 100.0)
             data.setdefault("last_sell_reason", "UNKNOWN")
+            data.setdefault("deep_loss_started_on", "")
+            data.setdefault("deep_loss_last_observed_on", "")
+            data.setdefault("deep_loss_observation_count", 0)
+            data.setdefault("deep_loss_last_close", 0)
             data = _known_model_fields(data, LotState)
             lots[data["lot_id"]] = LotState(**data)
         return lots
@@ -521,6 +529,53 @@ class StateStore:
     def save_lots(self, lots: Iterable[LotState]) -> None:
         for lot in lots:
             self.save_lot(lot)
+
+    def latest_completed_session_price(self, code: str, before_date: str) -> tuple[str, int, str] | None:
+        """Return the latest completed session price before before_date.
+
+        Official daily close data wins. When it is unavailable, the final
+        intraday snapshot for that completed date is used as a conservative
+        operational fallback.
+        """
+        with self._connect() as connection:
+            daily = connection.execute(
+                """
+                SELECT date, close FROM daily_prices
+                WHERE code = ? AND date < ? AND close > 0
+                ORDER BY date DESC LIMIT 1
+                """,
+                (code, before_date),
+            ).fetchone()
+            snapshot = connection.execute(
+                """
+                SELECT substr(sampled_at, 1, 10) AS session_date, current_price
+                FROM price_snapshots
+                WHERE code = ? AND substr(sampled_at, 1, 10) < ? AND current_price > 0
+                ORDER BY sampled_at DESC, id DESC LIMIT 1
+                """,
+                (code, before_date),
+            ).fetchone()
+        daily_date = str(daily["date"]) if daily is not None else ""
+        snapshot_date = str(snapshot["session_date"]) if snapshot is not None else ""
+        if daily is not None and daily_date >= snapshot_date:
+            return daily_date, int(daily["close"]), "daily_close"
+        if snapshot is None:
+            return None
+        return snapshot_date, int(snapshot["current_price"]), "last_session_snapshot"
+
+    def has_today_sell_reason(self, code: str, sell_reason: str) -> bool:
+        today = datetime.now().date().isoformat()
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT 1 FROM orders
+                WHERE code = ? AND side = ? AND sell_reason = ?
+                  AND substr(COALESCE(requested_at, updated_at), 1, 10) = ?
+                LIMIT 1
+                """,
+                (code, OrderSide.SELL.value, sell_reason, today),
+            ).fetchone()
+        return row is not None
 
     def set_active_config(self, config_hash: str, config_version: str = "", *, run_id: str = "", experiment_name: str = "", profile_name: str = "") -> None:
         self.active_config_hash = config_hash

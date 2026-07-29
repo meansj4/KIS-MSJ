@@ -47,6 +47,7 @@ class SellReason(str, Enum):
     PROFIT_TAKE = "PROFIT_TAKE"
     CLEANUP_SELL = "CLEANUP_SELL"
     AUTO_DECAY_CLEANUP_SELL = "AUTO_DECAY_CLEANUP_SELL"
+    DEEP_LOSS_TIMEOUT_SELL = "DEEP_LOSS_TIMEOUT_SELL"
     MANUAL_SYNC = "MANUAL_SYNC"
     RISK_EXIT = "RISK_EXIT"
     UNKNOWN = "UNKNOWN"
@@ -190,6 +191,10 @@ class LotState:
     base_target_profit_rate: float = 0.0
     effective_target_profit_rate: float = 0.0
     last_sell_reason: str = SellReason.UNKNOWN.value
+    deep_loss_started_on: str = ""
+    deep_loss_last_observed_on: str = ""
+    deep_loss_observation_count: int = 0
+    deep_loss_last_close: int = 0
 
     @property
     def open_amount(self) -> int:
