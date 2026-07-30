@@ -52,6 +52,31 @@ def test_deep_loss_timeout_sell_uses_configured_sell_markdown(tmp_path) -> None:
     assert request.limit_price == 9_950
 
 
+def test_completed_session_price_cache_bulk_loads_only_once_per_day(tmp_path, monkeypatch) -> None:
+    config = BotConfig(
+        stocks=(StockConfig("005930", "Samsung"), StockConfig("000660", "SK hynix")),
+        strategy=StrategyConfig(deep_loss_timeout_enabled=True),
+        storage_path=str(tmp_path / "state.sqlite3"),
+        log_path=str(tmp_path / "trader.log"),
+    )
+    bot = AutoTrader(config, use_mock_client=True)
+    calls = {"count": 0, "codes": ()}
+
+    def bulk_prices(codes, before_date):
+        calls["count"] += 1
+        calls["codes"] = tuple(codes)
+        return {"005930": ("2026-07-29", 70_000, "daily_close")}
+
+    monkeypatch.setattr(bot.store, "latest_completed_session_prices", bulk_prices)
+
+    bot.refresh_completed_session_price_cache()
+    bot.refresh_completed_session_price_cache()
+
+    assert calls["count"] == 1
+    assert calls["codes"] == ("005930", "000660")
+    assert bot._completed_session_prices["005930"] == ("2026-07-29", 70_000, "daily_close")
+
+
 def test_log_symbol_decision_handles_missing_snapshot(tmp_path) -> None:
     bot = trader(tmp_path)
     position = PositionState(code="005930", name="Test")

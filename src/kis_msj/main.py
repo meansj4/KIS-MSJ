@@ -84,6 +84,8 @@ class AutoTrader:
         self.last_loop_profile: dict[str, object] = {}
         self._active_loop_profile: LoopProfile | None = None
         self._last_loop_interval_warning_at = 0.0
+        self._completed_session_cache_date = ""
+        self._completed_session_prices: dict[str, tuple[str, int, str]] = {}
 
     def reload_config(self, config: BotConfig, *, use_mock_client: bool = False) -> None:
         self.__init__(config, use_mock_client=use_mock_client)
@@ -239,6 +241,8 @@ class AutoTrader:
                 if profile:
                     profile.symbols_skipped += len(self.config.stocks)
                 return ""
+            with profile.stage("deep_loss_price_cache") if profile else _null_stage():
+                self.refresh_completed_session_price_cache()
             for stock in self.config.stocks:
                 with profile.stage("runtime_control") if profile else _null_stage():
                     interrupt = self.runtime_interrupt_reason(f"before_symbol_{stock.code}")
@@ -316,6 +320,26 @@ class AutoTrader:
             return False
         self._last_loop_interval_warning_at = now
         return True
+
+    def refresh_completed_session_price_cache(self) -> None:
+        if not self.config.strategy.deep_loss_timeout_enabled:
+            self._completed_session_cache_date = ""
+            self._completed_session_prices = {}
+            return
+        before_date = datetime.now().date().isoformat()
+        if self._completed_session_cache_date == before_date:
+            return
+        started = time.perf_counter()
+        codes = tuple(stock.code for stock in self.config.stocks if stock.enabled and not stock.manual_only)
+        self._completed_session_prices = self.store.latest_completed_session_prices(codes, before_date)
+        self._completed_session_cache_date = before_date
+        self.logger.info(
+            "deep_loss_price_cache_loaded before_date=%s requested_codes=%s loaded_codes=%s duration_ms=%.2f",
+            before_date,
+            len(codes),
+            len(self._completed_session_prices),
+            (time.perf_counter() - started) * 1000.0,
+        )
 
     def _mark_symbol_blocked_for_kis_order_error(self, code: str, name: str, error: Exception) -> bool:
         message = str(error)
@@ -663,7 +687,7 @@ class AutoTrader:
                 position = self.position_manager.refresh_from_lots(position.code, current_price)
         else:
             position = self.position_manager.refresh_from_lots(position.code, current_price)
-        completed_session = self.store.latest_completed_session_price(position.code, datetime.now().date().isoformat())
+        completed_session = self._completed_session_prices.get(position.code)
         if completed_session is not None:
             session_date, close_price, close_source = completed_session
             if self.strategy.observe_completed_session(position.code, session_date, close_price):

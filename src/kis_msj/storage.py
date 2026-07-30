@@ -523,45 +523,84 @@ class StateStore:
             )
 
     def save_positions(self, positions: Iterable[PositionState]) -> None:
-        for position in positions:
-            self.save_position(position)
+        rows = [_bools(asdict(position)) for position in positions]
+        if not rows:
+            return
+        updates = ", ".join(f"{column}=excluded.{column}" for column in POSITION_COLUMNS if column != "code")
+        sql = (
+            f"INSERT INTO positions ({', '.join(POSITION_COLUMNS)}) VALUES ({', '.join('?' for _ in POSITION_COLUMNS)}) "
+            f"ON CONFLICT(code) DO UPDATE SET {updates}"
+        )
+        with self._connect() as connection:
+            connection.executemany(sql, ([row[column] for column in POSITION_COLUMNS] for row in rows))
 
     def save_lots(self, lots: Iterable[LotState]) -> None:
-        for lot in lots:
-            self.save_lot(lot)
+        rows = [_bools(asdict(lot)) for lot in lots]
+        if not rows:
+            return
+        updates = ", ".join(f"{column}=excluded.{column}" for column in LOT_COLUMNS if column != "lot_id")
+        sql = (
+            f"INSERT INTO lots ({', '.join(LOT_COLUMNS)}) VALUES ({', '.join('?' for _ in LOT_COLUMNS)}) "
+            f"ON CONFLICT(lot_id) DO UPDATE SET {updates}"
+        )
+        with self._connect() as connection:
+            connection.executemany(sql, ([row[column] for column in LOT_COLUMNS] for row in rows))
 
     def latest_completed_session_price(self, code: str, before_date: str) -> tuple[str, int, str] | None:
-        """Return the latest completed session price before before_date.
+        return self.latest_completed_session_prices((code,), before_date).get(str(code).zfill(6))
 
-        Official daily close data wins. When it is unavailable, the final
-        intraday snapshot for that completed date is used as a conservative
-        operational fallback.
-        """
+    def latest_completed_session_prices(
+        self,
+        codes: Iterable[str],
+        before_date: str,
+    ) -> dict[str, tuple[str, int, str]]:
+        """Bulk-load completed-session prices with one snapshot-table scan."""
+        normalized_codes = tuple(dict.fromkeys(str(code).zfill(6) for code in codes))
+        if not normalized_codes:
+            return {}
+        placeholders = ", ".join("?" for _ in normalized_codes)
         with self._connect() as connection:
-            daily = connection.execute(
-                """
-                SELECT date, close FROM daily_prices
-                WHERE code = ? AND date < ? AND close > 0
-                ORDER BY date DESC LIMIT 1
+            daily_rows = connection.execute(
+                f"""
+                SELECT prices.code, prices.date, prices.close
+                FROM daily_prices AS prices
+                JOIN (
+                    SELECT code, MAX(date) AS latest_date
+                    FROM daily_prices
+                    WHERE code IN ({placeholders}) AND date < ? AND close > 0
+                    GROUP BY code
+                ) AS latest
+                  ON latest.code = prices.code AND latest.latest_date = prices.date
+                WHERE prices.close > 0
                 """,
-                (code, before_date),
-            ).fetchone()
-            snapshot = connection.execute(
-                """
-                SELECT substr(sampled_at, 1, 10) AS session_date, current_price
-                FROM price_snapshots
-                WHERE code = ? AND substr(sampled_at, 1, 10) < ? AND current_price > 0
-                ORDER BY sampled_at DESC, id DESC LIMIT 1
+                (*normalized_codes, before_date),
+            ).fetchall()
+            snapshot_rows = connection.execute(
+                f"""
+                SELECT snapshots.code, substr(snapshots.sampled_at, 1, 10) AS session_date,
+                       snapshots.current_price
+                FROM price_snapshots AS snapshots
+                JOIN (
+                    SELECT code, MAX(id) AS latest_id
+                    FROM price_snapshots
+                    WHERE code IN ({placeholders}) AND sampled_at < ? AND current_price > 0
+                    GROUP BY code
+                ) AS latest
+                  ON latest.latest_id = snapshots.id
                 """,
-                (code, before_date),
-            ).fetchone()
-        daily_date = str(daily["date"]) if daily is not None else ""
-        snapshot_date = str(snapshot["session_date"]) if snapshot is not None else ""
-        if daily is not None and daily_date >= snapshot_date:
-            return daily_date, int(daily["close"]), "daily_close"
-        if snapshot is None:
-            return None
-        return snapshot_date, int(snapshot["current_price"]), "last_session_snapshot"
+                (*normalized_codes, before_date),
+            ).fetchall()
+        result: dict[str, tuple[str, int, str]] = {}
+        for row in snapshot_rows:
+            code = str(row["code"]).zfill(6)
+            result[code] = (str(row["session_date"]), int(row["current_price"]), "last_session_snapshot")
+        for row in daily_rows:
+            code = str(row["code"]).zfill(6)
+            daily_date = str(row["date"])
+            existing_date = result.get(code, ("", 0, ""))[0]
+            if daily_date >= existing_date:
+                result[code] = (daily_date, int(row["close"]), "daily_close")
+        return result
 
     def has_today_sell_reason(self, code: str, sell_reason: str) -> bool:
         today = datetime.now().date().isoformat()
