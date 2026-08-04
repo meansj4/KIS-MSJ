@@ -1,78 +1,29 @@
-# Order Cancel and Fill Reconciliation
+# 주문·취소·체결 정합성
 
-This note documents the safe handling rule for KIS domestic stock orders when a cancel request races with an execution.
+## 원칙
 
-## Core Rule
+전략 결정, 주문 요청, KIS 접수, 체결, DB 반영은 서로 다른 단계다. LOT과 포지션 수량은 주문을 보냈다는 이유로 변경하지 않고 확인된 체결수량으로만 변경한다. 부분체결은 체결분만 적용하고 나머지는 미체결로 유지한다.
 
-A cancel request does not prove that an order had no fill.
+## 지정가와 timeout
 
-The bot must update `lots` and `positions` only after a `fills` row is inserted successfully. If an order is canceled, partially canceled, or cancel-rejected, the bot still has to check executions for that `order_id`.
+- 매수: 표본 현재가 대비 +0.3%
+- 매도: 표본 현재가 대비 -0.5%
+- 가격은 국내주식 호가단위로 보정
+- 지정가 주문 timeout: 30초
+- 긴급 시장가는 기본 비활성
 
-## Status Meaning
+timeout은 주문이 체결되지 않았다는 뜻이 아니다. 취소 요청 전후로 체결이 발생할 수 있으므로 KIS 주문·체결 조회 결과를 다시 조정한다.
 
-| status | meaning |
-| --- | --- |
-| `REQUESTED` | Order was accepted and is waiting for fill/cancel reconciliation. |
-| `PARTIAL` | Some quantity filled and remaining quantity is still open. |
-| `CANCEL_REJECTED` | Cancel request failed or was rejected; the order remains a reconciliation candidate. |
-| `CANCELED_NO_FILL` | Cancel was confirmed and post-cancel execution check found no fill. |
-| `CANCELED_AFTER_PARTIAL_FILL` | Some quantity filled, then remaining quantity was canceled. |
-| `FILLED_AFTER_CANCEL_REQUEST` | Fill was found after a cancel request or after a canceled-looking state. |
-| `FILLED` | Full quantity filled normally. |
+## 취소 정합성 절차
 
-## Stored Cancel Metadata
+1. 로컬 OPEN 주문과 KIS 상태를 조회한다.
+2. 확인된 신규 체결을 먼저 반영한다.
+3. 남은 미체결수량에 대해서만 취소를 요청한다.
+4. 취소 응답이 이미 취소·체결된 주문을 의미하더라도 즉시 실패로 단정하지 않는다.
+5. 다시 주문·체결을 조회해 최종 체결량과 잔량을 확정한다.
 
-The `orders` table records:
+KIS의 `APBK0927` 같은 취소 관련 응답도 사후 조회로 확정한다. 시작 시 최근 체결 재조정이 활성화되어 있으며 전일 미체결 포함과 조회 버퍼를 사용한다.
 
-- `cancel_requested`
-- `cancel_confirmed`
-- `cancel_rejected`
-- `filled_after_cancel_request`
-- `cancel_response_code`
-- `cancel_response_message`
-- `cancel_checked_at`
-- `post_cancel_execution_checked_at`
+## 운영 점검
 
-The UI Orders table also shows `filled_quantity`, `remaining_quantity`, `fill_count`, `post_cancel_execution_checked`, and `order_sync_warning`.
-
-## Reconciliation Flow
-
-1. Submit limit order.
-2. Poll executions during the configured timeout.
-3. If not filled, request cancel.
-4. Regardless of cancel success, query executions again for the same order.
-5. Insert any new fill first.
-6. Apply the fill to `lots` and `positions` only after `record_fill()` succeeds.
-7. If KIS balance quantity and DB open LOT quantity differ, mark the symbol `SYNC_REQUIRED` and block new orders.
-
-## Operator Procedure for MTS/DB Mismatch
-
-For a case like NEXTEEL where MTS shows 23 shares and DB open LOTs show 17:
-
-1. Keep the symbol in `SYNC_REQUIRED`; do not resume new orders for it.
-2. Confirm the suspected order number in MTS/KIS executions.
-3. If the missing execution row exists, recover by inserting a real fill through the reconciliation path, then apply the fill to create the missing LOT.
-4. If only balance proves the extra shares and no execution row is available, do not edit `positions` alone. Use a manual reconciliation/audit procedure that creates an explicit repair fill or review record.
-5. After repair, verify DB open LOT quantity equals KIS balance quantity before clearing `SYNC_REQUIRED`.
-
-## Missing Fill Repair CLI
-
-Use `scripts/repair_missing_fill.py` for a staged, auditable repair.
-
-Plan-only mode creates a DB backup, filtered CSV exports, `before_summary.json`, `repair_plan.json`, and audit events. It does not change trading tables:
-
-```powershell
-.\.venv\Scripts\python.exe scripts\repair_missing_fill.py --config config\lot_auto_trader.json --code 092790 --order-no 0018769500 --kis-readonly
-```
-
-Execution requires an explicit confirm text and still only inserts a verified fill, then applies it through `PositionManager.apply_fill()`:
-
-```powershell
-.\.venv\Scripts\python.exe scripts\repair_missing_fill.py --config config\lot_auto_trader.json --code 092790 --order-no 0018769500 --kis-readonly --execute --confirm "누락체결 복구 확인"
-```
-
-If KIS execution inquiry cannot find a row, the script leaves `SYNC_REQUIRED` in place and writes a manual repair plan. Manual repair values must still become a fill row first; direct `positions` or `lots` quantity edits are not part of the repair flow.
-
-## Safety
-
-This reconciliation design is read/query based. UI views must not call KIS order, revise, or cancel APIs. DB reset is not part of mismatch recovery.
+UI의 Orders/Fills와 reconciliation 상태에서 주문번호, 요청수량, 체결수량, 취소수량, 최종상태를 함께 본다. LOT 합계와 계좌 보유수량이 다르면 자동매수를 막고 dry-run으로 차이를 확인한 뒤 승인된 복구만 적용한다. DB의 orders/fills/lots를 개별 SQL로 맞추는 것은 최후 수단이다.

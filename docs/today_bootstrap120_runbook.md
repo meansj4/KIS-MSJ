@@ -1,146 +1,26 @@
-# Today Bootstrap 120 Runbook
+# 일일 운영 런북
 
-Last updated: 2026-05-27
+파일명은 기존 링크 호환을 위해 유지한다. 현재 120종목 bootstrap 전용 문서가 아니라 일일 운영 절차다.
 
-Safety notes:
+## 장 시작 전
 
-- This guide does not place orders by itself.
-- UI manual sell/buy requests must go through `manual_order_requests` and Bot Core.
-- UI must not call KIS order APIs directly.
-- Do not reset DB until all open lots are gone, pending orders are gone, pending manual requests are gone, and DB/KIS balance mismatch is resolved.
+- 단일 봇 프로세스인지 확인
+- 설정과 DB 경로, `live_trading`, pause/emergency 상태 확인
+- 미체결 주문과 전일 체결 reconciliation 확인
+- KIS 잔고와 DB LOT 수량 불일치 확인
+- `REVIEW_REQUIRED`, `SYNC_REQUIRED`, API 오류 확인
 
-## Current Config Intent
+## 장중
 
-The active `config/lot_auto_trader.json` is prepared for a low-price bootstrap run:
+- 09:00 이후 2분, 15:30 이전 2분은 주문 차단구간이다.
+- 반복 주문, 장시간 OPEN 주문, 부분체결, 계좌 조회 제한을 우선 감시한다.
+- 손익 숫자만 보고 DB·JSON을 즉석 수정하지 않는다.
+- 긴급정지는 신규 판단을 멈추는 수단이며 이미 접수된 주문과 체결은 별도로 확인한다.
 
-- candidate stocks: 120
-- enabled stocks: 120
-- `order.enable_execution_raw_log=false`
-- `ui_manual_trading_enabled=true`
-- `risk.max_active_symbols=120`
-- `risk.max_new_buy_per_day=120`
-- `risk.max_new_buy_amount_per_day=30,000,000`
-- `risk.max_total_initial_buy_amount_per_day=30,000,000`
-- `risk.max_total_open_lots=1,440`
-- `risk.max_total_invested_amount=100,000,000`
-- experiment run id: `bootstrap_120_low_price_v1`
+## 장 종료 후
 
-The configured price LOT bands are:
-
-| min price | max price | 1 LOT amount | max symbol amount |
-| ---: | ---: | ---: | ---: |
-| 0 | 300 | 1,000 | 12,000 |
-| 301 | 1,000 | 3,000 | 36,000 |
-| 1,001 | 3,000 | 10,000 | 120,000 |
-| 3,001 | 10,000 | 30,000 | 360,000 |
-| 10,001 | 30,000 | 100,000 | 1,200,000 |
-| 30,001 | 100,000 | 300,000 | 3,600,000 |
-| 100,001 | 300,000 | 1,000,000 | 12,000,000 |
-| 300,001 | 1,000,000 | 3,000,000 | 36,000,000 |
-| 1,000,001 | 3,000,000 | 10,000,000 | 120,000,000 |
-
-## UI Order Of Operations
-
-### 1. Start UI
-
-```powershell
-$env:PYTHONPATH='src'
-.\.venv\Scripts\python.exe -m kis_msj.ui_server --config config\lot_auto_trader.json --host 127.0.0.1 --port 8765
-```
-
-Open:
-
-```text
-http://127.0.0.1:8765
-```
-
-### 2. Start With A Backup
-
-Open the `New Season` tab and create/archive the current state first.
-
-Do not delete current DB or current log before liquidation is finished. The current DB is needed to know which lots must be sold.
-
-### 3. Generate KIS Balance Snapshot
-
-In `New Season`, generate or validate the KIS balance snapshot.
-
-The snapshot must include:
-
-- `generated_at`
-- `code`
-- `holding_quantity`
-- `sellable_quantity`
-
-For actual liquidation request creation, `generated_at` and `sellable_quantity` are required. Preview may warn and continue, but request creation must be blocked if those fields are missing.
-
-### 4. Create Liquidation Plan
-
-Use the UI to create a liquidation plan from:
-
-- current DB open lots
-- latest KIS balance snapshot
-
-If the plan says it is stale, missing, or mismatched, regenerate it after fixing the cause.
-
-### 5. Create Liquidation Requests
-
-When the plan is valid, create liquidation manual SELL requests from the UI.
-
-Confirm text:
-
-```text
-전량매도 요청 확인
-```
-
-This creates `manual_order_requests` only. It does not directly call KIS order APIs. Bot Core must consume those requests through the existing guard/order_manager path.
-
-### 6. Run Bot Core To Process Requests
-
-Run Bot Core only after confirming runtime controls are not blocking sells unless intentionally paused.
-
-Bot Core will:
-
-- claim manual requests
-- revalidate runtime/risk/open order guards
-- submit orders through the existing order manager path
-- update lots/positions only after fill insert succeeds
-
-### 7. Confirm Fills And Reconciliation
-
-Before reset, confirm:
-
-- all SELL orders are FILLED/CANCELED/REJECTED/FAILED
-- pending orders count is 0
-- pending manual request count is 0
-- OPEN LOT count is 0
-- DB/KIS balance mismatch is 0
-- SYNC_REQUIRED is 0
-
-### 8. Reset DB
-
-Only after the checks above pass, use the New Season reset action.
-
-Confirm text:
-
-```text
-RESET 확인
-```
-
-### 9. Reload Config And Start Bootstrap
-
-After reset, reload config/start Bot Core with the prepared 120-stock config.
-
-The first run is intended to allow at least one initial LOT for all 120 enabled candidates, subject to live market price, cash, runtime pause, risk flags, open-order guards, and KIS API availability.
-
-## Old Logs / DB Cleanup
-
-Do not delete the active DB or active log before the liquidation/reset sequence is complete.
-
-Recommended safe cleanup:
-
-1. Use New Season archive first.
-2. Keep the current DB until reset succeeds.
-3. Keep the current `logs/lot_auto_trader.log` during trading.
-4. After reset succeeds, move old archived logs/DB snapshots out of the working view if needed.
-
-Deleting or moving files before liquidation can make it harder to prove which lots/orders/fills were still open.
+- 주문/체결/LOT 합계를 대조한다.
+- deep-loss recovery 시작·최저가·예정 강제매도일을 확인한다.
+- 총자산, 예수금, 실현·미실현 손익 스냅샷을 별도로 보존한다.
+- 경고 로그와 느린 루프 profile을 검토한다.
+- 변경이 있으면 테스트 후 문서 기준일과 설정을 갱신한다.
