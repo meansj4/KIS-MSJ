@@ -349,6 +349,7 @@ const DEFAULT_COLUMNS = {
 };
 const columnPrefs = {};
 let portfolioDetailState = null;
+let portfolioHistoryExportData = null;
 let configOriginal = null;
 let configDraft = null;
 let configSchema = null;
@@ -668,10 +669,53 @@ async function loadPortfolioHistoryChart() {
   if (!host) return;
   try {
     const result = await api('/api/portfolio-dashboard/history-chart');
+    portfolioHistoryExportData = result;
     host.innerHTML = renderPortfolioHistoryChart(result);
+    if ((result.rows || []).length) {
+      host.insertAdjacentHTML('afterbegin', `<div><button onclick="downloadPortfolioHistory('json')">그래프 데이터 JSON 내보내기</button> <button onclick="downloadPortfolioHistory('csv')">CSV 내보내기</button></div>`);
+    }
   } catch (error) {
     host.innerHTML = `<p class="bad">차트를 불러오지 못했습니다: ${esc(error.message || error)}</p>`;
   }
+}
+function downloadPortfolioHistory(format) {
+  const result = portfolioHistoryExportData;
+  const rows = result?.rows || [];
+  if (!rows.length) {
+    alert('내보낼 그래프 데이터가 없습니다.');
+    return;
+  }
+  const exportedAt = new Date().toISOString();
+  const lastDate = result.last_date || rows[rows.length - 1]?.date || 'latest';
+  let content, mimeType, extension;
+  if (format === 'csv') {
+    const columns = ['date','holding_principal','realized_pnl','unrealized_pnl','realized_plus_unrealized','missing_price_count'];
+    const escapeCsv = value => `"${String(value ?? '').replaceAll('"', '""')}"`;
+    content = '\uFEFF' + [columns.join(','), ...rows.map(row => columns.map(key => escapeCsv(row[key])).join(','))].join('\r\n');
+    mimeType = 'text/csv;charset=utf-8';
+    extension = 'csv';
+  } else {
+    content = JSON.stringify({
+      export_type: 'kis_msj_portfolio_history_chart',
+      exported_at: exportedAt,
+      period: {first_trade_date: result.first_trade_date, last_date: result.last_date},
+      price_basis: result.price_basis,
+      definitions: result.definitions || {},
+      data_quality_notice: '과거 KIS 총자산 스냅샷이 아니라 LOT/체결/저장가격으로 재구성한 그래프 데이터입니다.',
+      rows,
+    }, null, 2);
+    mimeType = 'application/json;charset=utf-8';
+    extension = 'json';
+  }
+  const blob = new Blob([content], {type: mimeType});
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `kis-msj-portfolio-history-${lastDate}.${extension}`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 function renderPortfolioHistoryChart(result) {
   const rows = result.rows || [];

@@ -142,6 +142,10 @@ def test_portfolio_dashboard_ui_contains_tab_and_progress_bar() -> None:
     assert "loadPortfolioDetail" in INDEX_HTML
     assert "loadPortfolioHistoryChart" in INDEX_HTML
     assert "/api/portfolio-dashboard/history-chart" in INDEX_HTML
+    assert "downloadPortfolioHistory" in INDEX_HTML
+    assert "kis-msj-portfolio-history-" in INDEX_HTML
+    assert "application/json;charset=utf-8" in INDEX_HTML
+    assert "text/csv;charset=utf-8" in INDEX_HTML
 
 
 def test_portfolio_realized_detail_returns_sell_fill_lot_pnl_and_pagination(tmp_path) -> None:

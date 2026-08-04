@@ -4868,7 +4868,7 @@
     ],
     "max_lots_per_symbol_default": 12,
     "high_exposure_partial_sell_pct": 50,
-    "estimated_fee_tax_pct": 0.25
+    "estimated_fee_tax_pct": 0.21
   },
   "risk": {
     "market_risk_mode": false,
