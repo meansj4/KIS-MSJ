@@ -322,8 +322,8 @@ class LotGridStrategy:
             "decay_cleanup_sell_lot"
             if sell_reason == SellReason.AUTO_DECAY_CLEANUP_SELL.value
             else (
-                "deep_loss_timeout_sell_lot"
-                if sell_reason == SellReason.DEEP_LOSS_TIMEOUT_SELL.value
+                "deep_loss_recovery_sell_lot"
+                if sell_reason == SellReason.DEEP_LOSS_RECOVERY_SELL.value
                 else ("cleanup_sell_lot" if sell_reason == SellReason.CLEANUP_SELL.value else "sell_profitable_lot")
             )
         )
@@ -331,7 +331,7 @@ class LotGridStrategy:
         # configured sell_limit_markdown_pct to the latest validated quote.
         limit_price = (
             0
-            if sell_reason == SellReason.DEEP_LOSS_TIMEOUT_SELL.value
+            if sell_reason == SellReason.DEEP_LOSS_RECOVERY_SELL.value
             else round_price(lot.buy_price * (1.0 + lot.effective_target_profit_rate))
         )
         return StrategyAction(OrderSide.SELL, 0, quantity, reason, lot.lot_id, lot, sell_reason, cleanup_flag=expected_cleanup_loss > 0, limit_price=limit_price)
@@ -348,11 +348,7 @@ class LotGridStrategy:
             realized_rate = lot.profit_pct_at(current_price) / 100.0
             quantity = lot.remaining_quantity
             net_pnl = self.calculate_expected_realized_pnl(lot, current_price, quantity)
-            if (
-                self.config.strategy.deep_loss_timeout_enabled
-                and self.deep_loss_elapsed_days(lot) >= self.config.strategy.deep_loss_required_days
-                and realized_rate < self.config.strategy.deep_loss_reset_rate
-            ):
+            if self.deep_loss_recovery_triggered(lot, current_price):
                 deep_loss_candidates.append((lot, max(0, -net_pnl)))
                 continue
             if lot.effective_target_profit_rate < -EPSILON and realized_rate + EPSILON >= lot.effective_target_profit_rate and net_pnl < 0:
@@ -392,7 +388,7 @@ class LotGridStrategy:
                     item[0].lot_id,
                 ),
             )[0]
-            return (lot, SellReason.DEEP_LOSS_TIMEOUT_SELL.value, expected_loss, True)
+            return (lot, SellReason.DEEP_LOSS_RECOVERY_SELL.value, expected_loss, True)
         if decay_cleanup_candidates:
             lot, expected_loss = sorted(
                 decay_cleanup_candidates,
@@ -420,25 +416,44 @@ class LotGridStrategy:
 
     def observe_completed_session(self, code: str, session_date: str, close_price: int) -> bool:
         """Apply one completed-session close to every open lot exactly once."""
-        if not self.config.strategy.deep_loss_timeout_enabled or not session_date or close_price <= 0:
+        if not self.config.strategy.deep_loss_recovery_enabled or not session_date or close_price <= 0:
             return False
         changed = False
         threshold = self.config.strategy.deep_loss_threshold_rate
-        reset_rate = self.config.strategy.deep_loss_reset_rate
         for lot in self.lot_manager.open_lots(code):
             if lot.deep_loss_last_observed_on >= session_date:
                 continue
             rate = lot.profit_pct_at(close_price) / 100.0
             lot.deep_loss_last_observed_on = session_date
-            lot.deep_loss_last_close = close_price
-            if rate <= threshold:
-                lot.deep_loss_started_on = lot.deep_loss_started_on or session_date
+            if lot.deep_loss_started_on:
+                previous_low = lot.deep_loss_low_price or lot.deep_loss_last_close or close_price
+                lot.deep_loss_low_price = min(previous_low, close_price)
                 lot.deep_loss_observation_count += 1
-            elif rate >= reset_rate:
-                lot.deep_loss_started_on = ""
-                lot.deep_loss_observation_count = 0
+            elif rate <= threshold:
+                lot.deep_loss_started_on = session_date
+                lot.deep_loss_low_price = close_price
+                lot.deep_loss_observation_count = 1
+            lot.deep_loss_last_close = close_price
             changed = True
         return changed
+
+    def deep_loss_rebound_rate(self, lot: LotState, today: str | None = None) -> float:
+        max_days = max(1, self.config.strategy.deep_loss_max_recovery_days)
+        elapsed_days = self.deep_loss_elapsed_days(lot, today)
+        remaining_ratio = max(0.0, 1.0 - elapsed_days / max_days)
+        return max(0.0, self.config.strategy.deep_loss_initial_rebound_rate * remaining_ratio)
+
+    def deep_loss_recovery_triggered(self, lot: LotState, current_price: int, today: str | None = None) -> bool:
+        if not self.config.strategy.deep_loss_recovery_enabled or not lot.deep_loss_started_on:
+            return False
+        elapsed_days = self.deep_loss_elapsed_days(lot, today)
+        if elapsed_days >= self.config.strategy.deep_loss_max_recovery_days:
+            return True
+        low_price = lot.deep_loss_low_price or lot.deep_loss_last_close
+        if low_price <= 0 or current_price <= 0:
+            return False
+        trigger_price = low_price * (1.0 + self.deep_loss_rebound_rate(lot, today))
+        return current_price + EPSILON >= trigger_price
 
     @staticmethod
     def deep_loss_elapsed_days(lot: LotState, today: str | None = None) -> int:

@@ -157,6 +157,7 @@ class StateStore:
             _ensure_column(connection, "lots", "deep_loss_last_observed_on", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(connection, "lots", "deep_loss_observation_count", "INTEGER NOT NULL DEFAULT 0")
             _ensure_column(connection, "lots", "deep_loss_last_close", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "lots", "deep_loss_low_price", "INTEGER NOT NULL DEFAULT 0")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS fills (
@@ -434,7 +435,7 @@ class StateStore:
                 "lot_sizing_locked_at",
                 "lot_sizing_mode",
             },
-            "lots": {"cleanup_candidate", "age_weeks", "base_target_profit_rate", "effective_target_profit_rate", "last_sell_reason", "deep_loss_started_on", "deep_loss_last_observed_on", "deep_loss_observation_count", "deep_loss_last_close"},
+            "lots": {"cleanup_candidate", "age_weeks", "base_target_profit_rate", "effective_target_profit_rate", "last_sell_reason", "deep_loss_started_on", "deep_loss_last_observed_on", "deep_loss_observation_count", "deep_loss_last_close", "deep_loss_low_price"},
             "fills": {"execution_id", "sell_reason", "reentry_type", "config_hash", "config_version", "run_id", "experiment_name"},
             "orders": {"requested_at", "sell_reason", "reentry_type", "cleanup_flag", "config_hash", "config_version", "run_id", "experiment_name", "cancel_requested", "cancel_confirmed", "cancel_rejected", "filled_after_cancel_request", "cancel_response_code", "cancel_response_message", "cancel_checked_at", "post_cancel_execution_checked_at", "cancel_retry_count"},
             "manual_order_requests": {"request_id", "source", "requested_by", "requested_at", "code", "side", "current_price", "amount", "quantity", "lot_id", "order_type", "preview_json", "runtime_snapshot_json", "live_trading", "confirm_text_verified", "status", "block_reason", "linked_order_id", "processing_started_at", "processing_claimed_by", "claim_attempt_count", "last_processing_error", "stale_processing_reason", "config_hash", "config_version", "run_id", "experiment_name", "created_at", "updated_at"},
@@ -498,6 +499,7 @@ class StateStore:
             data.setdefault("deep_loss_last_observed_on", "")
             data.setdefault("deep_loss_observation_count", 0)
             data.setdefault("deep_loss_last_close", 0)
+            data.setdefault("deep_loss_low_price", 0)
             data = _known_model_fields(data, LotState)
             lots[data["lot_id"]] = LotState(**data)
         return lots

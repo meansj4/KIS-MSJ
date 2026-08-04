@@ -28,7 +28,7 @@ def test_log_symbol_decision_accepts_snapshot(tmp_path) -> None:
     bot.log_symbol_decision(position, 10000, snapshot, RiskDecision(True), RiskDecision(True), "NONE")
 
 
-def test_deep_loss_timeout_sell_uses_configured_sell_markdown(tmp_path) -> None:
+def test_deep_loss_recovery_sell_uses_configured_sell_markdown(tmp_path) -> None:
     config = BotConfig(
         order=OrderConfig(price_sample_interval_seconds=0, sell_limit_markdown_pct=0.5),
         storage_path=str(tmp_path / "state.sqlite3"),
@@ -40,9 +40,9 @@ def test_deep_loss_timeout_sell_uses_configured_sell_markdown(tmp_path) -> None:
         OrderSide.SELL,
         0,
         1,
-        "deep_loss_timeout_sell_lot",
+        "deep_loss_recovery_sell_lot",
         lot_id="LOT-1",
-        sell_reason=SellReason.DEEP_LOSS_TIMEOUT_SELL.value,
+        sell_reason=SellReason.DEEP_LOSS_RECOVERY_SELL.value,
         limit_price=0,
     )
 
@@ -52,10 +52,37 @@ def test_deep_loss_timeout_sell_uses_configured_sell_markdown(tmp_path) -> None:
     assert request.limit_price == 9_950
 
 
+def test_deep_loss_recovery_has_no_per_symbol_daily_sell_limit(tmp_path) -> None:
+    bot = trader(tmp_path)
+    bot.store.record_fill(
+        TradeFill(
+            "005930",
+            "Test",
+            OrderSide.SELL,
+            1,
+            5_500,
+            "SELL-OLD",
+            datetime.now(),
+            "LOT-OLD",
+            sell_reason=SellReason.DEEP_LOSS_RECOVERY_SELL.value,
+        )
+    )
+    action = StrategyAction(
+        OrderSide.SELL,
+        0,
+        1,
+        "deep_loss_recovery_sell_lot",
+        lot_id="LOT-NEXT",
+        sell_reason=SellReason.DEEP_LOSS_RECOVERY_SELL.value,
+    )
+
+    assert bot.open_order_block_reason(PositionState(code="005930", name="Test"), action) == ""
+
+
 def test_completed_session_price_cache_bulk_loads_only_once_per_day(tmp_path, monkeypatch) -> None:
     config = BotConfig(
         stocks=(StockConfig("005930", "Samsung"), StockConfig("000660", "SK hynix")),
-        strategy=StrategyConfig(deep_loss_timeout_enabled=True),
+        strategy=StrategyConfig(deep_loss_recovery_enabled=True),
         storage_path=str(tmp_path / "state.sqlite3"),
         log_path=str(tmp_path / "trader.log"),
     )

@@ -43,12 +43,10 @@ def test_initial_buy_creates_candidate_action() -> None:
     assert action.amount == 30000
 
 
-def test_deep_loss_timeout_counts_completed_sessions_once_and_resets_with_hysteresis() -> None:
+def test_deep_loss_recovery_tracks_completed_session_low_once_and_does_not_reset() -> None:
     strategy_config = StrategyConfig(
-        deep_loss_timeout_enabled=True,
+        deep_loss_recovery_enabled=True,
         deep_loss_threshold_rate=-0.40,
-        deep_loss_reset_rate=-0.38,
-        deep_loss_required_days=7,
         estimated_fee_tax_pct=0,
     )
     _, _, positions, strategy, _, _ = setup_strategy(strategy_config)
@@ -58,33 +56,37 @@ def test_deep_loss_timeout_counts_completed_sessions_once_and_resets_with_hyster
     assert not strategy.observe_completed_session("005930", "2026-07-01", 5_900)
     assert lot.deep_loss_observation_count == 1
     assert lot.deep_loss_started_on == "2026-07-01"
+    assert lot.deep_loss_low_price == 6_000
 
-    assert strategy.observe_completed_session("005930", "2026-07-02", 6_100)
-    assert lot.deep_loss_observation_count == 1
+    assert strategy.observe_completed_session("005930", "2026-07-02", 5_500)
+    assert lot.deep_loss_low_price == 5_500
     assert strategy.observe_completed_session("005930", "2026-07-03", 6_200)
-    assert lot.deep_loss_observation_count == 0
-    assert lot.deep_loss_started_on == ""
+    assert lot.deep_loss_observation_count == 3
+    assert lot.deep_loss_started_on == "2026-07-01"
+    assert lot.deep_loss_low_price == 5_500
 
 
-def test_deep_loss_timeout_sells_one_whole_lot_at_current_limit_price() -> None:
+def test_deep_loss_recovery_sells_whole_lot_after_ten_percent_rebound() -> None:
     strategy_config = StrategyConfig(
-        deep_loss_timeout_enabled=True,
-        deep_loss_required_days=7,
+        deep_loss_recovery_enabled=True,
+        deep_loss_initial_rebound_rate=0.10,
+        deep_loss_max_recovery_days=30,
         estimated_fee_tax_pct=0,
     )
     _, _, positions, strategy, risk, snapshot = setup_strategy(strategy_config)
     lot = add_lot(positions, "005930", 10_000, 3)
-    lot.deep_loss_started_on = "2026-07-01"
-    lot.deep_loss_last_observed_on = "2026-07-09"
-    lot.deep_loss_observation_count = 7
-    lot.deep_loss_last_close = 5_900
-    position = positions.refresh_from_lots("005930", 5_900)
+    lot.deep_loss_started_on = datetime.now().date().isoformat()
+    lot.deep_loss_last_observed_on = lot.deep_loss_started_on
+    lot.deep_loss_observation_count = 1
+    lot.deep_loss_last_close = 5_000
+    lot.deep_loss_low_price = 5_000
+    position = positions.refresh_from_lots("005930", 5_500)
     position.needs_review = True
     position.position_state = PositionLifecycle.REVIEW_REQUIRED.value
 
     action = strategy.decide(
         position,
-        5_900,
+        5_500,
         snapshot,
         risk.account_buy_allowed(snapshot, positions.positions),
         risk.symbol_buy_allowed(position),
@@ -94,50 +96,55 @@ def test_deep_loss_timeout_sells_one_whole_lot_at_current_limit_price() -> None:
     assert action.side is OrderSide.SELL
     assert action.quantity == lot.remaining_quantity
     assert action.lot_id == lot.lot_id
-    assert action.sell_reason == SellReason.DEEP_LOSS_TIMEOUT_SELL.value
+    assert action.sell_reason == SellReason.DEEP_LOSS_RECOVERY_SELL.value
     assert action.limit_price == 0
 
 
-def test_deep_loss_timeout_uses_seven_calendar_days_not_seven_observations() -> None:
-    strategy_config = StrategyConfig(deep_loss_timeout_enabled=True, deep_loss_required_days=7, estimated_fee_tax_pct=0)
+def test_deep_loss_recovery_decay_uses_calendar_days_and_forces_sell_on_day_thirty() -> None:
+    strategy_config = StrategyConfig(deep_loss_recovery_enabled=True, deep_loss_initial_rebound_rate=0.10, deep_loss_max_recovery_days=30, estimated_fee_tax_pct=0)
     _, _, positions, strategy, risk, snapshot = setup_strategy(strategy_config)
     lot = add_lot(positions, "005930", 10_000, 1)
     lot.deep_loss_started_on = "2026-07-01"
     lot.deep_loss_last_observed_on = "2026-07-01"
     lot.deep_loss_observation_count = 1
-    position = positions.refresh_from_lots("005930", 5_900)
+    lot.deep_loss_low_price = 5_000
 
     assert strategy.deep_loss_elapsed_days(lot, "2026-07-07") == 6
-    assert strategy.deep_loss_elapsed_days(lot, "2026-07-08") == 7
+    assert strategy.deep_loss_rebound_rate(lot, "2026-07-16") == pytest.approx(0.05)
+    assert not strategy.deep_loss_recovery_triggered(lot, 5_249, "2026-07-16")
+    assert strategy.deep_loss_recovery_triggered(lot, 5_250, "2026-07-16")
+    assert strategy.deep_loss_recovery_triggered(lot, 4_000, "2026-07-31")
 
-    lot.deep_loss_started_on = (datetime.now() - timedelta(days=7)).date().isoformat()
+    lot.deep_loss_started_on = (datetime.now() - timedelta(days=30)).date().isoformat()
+    position = positions.refresh_from_lots("005930", 4_000)
     action = strategy.decide(
         position,
-        5_900,
+        4_000,
         snapshot,
         risk.account_buy_allowed(snapshot, positions.positions),
         risk.symbol_buy_allowed(position),
     )
 
     assert action is not None
-    assert action.sell_reason == SellReason.DEEP_LOSS_TIMEOUT_SELL.value
+    assert action.sell_reason == SellReason.DEEP_LOSS_RECOVERY_SELL.value
 
 
-def test_deep_loss_timeout_prefers_oldest_lot_when_multiple_are_eligible() -> None:
-    strategy_config = StrategyConfig(deep_loss_timeout_enabled=True, deep_loss_required_days=7, estimated_fee_tax_pct=0)
+def test_deep_loss_recovery_prefers_oldest_lot_when_multiple_are_eligible() -> None:
+    strategy_config = StrategyConfig(deep_loss_recovery_enabled=True, deep_loss_initial_rebound_rate=0.10, estimated_fee_tax_pct=0)
     _, _, positions, strategy, risk, snapshot = setup_strategy(strategy_config)
     oldest = add_lot(positions, "005930", 10_000, 1, minutes_ago=20)
     newest = add_lot(positions, "005930", 9_500, 1, minutes_ago=10)
-    started_on = (datetime.now() - timedelta(days=7)).date().isoformat()
+    started_on = datetime.now().date().isoformat()
     for lot in (oldest, newest):
         lot.deep_loss_started_on = started_on
         lot.deep_loss_last_observed_on = datetime.now().date().isoformat()
         lot.deep_loss_observation_count = 1
-    position = positions.refresh_from_lots("005930", 5_000)
+        lot.deep_loss_low_price = 4_500
+    position = positions.refresh_from_lots("005930", 4_950)
 
     action = strategy.decide(
         position,
-        5_000,
+        4_950,
         snapshot,
         risk.account_buy_allowed(snapshot, positions.positions),
         risk.symbol_buy_allowed(position),
@@ -932,15 +939,33 @@ def test_stale_lot_is_marked_without_forced_sell() -> None:
     assert action is None or action.side is not OrderSide.SELL
 
 
-def test_stale_lot_review_age_marks_review_required() -> None:
+def test_stale_lot_age_alone_does_not_mark_review_required() -> None:
     _, _, positions, _, _, _ = setup_strategy()
     stale = add_lot(positions, "005930", 10000, 1)
     age_lot(stale, 20)
 
     position = positions.refresh_from_lots("005930", 8500)
 
-    assert position.position_state == PositionLifecycle.REVIEW_REQUIRED.value
-    assert position.review_reason == "stale_lot_review_age"
+    assert position.position_state == PositionLifecycle.HOLDING.value
+    assert position.needs_review is False
+    assert position.review_reason == ""
+
+
+def test_existing_stale_age_review_is_cleared_when_rechecked() -> None:
+    _, _, positions, _, _, _ = setup_strategy()
+    stale = add_lot(positions, "005930", 10000, 1)
+    age_lot(stale, 20)
+    position = positions.refresh_from_lots("005930", 8500)
+    position.needs_review = True
+    position.position_state = PositionLifecycle.REVIEW_REQUIRED.value
+    position.review_reason = "stale_lot_review_age"
+
+    updated, triggers, event = positions.recheck_review_required(position, 8500)
+
+    assert triggers["reasons"] == []
+    assert event == "review_required_cleared"
+    assert updated.position_state == PositionLifecycle.HOLDING.value
+    assert updated.needs_review is False
 
 
 def test_symbol_loss_marks_review_required() -> None:

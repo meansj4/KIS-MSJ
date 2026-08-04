@@ -14,7 +14,7 @@ import time
 import uuid
 from collections import defaultdict
 from dataclasses import asdict
-from datetime import datetime, time as day_time
+from datetime import datetime, time as day_time, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -100,15 +100,14 @@ CONFIG_METADATA: tuple[dict[str, Any], ...] = (
     {"section": "Strategy", "key": "strategy.cleanup_buy_cooldown_days", "label_ko": "Cleanup 후 매수 쿨다운", "description_ko": "일부 cleanup 후 같은 종목 매수를 막는 캘린더 일수입니다.", "type": "number", "unit": "일", "display_format": "integer", "config_format": "integer", "warning_level": "warning", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.cleanup_reentry_cooldown_days", "label_ko": "전량 cleanup 후 재진입 쿨다운", "description_ko": "전량 cleanup 후 모든 BUY를 막는 캘린더 일수입니다.", "type": "number", "unit": "일", "display_format": "integer", "config_format": "integer", "warning_level": "warning", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.cleanup_auto_return_to_wait_reentry", "label_ko": "Cleanup 후 자동 WAIT_REENTRY 복귀", "description_ko": "false가 기본입니다. true이면 cleanup cooldown 후 자동 재진입 대기로 갈 수 있습니다.", "type": "boolean", "unit": "bool", "display_format": "boolean", "config_format": "boolean", "warning_level": "danger", "requires_restart": True, "danger_confirm_required": True},
-    {"section": "Strategy", "key": "strategy.deep_loss_timeout_enabled", "label_ko": "심각손실 지속 LOT 정리", "description_ko": "완료된 거래일 종가 기준 심각손실이 지정 일수 누적된 LOT을 종목당 하루 1개 정리합니다.", "type": "boolean", "unit": "bool", "display_format": "boolean", "config_format": "boolean", "warning_level": "danger", "requires_restart": True, "danger_confirm_required": True},
+    {"section": "Strategy", "key": "strategy.deep_loss_recovery_enabled", "label_ko": "심각손실 반등 정리", "description_ko": "-40% 이하 진입 후 최저 종가 대비 반등률과 30일 decay 조건으로 LOT을 정리합니다.", "type": "boolean", "unit": "bool", "display_format": "boolean", "config_format": "boolean", "warning_level": "danger", "requires_restart": True, "danger_confirm_required": True},
     {"section": "Strategy", "key": "strategy.deep_loss_threshold_rate", "label_ko": "심각손실 진입 기준", "description_ko": "이 수익률 이하로 마감한 거래일을 심각손실 지속일로 계산합니다.", "type": "number", "unit": "%", "display_format": "decimal_percent", "config_format": "decimal_rate", "warning_level": "danger", "requires_restart": True},
-    {"section": "Strategy", "key": "strategy.deep_loss_reset_rate", "label_ko": "심각손실 추적 초기화 기준", "description_ko": "이 수익률 이상으로 회복 마감하면 누적 거래일을 초기화합니다.", "type": "number", "unit": "%", "display_format": "decimal_percent", "config_format": "decimal_rate", "warning_level": "warning", "requires_restart": True},
-    {"section": "Strategy", "key": "strategy.deep_loss_required_days", "label_ko": "심각손실 지속기간", "description_ko": "심각손실 상태가 시작된 날짜부터 이 달력 일수가 지나면 매도 후보가 됩니다.", "type": "number", "unit": "일", "display_format": "integer", "config_format": "integer", "warning_level": "danger", "requires_restart": True},
+    {"section": "Strategy", "key": "strategy.deep_loss_initial_rebound_rate", "label_ko": "심각손실 최초 반등 목표", "description_ko": "심각손실 진입 후 저장한 최저 종가 대비 최초 매도 반등률입니다.", "type": "number", "unit": "%", "display_format": "decimal_percent", "config_format": "decimal_rate", "warning_level": "warning", "requires_restart": True},
+    {"section": "Strategy", "key": "strategy.deep_loss_max_recovery_days", "label_ko": "심각손실 최대 회복 대기일", "description_ko": "최초 반등 목표를 0%까지 선형 감소시키는 달력 일수이며, 마지막 날에는 강제 정리합니다.", "type": "number", "unit": "일", "display_format": "integer", "config_format": "integer", "warning_level": "danger", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.stale_lot_loss_rate", "label_ko": "STALE LOT 손실률 기준", "description_ko": "오래된 손실 LOT을 stale로 표시할 손실률입니다.", "type": "number", "unit": "%", "display_format": "decimal_percent", "config_format": "decimal_rate", "warning_level": "warning", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.stale_lot_min_age_weeks", "label_ko": "STALE LOT 최소 보유기간", "description_ko": "stale LOT 판정에 필요한 최소 보유 주수입니다.", "type": "number", "unit": "주", "display_format": "integer", "config_format": "integer", "warning_level": "warning", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.stale_lot_price_gap_rate", "label_ko": "STALE LOT 가격 하락 기준", "description_ko": "매수가 대비 이 비율 이상 낮아진 LOT을 stale 후보로 봅니다.", "type": "number", "unit": "%", "display_format": "decimal_percent", "config_format": "decimal_rate", "warning_level": "warning", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.review_symbol_loss_rate", "label_ko": "REVIEW_REQUIRED 종목 손실률", "description_ko": "종목 전체 손실률이 이 수준 이하면 REVIEW_REQUIRED 후보가 됩니다.", "type": "number", "unit": "%", "display_format": "decimal_percent", "config_format": "decimal_rate", "warning_level": "danger", "requires_restart": True},
-    {"section": "Strategy", "key": "strategy.stale_lot_review_age_weeks", "label_ko": "STALE 장기 지속 검토 주수", "description_ko": "stale LOT이 이 주수 이상 오래되면 REVIEW_REQUIRED 후보가 됩니다.", "type": "number", "unit": "주", "display_format": "integer", "config_format": "integer", "warning_level": "warning", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.high_exposure_partial_sell_pct", "label_ko": "고투입 구간 부분매도 비율", "description_ko": "고투입 구간에서 포지션 축소 목적의 부분매도 비율입니다. config 값은 이미 %입니다.", "type": "number", "unit": "%", "display_format": "percent_value", "config_format": "percent_value", "warning_level": "warning", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.estimated_fee_tax_pct", "label_ko": "예상 수수료/세금", "description_ko": "손익 추정에 사용하는 예상 비용률입니다. config 값은 이미 %입니다.", "type": "number", "unit": "%", "display_format": "percent_value", "config_format": "percent_value", "warning_level": "normal", "requires_restart": True},
     {"section": "Risk", "key": "risk.market_risk_mode", "label_ko": "시장 리스크 모드", "description_ko": "true이면 시장 위험 상태로 보고 신규 주문을 제한합니다.", "type": "boolean", "unit": "bool", "display_format": "boolean", "config_format": "boolean", "warning_level": "danger", "requires_restart": True, "danger_confirm_required": True},
@@ -193,7 +192,9 @@ DETAILED_CONFIG_DESCRIPTIONS: dict[str, str] = {
     "strategy.stale_lot_min_age_weeks": "STALE LOT으로 보기 위한 최소 보유 주수입니다. 손실이 커도 너무 최근에 산 LOT은 바로 stale로 보지 않고, 일정 기간 지나도 회복하지 못한 LOT만 표시합니다.",
     "strategy.stale_lot_price_gap_rate": "매수가 대비 현재가가 얼마나 낮아져야 STALE LOT 후보가 되는지 정합니다. 예: -10%이면 현재가가 buy_price의 90% 이하일 때 stale 조건 중 하나를 만족합니다.",
     "strategy.review_symbol_loss_rate": "종목 전체 평가손실률이 이 기준 이하이면 REVIEW_REQUIRED 후보가 됩니다. REVIEW_REQUIRED는 더 사지 말고 사람이 확인하라는 상태이며, PROFIT_TAKE SELL은 허용하지만 CLEANUP_SELL은 기본적으로 차단합니다.",
-    "strategy.stale_lot_review_age_weeks": "STALE LOT이 너무 오래 지속되면 자동 로직만으로 계속 끌고 가기 어렵습니다. 이 주수 이상 오래된 stale LOT은 REVIEW_REQUIRED 후보가 됩니다.",
+    "strategy.deep_loss_recovery_enabled": "심각손실 LOT을 단순 보유기간이 아니라 최저 종가 이후 반등과 최대 대기기간으로 정리합니다. REVIEW_REQUIRED 상태에서도 이 매도는 허용됩니다.",
+    "strategy.deep_loss_initial_rebound_rate": "-40% 이하 진입 후 저장된 최저 종가에서 처음 요구하는 반등률입니다. 시간이 지나면 선형으로 낮아집니다.",
+    "strategy.deep_loss_max_recovery_days": "반등 목표가 0%까지 감소하는 최대 달력 일수입니다. 이 날짜에 도달하면 현재가와 관계없이 정리합니다.",
     "strategy.high_exposure_partial_sell_pct": "고투입 구간에서 전체 포지션을 줄이기 위해 부분 매도를 할 때 사용할 비율입니다. 포지션 축소 목적의 보수 장치이며, LOT 단위 매도 원칙과 체결 기준 DB 반영 원칙은 그대로 유지됩니다.",
     "strategy.estimated_fee_tax_pct": "UI 미리보기와 손익 추정에서 사용하는 예상 수수료/세금 비율입니다. 실제 KIS 정산값과 완전히 같지는 않을 수 있지만, PROFIT_TAKE/CLEANUP 판단에서 net 추정치를 볼 때 보수적으로 참고합니다.",
     "risk.market_risk_mode": "시장 전체가 위험하다고 판단될 때 켜는 수동 안전 플래그입니다. true이면 신규 BUY를 보수적으로 제한합니다. 급락장, 시스템 이상, 사람이 잠시 자동매매를 줄이고 싶을 때 쓰는 전역 위험 모드입니다.",
@@ -1186,6 +1187,11 @@ class UIService:
                 "deep_loss_last_observed_on": lot.get("deep_loss_last_observed_on", ""),
                 "deep_loss_observation_count": lot.get("deep_loss_observation_count", 0),
                 "deep_loss_last_close": lot.get("deep_loss_last_close", 0),
+                "deep_loss_low_price": lot.get("deep_loss_low_price", 0),
+                "deep_loss_elapsed_days": lot.get("deep_loss_elapsed_days", 0),
+                "deep_loss_rebound_rate": lot.get("deep_loss_rebound_rate", 0.0),
+                "deep_loss_rebound_trigger_price": lot.get("deep_loss_rebound_trigger_price", 0),
+                "deep_loss_force_sell_on": lot.get("deep_loss_force_sell_on", ""),
                 "target_remaining_amount": max(0, target_amount - market_value) if current_price else 0,
                 "target_remaining_rate": _safe_rate(target_price - current_price, current_price) if current_price else 0.0,
                 "stale_lot": bool(lot.get("stale_lot")),
@@ -1836,8 +1842,6 @@ class UIService:
             requirements.append(f"현재 손익률이 기준({values.get('review_symbol_loss_rate')})보다 회복되어야 합니다.")
         if "too_many_open_lots" in reasons:
             requirements.append(f"OPEN LOT 수가 허용 기준({values.get('max_lots')}) 이하가 되어야 합니다.")
-        if "stale_lot_review_age" in reasons:
-            requirements.append("장기 STALE LOT 조건이 해소되거나 수동 정리 후 reconciliation이 완료되어야 합니다.")
         if "sync_required" in reasons:
             requirements.append("DB와 KIS 잔고 동기화 불일치를 먼저 해결해야 합니다.")
         if not requirements:
@@ -2008,6 +2012,28 @@ class UIService:
             row["unrealized_pnl_rate"] = (current_price - int(row.get("buy_price", 0))) / int(row.get("buy_price", 1)) if current_price and row.get("buy_price") else 0
             row["stale_lot"] = row["unrealized_pnl_rate"] <= self.config.strategy.stale_lot_loss_rate and float(row.get("age_weeks") or 0) >= self.config.strategy.stale_lot_min_age_weeks
             row["sell_trigger_price"] = int(round(int(row.get("buy_price", 0)) * (1 + float(row.get("effective_target_profit_rate") or 0))))
+            started_on = str(row.get("deep_loss_started_on") or "")
+            low_price = int(row.get("deep_loss_low_price") or row.get("deep_loss_last_close") or 0)
+            if started_on:
+                try:
+                    started_date = datetime.fromisoformat(started_on).date()
+                    elapsed_days = max(0, (now.date() - started_date).days)
+                    max_days = max(1, self.config.strategy.deep_loss_max_recovery_days)
+                    rebound_rate = self.config.strategy.deep_loss_initial_rebound_rate * max(0.0, 1.0 - elapsed_days / max_days)
+                    row["deep_loss_elapsed_days"] = elapsed_days
+                    row["deep_loss_rebound_rate"] = rebound_rate
+                    row["deep_loss_rebound_trigger_price"] = int(round(low_price * (1.0 + rebound_rate))) if low_price else 0
+                    row["deep_loss_force_sell_on"] = (started_date + timedelta(days=max_days)).isoformat()
+                except ValueError:
+                    row["deep_loss_elapsed_days"] = 0
+                    row["deep_loss_rebound_rate"] = 0.0
+                    row["deep_loss_rebound_trigger_price"] = 0
+                    row["deep_loss_force_sell_on"] = ""
+            else:
+                row["deep_loss_elapsed_days"] = 0
+                row["deep_loss_rebound_rate"] = 0.0
+                row["deep_loss_rebound_trigger_price"] = 0
+                row["deep_loss_force_sell_on"] = ""
         return rows
 
     def orders(self) -> list[dict[str, Any]]:
@@ -2499,10 +2525,10 @@ class UIService:
             errors.append("cleanup_min_target_rate must be <= 0")
         if not 0 <= strategy.cleanup_profit_offset_ratio <= 1:
             errors.append("cleanup_profit_offset_ratio must be between 0 and 1")
-        if strategy.deep_loss_threshold_rate >= strategy.deep_loss_reset_rate:
-            errors.append("deep_loss_threshold_rate must be less than deep_loss_reset_rate")
-        if strategy.deep_loss_required_days < 1:
-            errors.append("deep_loss_required_days must be >= 1")
+        if not 0 <= strategy.deep_loss_initial_rebound_rate <= 1:
+            errors.append("deep_loss_initial_rebound_rate must be between 0 and 1")
+        if strategy.deep_loss_max_recovery_days < 1:
+            errors.append("deep_loss_max_recovery_days must be >= 1")
         errors.extend(_validate_bands("exposure_buy_bands", [asdict(item) for item in strategy.exposure_buy_bands], "amount"))
         errors.extend(_validate_bands("exposure_sell_bands", [asdict(item) for item in strategy.exposure_sell_bands], "target_profit_pct"))
         if risk.daily_account_loss_limit_pct > 0 or risk.total_account_loss_limit_pct > 0:

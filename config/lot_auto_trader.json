@@ -4721,15 +4721,14 @@
     "cleanup_buy_cooldown_days": 3,
     "cleanup_reentry_cooldown_days": 5,
     "cleanup_auto_return_to_wait_reentry": false,
-    "deep_loss_timeout_enabled": true,
+    "deep_loss_recovery_enabled": true,
     "deep_loss_threshold_rate": -0.4,
-    "deep_loss_reset_rate": -0.38,
-    "deep_loss_required_days": 7,
+    "deep_loss_initial_rebound_rate": 0.1,
+    "deep_loss_max_recovery_days": 30,
     "stale_lot_loss_rate": -0.15,
     "stale_lot_min_age_weeks": 8,
     "stale_lot_price_gap_rate": -0.1,
     "review_symbol_loss_rate": -0.2,
-    "stale_lot_review_age_weeks": 20,
     "lot_sizing_mode": "cycle_locked_by_entry_price",
     "price_lot_bands": [
       {

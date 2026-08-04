@@ -177,8 +177,8 @@ const LABELS = {
   lot_age_days:'LOT 나이(일)', age_weeks:'LOT 나이(주)', unrealized_pnl:'평가손익',
   unrealized_pnl_rate:'평가손익률', base_target_profit_rate:'기본 목표수익률',
   effective_target_profit_rate:'실효 목표수익률', cleanup_candidate:'Cleanup 후보',
-  deep_loss_started_on:'심각손실 시작일', deep_loss_last_observed_on:'최근 종가 관찰일',
-  deep_loss_observation_count:'심각손실 관찰횟수', deep_loss_last_close:'최근 관찰 종가',
+  deep_loss_started_on:'심각손실 회복대기 시작일', deep_loss_last_observed_on:'최근 종가 관찰일',
+  deep_loss_observation_count:'심각손실 관찰횟수', deep_loss_last_close:'최근 관찰 종가', deep_loss_low_price:'심각손실 최저 종가', deep_loss_elapsed_days:'회복대기 경과일', deep_loss_rebound_rate:'현재 요구 반등률', deep_loss_rebound_trigger_price:'반등 매도 기준가', deep_loss_force_sell_on:'강제 정리 예정일',
   stale_lot:'STALE LOT', last_sell_reason:'최근 매도 사유', order_id:'주문 ID',
   side:'매수/매도', quantity:'수량', limit_price:'지정가', reason:'사유',
   requested_at:'요청시각', updated_at:'갱신시각', cleanup_flag:'Cleanup 여부',
@@ -206,7 +206,7 @@ const VALUE_LABELS = {
   COOLDOWN_AFTER_CLEANUP:'Cleanup 후 쿨다운', TRADE_STOPPED_AFTER_EXIT:'거래중지(청산후)',
   REVIEW_REQUIRED:'수동 검토 필요',
   RISK_BLOCKED:'위험 차단', SYNC_REQUIRED:'동기화 필요',
-  PROFIT_TAKE:'본전/수익 매도', CLEANUP_SELL:'손실 정리 매도', AUTO_DECAY_CLEANUP_SELL:'Decay 정리 매도', DEEP_LOSS_TIMEOUT_SELL:'심각손실 지속 정리', UNKNOWN:'알 수 없음',
+  PROFIT_TAKE:'본전/수익 매도', CLEANUP_SELL:'손실 정리 매도', AUTO_DECAY_CLEANUP_SELL:'Decay 정리 매도', DEEP_LOSS_RECOVERY_SELL:'심각손실 반등 정리', UNKNOWN:'알 수 없음',
   BUY:'매수', SELL:'매도', REQUESTED:'요청됨', PARTIAL:'부분체결', FILLED:'체결완료',
   CANCELED:'취소됨', REJECTED:'거절됨', execution_id:'체결번호 기준', fallback:'보조 키 기준',
   runtime_all_orders_paused:'전체 주문 일시정지로 차단', runtime_buy_paused:'매수 일시정지로 차단',
@@ -265,7 +265,7 @@ Object.assign(VALUE_LABELS, {
   RISK_BLOCKED:'위험 차단', SYNC_REQUIRED:'동기화 필요', OPEN:'미청산',
   CLOSED:'청산 완료', REQUESTED:'요청됨', PARTIAL:'부분체결', FILLED:'체결완료',
   CANCELED:'취소됨', REJECTED:'거절됨', BUY:'매수', SELL:'매도',
-  PROFIT_TAKE:'본전/수익 매도', CLEANUP_SELL:'손실 정리 매도', AUTO_DECAY_CLEANUP_SELL:'Decay 정리 매도', DEEP_LOSS_TIMEOUT_SELL:'심각손실 지속 정리', UNKNOWN:'알 수 없음',
+  PROFIT_TAKE:'본전/수익 매도', CLEANUP_SELL:'손실 정리 매도', AUTO_DECAY_CLEANUP_SELL:'Decay 정리 매도', DEEP_LOSS_RECOVERY_SELL:'심각손실 반등 정리', UNKNOWN:'알 수 없음',
   execution_id:'체결번호 기준', fallback:'보조 키 기준',
   ui_manual_trading_disabled:'수동 주문 요청 비활성', confirm_text_required:'실거래 확인 문구 필요',
   current_price_missing:'현재가 없음', open_buy_order_exists:'미체결 매수 주문 존재',
@@ -307,7 +307,7 @@ function displayCell(key, value) {
     return value ? '<span class="badge warn">청산 후 중지 예정</span><span class="key">true</span>' : '<span class="badge neutral">-</span><span class="key">false</span>';
   }
   if (key === 'realized_pnl' || key === 'unrealized_pnl') return esc(formatSignedKrw(value));
-  if (key === 'realized_pnl_rate' || key === 'unrealized_pnl_rate') return esc(formatSignedRate(value));
+  if (key === 'realized_pnl_rate' || key === 'unrealized_pnl_rate' || key === 'deep_loss_rebound_rate') return esc(formatSignedRate(value));
   if (typeof value === 'number') return esc(formatNumber(value));
   const translated = valueLabel(value);
   if (/state|status|reason|side|dedupe|flag|enabled|paused|candidate|stale|duplicate|reflected/i.test(key)) {
@@ -338,14 +338,14 @@ function formatSignedRate(value) {
 const sortState = {};
 const DEFAULT_COLUMNS = {
   stocks: ['code','name','enabled','retire_after_exit','buy_blocked','position_state','current_price','open_lot_count','lot_unit_amount','max_symbol_amount','max_lots_per_symbol','lot_sizing_bucket','invested_amount','realized_pnl_rate','realized_pnl','unrealized_pnl_rate','unrealized_pnl','profit_loss_pct','risk_block_reasons','skip_reason','final_block_reason'],
-  lots: ['lot_id','code','name','status','buy_price','remaining_quantity','current_price','unrealized_pnl','unrealized_pnl_rate','age_weeks','effective_target_profit_rate','sell_trigger_price','deep_loss_started_on','deep_loss_last_observed_on','deep_loss_observation_count','deep_loss_last_close','cleanup_candidate','stale_lot','last_sell_reason'],
-  stockLots: ['lot_id','code','name','status','buy_price','remaining_quantity','current_price','unrealized_pnl','unrealized_pnl_rate','age_weeks','effective_target_profit_rate','sell_trigger_price','deep_loss_started_on','deep_loss_last_observed_on','deep_loss_observation_count','deep_loss_last_close','cleanup_candidate','stale_lot','last_sell_reason'],
+  lots: ['lot_id','code','name','status','buy_price','remaining_quantity','current_price','unrealized_pnl','unrealized_pnl_rate','age_weeks','effective_target_profit_rate','sell_trigger_price','deep_loss_started_on','deep_loss_low_price','deep_loss_elapsed_days','deep_loss_rebound_rate','deep_loss_rebound_trigger_price','deep_loss_force_sell_on','cleanup_candidate','stale_lot','last_sell_reason'],
+  stockLots: ['lot_id','code','name','status','buy_price','remaining_quantity','current_price','unrealized_pnl','unrealized_pnl_rate','age_weeks','effective_target_profit_rate','sell_trigger_price','deep_loss_started_on','deep_loss_low_price','deep_loss_elapsed_days','deep_loss_rebound_rate','deep_loss_rebound_trigger_price','deep_loss_force_sell_on','cleanup_candidate','stale_lot','last_sell_reason'],
   orders: ['order_id','code','name','side','status','quantity','filled_quantity','remaining_quantity','fill_count','cancel_requested','cancel_confirmed','cancel_rejected','post_cancel_execution_checked','order_sync_warning','limit_price','reason','requested_at','updated_at','lot_id'],
   fills: ['fill_id','execution_id','dedupe_key_type','order_id','code','name','side','price','quantity','filled_at','lot_id','sell_reason','reentry_type'],
   manualRequests: ['request_id','code','side','quantity','amount','lot_id','status','processing_stale','processing_age_minutes','claim_attempt_count','last_processing_error','stale_processing_reason','recovery_block_reason','block_reason','linked_order_id','requested_at','updated_at'],
   reviewRequired: ['code','name','position_state','review_reason','current_pnl_rate','open_lot_count','stale_lot_count','sync_status','lot_quantity_mismatch','profitable_lot_count'],
   portfolioRealizedDetail: ['code','name','lot_id','buy_filled_at','sell_filled_at','sell_quantity','buy_price','sell_price','buy_amount','sell_amount','realized_pnl','realized_pnl_rate','fee_tax_estimate','sell_reason','holding_days'],
-  portfolioUnrealizedDetail: ['code','name','lot_id','buy_filled_at','remaining_quantity','buy_price','remaining_buy_amount','current_price','current_market_value','unrealized_pnl','unrealized_pnl_rate','target_price','target_amount','target_remaining_amount','target_remaining_rate','stale_lot','cleanup_candidate','price_snapshot_at']
+  portfolioUnrealizedDetail: ['code','name','lot_id','buy_filled_at','remaining_quantity','buy_price','remaining_buy_amount','current_price','current_market_value','unrealized_pnl','unrealized_pnl_rate','target_price','target_amount','target_remaining_amount','target_remaining_rate','deep_loss_low_price','deep_loss_rebound_rate','deep_loss_rebound_trigger_price','deep_loss_force_sell_on','stale_lot','cleanup_candidate','price_snapshot_at']
 };
 const columnPrefs = {};
 let portfolioDetailState = null;

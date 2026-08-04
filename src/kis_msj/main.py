@@ -322,7 +322,7 @@ class AutoTrader:
         return True
 
     def refresh_completed_session_price_cache(self) -> None:
-        if not self.config.strategy.deep_loss_timeout_enabled:
+        if not self.config.strategy.deep_loss_recovery_enabled:
             self._completed_session_cache_date = ""
             self._completed_session_prices = {}
             return
@@ -1165,18 +1165,11 @@ class AutoTrader:
         cleanup_reasons = {
             SellReason.CLEANUP_SELL.value,
             SellReason.AUTO_DECAY_CLEANUP_SELL.value,
-            SellReason.DEEP_LOSS_TIMEOUT_SELL.value,
+            SellReason.DEEP_LOSS_RECOVERY_SELL.value,
         }
         if action.side is OrderSide.SELL and action.sell_reason in cleanup_reasons and self.store.has_any_open_order(position.code):
             position.skip_reason = "open_order_exists_for_cleanup"
             return "open_order_exists_for_cleanup"
-        if (
-            action.side is OrderSide.SELL
-            and action.sell_reason == SellReason.DEEP_LOSS_TIMEOUT_SELL.value
-            and self.store.has_today_sell_reason(position.code, SellReason.DEEP_LOSS_TIMEOUT_SELL.value)
-        ):
-            position.skip_reason = "deep_loss_symbol_daily_limit"
-            return "deep_loss_symbol_daily_limit"
         if action.side is OrderSide.BUY and self.store.has_open_order(position.code, OrderSide.BUY):
             return "open_buy_order_exists"
         if action.side is OrderSide.SELL and self.store.has_open_order(position.code, OrderSide.SELL, action.lot_id):

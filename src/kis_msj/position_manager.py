@@ -57,7 +57,6 @@ class PositionManager:
         last = self.lot_manager.last_buy_lot(code)
         position.last_buy_lot_id = last.lot_id if last else ""
         position.add_buy_stage = _stage_for_exposure(exposure)
-        stale_lots = self.lot_manager.stale_lots(code, current_price) if current_price else []
         review_reason = ""
         lot_sizing_mode = self.config.lot_sizing_mode == "cycle_locked_by_entry_price"
         if not lot_sizing_mode and exposure > self.config.auto_buy_limit:
@@ -66,8 +65,6 @@ class PositionManager:
             review_reason = "symbol_loss_review"
         elif not lot_sizing_mode and len(lots) > self.config.max_open_lots_before_review:
             review_reason = "too_many_open_lots"
-        elif any(lot.age_weeks >= self.config.stale_lot_review_age_weeks for lot in stale_lots):
-            review_reason = "stale_lot_review_age"
         if review_reason:
             now = datetime.now().isoformat(timespec="seconds")
             position.needs_review = True
@@ -79,7 +76,6 @@ class PositionManager:
                     "position_pnl_rate": position.profit_loss_pct / 100.0,
                     "open_lot_count": len(lots),
                     "exposure": exposure,
-                    "stale_lot_ids": [lot.lot_id for lot in stale_lots],
                     "current_price": current_price,
                 },
                 ensure_ascii=False,
@@ -92,7 +88,6 @@ class PositionManager:
         price = current_price or position.current_price
         open_lots = self.lot_manager.open_lots(position.code)
         exposure = sum(lot.open_amount for lot in open_lots)
-        stale_lots = self.lot_manager.stale_lots(position.code, price) if price and exposure > 0 else []
         reasons: list[str] = []
         cycle_locked = self.config.lot_sizing_mode == "cycle_locked_by_entry_price"
         pnl_rate = position.profit_loss_pct / 100.0
@@ -105,9 +100,6 @@ class PositionManager:
         max_lots = int(position.max_lots_per_symbol or self.config.max_open_lots_before_review)
         if not cycle_locked and max_lots and len(open_lots) > max_lots:
             reasons.append("too_many_open_lots")
-        stale_lot_ids = [lot.lot_id for lot in stale_lots if lot.age_weeks >= self.config.stale_lot_review_age_weeks]
-        if stale_lot_ids:
-            reasons.append("stale_lot_review_age")
         return {
             "reasons": reasons,
             "values": {
@@ -117,8 +109,6 @@ class PositionManager:
                 "max_lots": max_lots,
                 "exposure": exposure,
                 "auto_buy_limit": self.config.auto_buy_limit,
-                "stale_lot_ids": stale_lot_ids,
-                "stale_lot_review_age_weeks": self.config.stale_lot_review_age_weeks,
                 "current_price": price,
             },
         }

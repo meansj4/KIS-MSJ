@@ -125,15 +125,14 @@ class StrategyConfig:
     cleanup_buy_cooldown_days: int = 3
     cleanup_reentry_cooldown_days: int = 5
     cleanup_auto_return_to_wait_reentry: bool = False
-    deep_loss_timeout_enabled: bool = False
+    deep_loss_recovery_enabled: bool = False
     deep_loss_threshold_rate: float = -0.40
-    deep_loss_reset_rate: float = -0.38
-    deep_loss_required_days: int = 7
+    deep_loss_initial_rebound_rate: float = 0.10
+    deep_loss_max_recovery_days: int = 30
     stale_lot_loss_rate: float = -0.15
     stale_lot_min_age_weeks: int = 8
     stale_lot_price_gap_rate: float = -0.10
     review_symbol_loss_rate: float = -0.20
-    stale_lot_review_age_weeks: int = 20
     lot_sizing_mode: str = "cycle_locked_by_entry_price"
     price_lot_bands: tuple[PriceLotBand, ...] = (
         PriceLotBand(0, 300, 1_000, 12_000, True),
