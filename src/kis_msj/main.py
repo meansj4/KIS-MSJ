@@ -172,6 +172,13 @@ class AutoTrader:
         position.retire_after_exit = bool(getattr(stock, "retire_after_exit", False))
         position.retire_reason = str(getattr(stock, "retire_reason", "") or "")
 
+    def automatic_symbol_is_retired(self, stock) -> bool:
+        """Return true once a retire-after-exit symbol has no more automatic work."""
+        if not bool(getattr(stock, "retire_after_exit", False)):
+            return False
+        position = self.position_manager.positions.get(stock.code)
+        return position is not None and position.position_state == PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value
+
     def run_once(self) -> str:
         self._loop_id += 1
         profile = (
@@ -251,6 +258,10 @@ class AutoTrader:
                     return interrupt
                 symbol_start = time.perf_counter()
                 try:
+                    if not stock.enabled or stock.manual_only or self.automatic_symbol_is_retired(stock):
+                        if profile:
+                            profile.symbols_skipped += 1
+                        continue
                     with profile.stage("manual_request") if profile else _null_stage():
                         self.process_manual_order_requests(snapshot, account_risk)
                     with profile.stage("runtime_control") if profile else _null_stage():
@@ -258,14 +269,6 @@ class AutoTrader:
                     if interrupt:
                         status = interrupt
                         return interrupt
-                    if not stock.enabled:
-                        if profile:
-                            profile.symbols_skipped += 1
-                        continue
-                    if stock.manual_only:
-                        if profile:
-                            profile.symbols_skipped += 1
-                        continue
                     position = self.position_manager.get(stock.code, stock.name)
                     self.apply_stock_retirement_config(position, stock)
                     if stock.danger_state:
@@ -330,7 +333,11 @@ class AutoTrader:
         if self._completed_session_cache_date == before_date:
             return
         started = time.perf_counter()
-        codes = tuple(stock.code for stock in self.config.stocks if stock.enabled and not stock.manual_only)
+        codes = tuple(
+            stock.code
+            for stock in self.config.stocks
+            if stock.enabled and not stock.manual_only and not self.automatic_symbol_is_retired(stock)
+        )
         self._completed_session_prices = self.store.latest_completed_session_prices(codes, before_date)
         self._completed_session_cache_date = before_date
         self.logger.info(

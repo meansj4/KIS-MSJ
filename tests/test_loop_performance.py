@@ -6,7 +6,7 @@ from pathlib import Path
 from kis_msj.config import BotConfig, OrderConfig, StockConfig, config_to_dict
 from kis_msj.main import AutoTrader
 from kis_msj import main as trader_main
-from kis_msj.models import AccountSnapshot
+from kis_msj.models import AccountSnapshot, PositionLifecycle, PositionState
 from kis_msj.risk_manager import RiskDecision
 
 from scripts import benchmark_loop
@@ -79,6 +79,33 @@ def test_loop_profile_can_be_disabled(tmp_path, caplog) -> None:
 
     assert trader.last_loop_profile == {}
     assert not any("loop_profile" in record.message for record in caplog.records)
+
+
+def test_retired_after_exit_symbol_is_skipped_before_manual_and_quote_work(tmp_path, monkeypatch) -> None:
+    config = replace(
+        _config(tmp_path),
+        stocks=(StockConfig("005930", "Retired", retire_after_exit=True),),
+    )
+    trader = AutoTrader(config, use_mock_client=True)
+    trader.position_manager.positions["005930"] = PositionState(
+        "005930",
+        "Retired",
+        quantity=0,
+        position_state=PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value,
+        retire_after_exit=True,
+    )
+    monkeypatch.setattr(trader_main, "in_trade_window", lambda config: True)
+    trader.startup_sync = lambda: AccountSnapshot(1_000_000, 1_000_000, 0, 0, ())
+    calls = {"manual": 0, "evaluate": 0}
+    trader.process_manual_order_requests = lambda snapshot, risk: calls.__setitem__("manual", calls["manual"] + 1)
+    trader.evaluate = lambda position, snapshot, risk: calls.__setitem__("evaluate", calls["evaluate"] + 1)
+
+    trader.run_once()
+
+    # Manual requests are checked once globally before the symbol loop, but the
+    # retired symbol itself must add no per-symbol queue scan or quote evaluation.
+    assert calls == {"manual": 1, "evaluate": 0}
+    assert trader.last_loop_profile["symbols_skipped"] == 1
 
 
 def test_benchmark_loop_uses_copied_db_and_blocks_order_submission(tmp_path) -> None:
