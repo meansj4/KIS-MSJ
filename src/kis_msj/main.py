@@ -413,6 +413,12 @@ class AutoTrader:
                     self.logger.warning("manual_order_request_blocked request_id=%s code=%s side=%s reason=%s", request_id, code, side.value, sizing_block_reason)
                     continue
                 final_block_reason = self.pre_request_block_reason(position, action)
+                if final_block_reason == "recent_order_request" and self.is_market_sell_all_request(manual):
+                    # A stock-level liquidation is represented as one request per LOT so
+                    # fills remain attributable to their original LOTs. Treat those
+                    # requests as one operator-confirmed batch instead of blocking every
+                    # request after the first with the normal per-symbol anti-spam gap.
+                    final_block_reason = ""
                 if final_block_reason:
                     self.store.update_manual_order_request(request_id, status="BLOCKED", block_reason=final_block_reason)
                     self.logger.warning("manual_order_request_blocked request_id=%s code=%s side=%s reason=%s", request_id, code, side.value, final_block_reason)
@@ -421,7 +427,12 @@ class AutoTrader:
                 if interrupt:
                     self.store.update_manual_order_request(request_id, status="BLOCKED", block_reason=interrupt)
                     return
-                order_request = self.order_manager.build_request(position, action, current_price)
+                order_request = self.order_manager.build_request(
+                    position,
+                    action,
+                    current_price,
+                    market_order=str(manual.get("order_type") or "LIMIT_POLICY").upper() == "MARKET",
+                )
                 if order_request is None:
                     self.store.update_manual_order_request(request_id, status="BLOCKED", block_reason="quantity_below_one")
                     continue
@@ -445,6 +456,14 @@ class AutoTrader:
             except Exception as error:  # noqa: BLE001
                 self.store.update_manual_order_request(request_id, status="FAILED", block_reason=type(error).__name__, last_processing_error=str(error))
                 self.logger.exception("manual_order_request_failed request_id=%s code=%s side=%s error=%s", request_id, code, side.value, error)
+
+    @staticmethod
+    def is_market_sell_all_request(manual: dict[str, object]) -> bool:
+        return (
+            str(manual.get("requested_by") or "") == "local_ui_market_sell_all"
+            and str(manual.get("side") or "") == OrderSide.SELL.value
+            and str(manual.get("order_type") or "").upper() == "MARKET"
+        )
 
     def manual_request_block_reason(self, manual: dict[str, object], position: PositionState, account_risk) -> str:
         if not self.config.ui_manual_trading_enabled:

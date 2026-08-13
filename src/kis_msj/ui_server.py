@@ -512,7 +512,8 @@ function rowsForTable(tableId) {
   return [];
 }function rowActions(tableId, row) {
   if (tableId === 'stocks') {
-    return `<div class="rowActions"><button onclick="openStockLots('${esc(row.code)}')">LOT 보기</button><button onclick="openManualBuy('${esc(row.code)}')">수동 매수</button></div>`;
+    const sellDisabled = Number(row.open_lot_count || 0) <= 0 ? 'disabled' : '';
+    return `<div class="rowActions"><button onclick="openStockLots('${esc(row.code)}')">LOT 보기</button><button onclick="openManualBuy('${esc(row.code)}')">수동 매수</button><button class="dangerBtn" ${sellDisabled} onclick="marketSellAll('${esc(row.code)}','${esc(row.name || '')}',${Number(row.open_lot_count || 0)})">시장가 전량매도</button></div>`;
   }
   if (tableId === 'lots' || tableId === 'stockLots') {
     const disabled = Number(row.remaining_quantity || 0) <= 0 || String(row.status || '') === 'CLOSED' ? 'disabled' : '';
@@ -840,6 +841,22 @@ async function openManualSell(code, lotId, remainingQty) {
   document.getElementById('manualSellLot').value = lotId;
   document.getElementById('manualSellQty').value = remainingQty || '';
   document.getElementById('manualSellQty').focus();
+}
+async function marketSellAll(code, name, lotCount) {
+  const preview = await api('/api/manual-orders/market-sell-all/preview', {method:'POST', body:JSON.stringify({code})});
+  if (!preview.can_create) {
+    alert('시장가 전량매도 요청을 만들 수 없습니다: ' + (preview.block_reasons || []).join(', '));
+    return;
+  }
+  const confirmText = prompt(`${name} (${code})의 OPEN LOT ${preview.lot_count}개, 총 ${preview.total_quantity}주를 시장가로 전량매도 요청합니다.\n계속하려면 "시장가 전량매도 확인"을 입력하세요.`);
+  if (confirmText === null) return;
+  const result = await api('/api/manual-orders/market-sell-all', {method:'POST', body:JSON.stringify({code, confirm_text:confirmText})});
+  if (!result.created) {
+    alert('요청 생성 실패: ' + (result.errors || []).join(', '));
+    return;
+  }
+  alert(`시장가 매도 요청 ${result.request_ids.length}건을 생성했습니다. Bot Core가 다음 루프에서 처리합니다.`);
+  await loadStocks();
 }
 async function loadLots() {
   currentView = 'lots';
@@ -1545,6 +1562,12 @@ class UIHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/manual-orders":
                 self._send_json(self.service.create_manual_order_request(data))
+                return
+            if parsed.path == "/api/manual-orders/market-sell-all/preview":
+                self._send_json(self.service.market_sell_all_preview(str(data.get("code", ""))))
+                return
+            if parsed.path == "/api/manual-orders/market-sell-all":
+                self._send_json(self.service.create_market_sell_all_requests(data))
                 return
             if parsed.path == "/api/manual-order-requests/requeue":
                 self._send_json(self.service.requeue_manual_order_request(str(data.get("request_id", "")), str(data.get("confirm_text", "")), str(data.get("operator_note", ""))))

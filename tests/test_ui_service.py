@@ -762,6 +762,136 @@ def test_manual_sell_preview_blocks_closed_and_excess_quantity(tmp_path):
     assert "quantity_exceeds_remaining" in excess["block_reasons"]
 
 
+def test_stock_market_sell_all_creates_one_market_request_per_open_lot(tmp_path):
+    config_path, db_path, _ = _write_config(tmp_path, manual_enabled=True, live_trading=True)
+    store = _seed_store(db_path)
+    store.save_lot(
+        LotState(
+            "LOT-2",
+            "005930",
+            "2026-05-02T09:05:00",
+            buy_price=10500,
+            buy_quantity=3,
+            buy_amount=31500,
+            remaining_quantity=3,
+            target_profit_pct=6.0,
+            target_sell_price=11130,
+            base_target_profit_rate=0.06,
+            effective_target_profit_rate=0.06,
+        )
+    )
+    service = UIService(config_path, tmp_path / "runtime.json")
+
+    preview = service.market_sell_all_preview("005930")
+    assert preview["can_create"] is True
+    assert preview["lot_count"] == 2
+    assert preview["total_quantity"] == 5
+    assert all(item["order_type"] == "MARKET" for item in preview["previews"])
+
+    blocked = service.create_market_sell_all_requests({"code": "005930", "confirm_text": "wrong"})
+    assert blocked["created"] is False
+    assert "market_sell_all_confirm_text_required" in blocked["errors"]
+    assert service.manual_order_requests() == []
+
+    created = service.create_market_sell_all_requests({"code": "005930", "confirm_text": "시장가 전량매도 확인"})
+    assert created["created"] is True
+    requests = service.manual_order_requests()
+    assert len(requests) == 2
+    assert {row["lot_id"] for row in requests} == {"LOT-1", "LOT-2"}
+    assert {row["order_type"] for row in requests} == {"MARKET"}
+
+
+def test_bot_core_builds_market_order_from_manual_request_type(tmp_path):
+    db_path = tmp_path / "state.sqlite3"
+    config = BotConfig(
+        stocks=(StockConfig("005930", "Samsung"),),
+        order=OrderConfig(live_trading=False),
+        storage_path=str(db_path),
+        log_path=str(tmp_path / "bot.log"),
+        ui_manual_trading_enabled=True,
+    )
+    trader = AutoTrader(config, use_mock_client=True)
+    trader.price_sampler = _StableSampler()
+    trader.position_manager.positions["005930"] = PositionState(
+        "005930", "Samsung", quantity=2, current_price=10000, position_state=PositionLifecycle.HOLDING.value
+    )
+    lot = LotState("LOT-MARKET", "005930", datetime.now().isoformat(), 9000, 2, 18000, 2, 6.0, 9540, 0.06, 0.06)
+    trader.lot_manager.lots[lot.lot_id] = lot
+    trader.store.save_position(trader.position_manager.positions["005930"])
+    trader.store.save_lots(trader.lot_manager.lots.values())
+    trader.store.create_manual_order_request({
+        "request_id": "MANUAL-MARKET",
+        "source": "local_ui_manual",
+        "requested_by": "test",
+        "requested_at": datetime.now().isoformat(timespec="seconds"),
+        "code": "005930",
+        "side": "SELL",
+        "quantity": 2,
+        "lot_id": "LOT-MARKET",
+        "order_type": "MARKET",
+        "preview_json": "{}",
+        "runtime_snapshot_json": "{}",
+        "live_trading": False,
+        "confirm_text_verified": True,
+        "status": "REQUESTED",
+    })
+
+    trader.process_manual_order_requests(AccountSnapshot(10_000_000, 10_000_000, 0, 0), RiskDecision(True))
+
+    with sqlite3.connect(db_path) as connection:
+        market_order = connection.execute("SELECT market_order FROM orders").fetchone()[0]
+    assert market_order == 1
+    assert trader.store.manual_order_requests()[0]["status"] == "FILLED"
+
+
+def test_market_sell_all_batch_does_not_block_second_lot_as_recent_order(tmp_path):
+    db_path = tmp_path / "state.sqlite3"
+    config = BotConfig(
+        stocks=(StockConfig("005930", "Samsung"),),
+        order=OrderConfig(live_trading=False, min_order_request_interval_seconds=600),
+        storage_path=str(db_path),
+        log_path=str(tmp_path / "bot.log"),
+        ui_manual_trading_enabled=True,
+    )
+    trader = AutoTrader(config, use_mock_client=True)
+    trader.price_sampler = _StableSampler()
+    trader.position_manager.positions["005930"] = PositionState(
+        "005930", "Samsung", quantity=3, current_price=10000, position_state=PositionLifecycle.HOLDING.value
+    )
+    for lot_id, quantity in (("LOT-BATCH-1", 1), ("LOT-BATCH-2", 2)):
+        lot = LotState(lot_id, "005930", datetime.now().isoformat(), 9000, quantity, 9000 * quantity, quantity, 6.0, 9540, 0.06, 0.06)
+        trader.lot_manager.lots[lot_id] = lot
+        trader.store.create_manual_order_request({
+            "request_id": f"MANUAL-{lot_id}",
+            "source": "local_ui_manual",
+            "requested_by": "local_ui_market_sell_all",
+            "requested_at": datetime.now().isoformat(timespec="seconds"),
+            "code": "005930",
+            "side": "SELL",
+            "quantity": quantity,
+            "lot_id": lot_id,
+            "order_type": "MARKET",
+            "preview_json": "{}",
+            "runtime_snapshot_json": "{}",
+            "live_trading": False,
+            "confirm_text_verified": True,
+            "status": "REQUESTED",
+        })
+    trader.store.save_position(trader.position_manager.positions["005930"])
+    trader.store.save_lots(trader.lot_manager.lots.values())
+
+    trader.process_manual_order_requests(AccountSnapshot(10_000_000, 10_000_000, 0, 0), RiskDecision(True))
+
+    requests = trader.store.manual_order_requests()
+    assert [row["status"] for row in requests] == ["FILLED", "FILLED"]
+    assert all(row["block_reason"] != "recent_order_request" for row in requests)
+
+
+def test_stock_tab_exposes_market_sell_all_action():
+    assert "시장가 전량매도" in INDEX_HTML
+    assert "/api/manual-orders/market-sell-all" in INDEX_HTML
+
+
 class _StableSampler:
     def sample(self, code, name):
         return (Quote(code, 10000, datetime.now(), name),)

@@ -20,7 +20,14 @@ class OrderManager:
         self.store = store
         self.logger = logger
 
-    def build_request(self, position: PositionState, action: StrategyAction, current_price: int) -> OrderRequest | None:
+    def build_request(
+        self,
+        position: PositionState,
+        action: StrategyAction,
+        current_price: int,
+        *,
+        market_order: bool = False,
+    ) -> OrderRequest | None:
         if action.side is OrderSide.BUY:
             limit_price = action.limit_price if action.limit_price > 0 else self.buy_limit_price(current_price)
             quantity = action.amount // current_price
@@ -37,7 +44,7 @@ class OrderManager:
             limit_price,
             action.reason,
             action.lot_id,
-            False,
+            market_order,
             action.sell_reason,
             action.reentry_type,
             action.cleanup_flag,

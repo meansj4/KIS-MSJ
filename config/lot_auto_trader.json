@@ -4694,7 +4694,7 @@
     }
   ],
   "strategy": {
-    "review_loss_pct": -20,
+    "review_loss_pct": -30,
     "max_open_lots_before_review": 12,
     "pnl_minus_threshold": -0.01,
     "pnl_plus_threshold": 0.01,
@@ -4725,7 +4725,7 @@
     "stale_lot_loss_rate": -0.15,
     "stale_lot_min_age_weeks": 8,
     "stale_lot_price_gap_rate": -0.1,
-    "review_symbol_loss_rate": -0.2,
+    "review_symbol_loss_rate": -0.3,
     "lot_sizing_mode": "cycle_locked_by_entry_price",
     "price_lot_bands": [
       {

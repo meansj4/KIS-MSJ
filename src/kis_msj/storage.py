@@ -210,6 +210,7 @@ class StateStore:
             _ensure_column(connection, "orders", "sell_reason", "TEXT NOT NULL DEFAULT 'UNKNOWN'")
             _ensure_column(connection, "orders", "reentry_type", "TEXT NOT NULL DEFAULT 'NONE'")
             _ensure_column(connection, "orders", "cleanup_flag", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "orders", "market_order", "INTEGER NOT NULL DEFAULT 0")
             _ensure_column(connection, "orders", "config_hash", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(connection, "orders", "config_version", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(connection, "orders", "run_id", "TEXT NOT NULL DEFAULT ''")
@@ -832,11 +833,11 @@ class StateStore:
                 """
                 INSERT INTO orders (
                     order_id, code, side, quantity, limit_price, status, reason, lot_id, message,
-                    sell_reason, reentry_type, cleanup_flag, config_hash, config_version, run_id,
+                    sell_reason, reentry_type, cleanup_flag, market_order, config_hash, config_version, run_id,
                     experiment_name, requested_at, cancel_requested, cancel_confirmed,
                     cancel_rejected, filled_after_cancel_request
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(order_id) DO UPDATE SET
                     code=CASE WHEN excluded.status = 'REQUESTED' OR orders.code != excluded.code OR orders.side != excluded.side THEN excluded.code ELSE orders.code END,
                     side=CASE WHEN excluded.status = 'REQUESTED' OR orders.code != excluded.code OR orders.side != excluded.side THEN excluded.side ELSE orders.side END,
@@ -849,6 +850,7 @@ class StateStore:
                     sell_reason=CASE WHEN excluded.status = 'REQUESTED' OR orders.code != excluded.code OR orders.side != excluded.side THEN excluded.sell_reason ELSE orders.sell_reason END,
                     reentry_type=CASE WHEN excluded.status = 'REQUESTED' OR orders.code != excluded.code OR orders.side != excluded.side THEN excluded.reentry_type ELSE orders.reentry_type END,
                     cleanup_flag=CASE WHEN excluded.status = 'REQUESTED' OR orders.code != excluded.code OR orders.side != excluded.side THEN excluded.cleanup_flag ELSE orders.cleanup_flag END,
+                    market_order=CASE WHEN excluded.status = 'REQUESTED' OR orders.code != excluded.code OR orders.side != excluded.side THEN excluded.market_order ELSE orders.market_order END,
                     config_hash=CASE WHEN excluded.status = 'REQUESTED' OR orders.code != excluded.code OR orders.side != excluded.side THEN excluded.config_hash ELSE orders.config_hash END,
                     config_version=CASE WHEN excluded.status = 'REQUESTED' OR orders.code != excluded.code OR orders.side != excluded.side THEN excluded.config_version ELSE orders.config_version END,
                     run_id=CASE WHEN excluded.status = 'REQUESTED' OR orders.code != excluded.code OR orders.side != excluded.side THEN excluded.run_id ELSE orders.run_id END,
@@ -873,6 +875,7 @@ class StateStore:
                     request.sell_reason,
                     request.reentry_type,
                     int(request.cleanup_flag),
+                    int(request.market_order),
                     self.active_config_hash,
                     self.active_config_version,
                     self.active_run_id,
@@ -1061,7 +1064,7 @@ class StateStore:
                 int(row["limit_price"]),
                 str(row["reason"]),
                 str(row["lot_id"]),
-                False,
+                bool(row["market_order"]),
                 str(row["sell_reason"]),
                 str(row["reentry_type"]),
                 bool(row["cleanup_flag"]),

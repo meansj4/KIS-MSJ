@@ -2218,6 +2218,7 @@ class UIService:
         quantity = int(payload.get("quantity") or 0)
         amount = int(payload.get("amount") or 0)
         lot_id = str(payload.get("lot_id") or "")
+        order_type = str(payload.get("order_type") or "LIMIT_POLICY").upper()
         positions = {row["code"]: row for row in self.positions()}
         position = positions.get(code, {"code": code, "position_state": PositionLifecycle.NEVER_BOUGHT.value})
         lots = {row["lot_id"]: row for row in self.lots()}
@@ -2235,6 +2236,10 @@ class UIService:
             block_reasons.append("ui_manual_trading_disabled")
         if side not in {OrderSide.BUY.value, OrderSide.SELL.value}:
             block_reasons.append("invalid_side")
+        if order_type not in {"LIMIT_POLICY", "MARKET"}:
+            block_reasons.append("invalid_order_type")
+        if order_type == "MARKET" and side != OrderSide.SELL.value:
+            block_reasons.append("market_order_sell_only")
         if runtime.get("all_orders_paused"):
             block_reasons.append("runtime_all_orders_paused")
         if position.get("sync_status") == PositionLifecycle.SYNC_REQUIRED.value or position.get("position_state") == PositionLifecycle.SYNC_REQUIRED.value:
@@ -2299,6 +2304,7 @@ class UIService:
             "code": code,
             "name": position.get("name") or lot.get("name", ""),
             "side": side,
+            "order_type": order_type,
             "quantity": quantity,
             "amount": amount,
             "lot_id": lot_id,
@@ -2344,7 +2350,7 @@ class UIService:
             "quantity": preview["quantity"],
             "current_price": preview["current_price"],
             "lot_id": preview["lot_id"],
-            "order_type": "LIMIT_POLICY",
+            "order_type": preview["order_type"],
             "preview_json": json.dumps(preview, ensure_ascii=False),
             "runtime_snapshot_json": json.dumps(preview["runtime_snapshot"], ensure_ascii=False),
             "live_trading": preview["live_trading"],
@@ -2361,6 +2367,68 @@ class UIService:
         self._cache_clear()
         self._append_audit_log("manual_order_request_created", request)
         return {"created": True, "request_id": request_id, "preview": preview}
+
+    def market_sell_all_preview(self, code: str) -> dict[str, Any]:
+        code = str(code or "").zfill(6)
+        open_lots = [
+            row for row in self.lots()
+            if str(row.get("code") or "").zfill(6) == code
+            and int(row.get("remaining_quantity") or 0) > 0
+            and str(row.get("status") or "") != "CLOSED"
+        ]
+        previews = [
+            self.manual_order_preview({
+                "side": "SELL",
+                "code": code,
+                "lot_id": row["lot_id"],
+                "quantity": int(row["remaining_quantity"]),
+                "order_type": "MARKET",
+                "confirm_text": "수동주문 확인",
+                "requested_by": "local_ui_market_sell_all",
+            })
+            for row in open_lots
+        ]
+        block_reasons = sorted({reason for item in previews for reason in item["block_reasons"]})
+        if not open_lots:
+            block_reasons.append("no_open_lots")
+        return {
+            "can_create": not block_reasons,
+            "code": code,
+            "name": previews[0].get("name", "") if previews else "",
+            "order_type": "MARKET",
+            "lot_count": len(open_lots),
+            "total_quantity": sum(int(row["remaining_quantity"]) for row in open_lots),
+            "block_reasons": block_reasons,
+            "previews": previews,
+            "order_api_called": False,
+        }
+
+    def create_market_sell_all_requests(self, payload: dict[str, Any]) -> dict[str, Any]:
+        code = str(payload.get("code") or "").zfill(6)
+        preview = self.market_sell_all_preview(code)
+        if str(payload.get("confirm_text") or "") != "시장가 전량매도 확인":
+            preview["block_reasons"] = [*preview["block_reasons"], "market_sell_all_confirm_text_required"]
+            preview["can_create"] = False
+        if not preview["can_create"]:
+            self._append_audit_log("market_sell_all_requests_blocked", preview)
+            return {"created": False, "preview": preview, "errors": preview["block_reasons"]}
+        created = []
+        for item in preview["previews"]:
+            result = self.create_manual_order_request({
+                "side": "SELL",
+                "code": code,
+                "lot_id": item["lot_id"],
+                "quantity": item["quantity"],
+                "current_price": item["current_price"],
+                "order_type": "MARKET",
+                "confirm_text": "수동주문 확인",
+                "requested_by": "local_ui_market_sell_all",
+            })
+            if result.get("created"):
+                created.append(result["request_id"])
+        result = {"created": len(created) == preview["lot_count"], "request_ids": created, "preview": preview}
+        self._append_audit_log("market_sell_all_requests_created", result)
+        return result
 
     def _manual_buy_lot_sizing_preview(self, position: dict[str, Any], current_price: int, open_lot_count: int, fallback_entry_price: int = 0) -> dict[str, Any]:
         strategy = self.config.strategy
