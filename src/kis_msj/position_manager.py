@@ -159,15 +159,12 @@ class PositionManager:
             self._mark_trade_stopped_after_exit(position)
             return PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value
         if position.position_state == PositionLifecycle.COOLDOWN_AFTER_CLEANUP.value:
-            cooldown_until = _parse_time(position.cleanup_reentry_cooldown_until)
-            if cooldown_until is not None and datetime.now() < cooldown_until:
-                return PositionLifecycle.COOLDOWN_AFTER_CLEANUP.value
-            if self.config.cleanup_auto_return_to_wait_reentry:
-                return PositionLifecycle.WAIT_REENTRY.value
-            position.needs_review = True
-            position.review_reason = "cleanup_cooldown_complete"
-            position.auto_buy_enabled = False
-            return PositionLifecycle.REVIEW_REQUIRED.value
+            # Compatibility migration for positions saved before cleanup cooldowns
+            # were removed. Cleanup exits now use the normal reentry lifecycle.
+            position.position_state = PositionLifecycle.WAIT_REENTRY.value
+            position.cleanup_buy_cooldown_until = ""
+            position.cleanup_reentry_cooldown_until = ""
+            position.skip_reason = ""
         if position.last_fill_side == OrderSide.SELL.value or any(lot.code == position.code for lot in self.lot_manager.lots.values()):
             return PositionLifecycle.WAIT_REENTRY.value
         return PositionLifecycle.NEVER_BOUGHT.value
@@ -293,30 +290,23 @@ class PositionManager:
             position.anchor_single_fill = position.cycle_sell_fill_count == 1
             position.anchor_confidence = "LOW" if position.anchor_single_fill else "NORMAL"
             if sell_reason in {SellReason.CLEANUP_SELL.value, SellReason.AUTO_DECAY_CLEANUP_SELL.value}:
-                # Cleanup cooldowns are intentionally calendar-day based. A trading-day
-                # calendar can replace this later if holiday/weekend precision matters.
-                position.cleanup_buy_cooldown_until = (fill.filled_at + timedelta(days=self.config.cleanup_buy_cooldown_days)).isoformat(timespec="seconds")
+                position.cleanup_buy_cooldown_until = ""
+                position.cleanup_reentry_cooldown_until = ""
                 position.cleanup_sell_price = fill.price
                 position.cleanup_time = fill.filled_at.isoformat(timespec="seconds")
             if not self.lot_manager.open_lots(fill.code):
-                if sell_reason in {SellReason.CLEANUP_SELL.value, SellReason.AUTO_DECAY_CLEANUP_SELL.value}:
-                    position.position_state = PositionLifecycle.COOLDOWN_AFTER_CLEANUP.value
-                    # Calendar-day cooldown; see cleanup_buy_cooldown_until above.
-                    position.cleanup_reentry_cooldown_until = (fill.filled_at + timedelta(days=self.config.cleanup_reentry_cooldown_days)).isoformat(timespec="seconds")
-                    position.skip_reason = "cleanup_cooldown"
-                else:
-                    position.position_state = PositionLifecycle.WAIT_REENTRY.value
-                    normal_anchor, trailing_anchor = _cycle_reentry_anchors(position, fill.price)
-                    position.normal_exit_anchor_price = normal_anchor
-                    position.trailing_exit_anchor_price = trailing_anchor
-                    # Deprecated compatibility field: keep it equal to the conservative
-                    # normal reentry anchor, but do not use it as the primary condition.
-                    position.exit_anchor_price = normal_anchor
-                    position.reentry_anchor_price = normal_anchor
-                    position.cycle_last_sell_price = fill.price
-                    position.post_exit_high_price = trailing_anchor
-                    position.exit_time = fill.filled_at.isoformat(timespec="seconds")
-                    position.skip_reason = "wait_reentry"
+                position.position_state = PositionLifecycle.WAIT_REENTRY.value
+                normal_anchor, trailing_anchor = _cycle_reentry_anchors(position, fill.price)
+                position.normal_exit_anchor_price = normal_anchor
+                position.trailing_exit_anchor_price = trailing_anchor
+                # Deprecated compatibility field: keep it equal to the conservative
+                # normal reentry anchor, but do not use it as the primary condition.
+                position.exit_anchor_price = normal_anchor
+                position.reentry_anchor_price = normal_anchor
+                position.cycle_last_sell_price = fill.price
+                position.post_exit_high_price = trailing_anchor
+                position.exit_time = fill.filled_at.isoformat(timespec="seconds")
+                position.skip_reason = "wait_reentry"
         position.last_fill_price = fill.price
         position.last_fill_side = fill.side.value
         position.last_order_id = fill.order_id

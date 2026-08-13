@@ -568,7 +568,7 @@ def test_update_reentry_tracking_only_updates_wait_reentry() -> None:
     assert position.post_exit_high_price == 11500
 
 
-def test_auto_decay_cleanup_sell_partial_keeps_holding_and_sets_buy_cooldown() -> None:
+def test_auto_decay_cleanup_sell_partial_keeps_holding_without_buy_cooldown() -> None:
     strategy_config = StrategyConfig(cleanup_enabled=True, estimated_fee_tax_pct=0)
     _, _, positions, strategy, risk, snapshot = setup_strategy(strategy_config, daily_profit_loss=10_000)
     old = add_lot(positions, "005930", 10000, 1)
@@ -582,10 +582,10 @@ def test_auto_decay_cleanup_sell_partial_keeps_holding_and_sets_buy_cooldown() -
 
     position = positions.apply_fill(TradeFill("005930", "Test", OrderSide.SELL, 1, 9700, "SELL-1", datetime.now(), old.lot_id, sell_reason=action.sell_reason))
     assert position.position_state == PositionLifecycle.HOLDING.value
-    assert position.cleanup_buy_cooldown_until
+    assert not position.cleanup_buy_cooldown_until
 
 
-def test_auto_decay_cleanup_sell_full_exit_sets_cleanup_cooldown() -> None:
+def test_auto_decay_cleanup_sell_full_exit_enters_normal_wait_reentry() -> None:
     strategy_config = StrategyConfig(cleanup_enabled=True, estimated_fee_tax_pct=0)
     _, _, positions, strategy, risk, snapshot = setup_strategy(strategy_config, daily_profit_loss=10_000)
     old = add_lot(positions, "005930", 10000, 1)
@@ -597,8 +597,10 @@ def test_auto_decay_cleanup_sell_full_exit_sets_cleanup_cooldown() -> None:
     assert action.sell_reason == SellReason.AUTO_DECAY_CLEANUP_SELL.value
 
     position = positions.apply_fill(TradeFill("005930", "Test", OrderSide.SELL, 1, 9700, "SELL-1", datetime.now(), old.lot_id, sell_reason=action.sell_reason))
-    assert position.position_state == PositionLifecycle.COOLDOWN_AFTER_CLEANUP.value
-    assert position.cleanup_reentry_cooldown_until
+    assert position.position_state == PositionLifecycle.WAIT_REENTRY.value
+    assert not position.cleanup_reentry_cooldown_until
+    assert position.exit_time
+    assert position.reentry_anchor_price == 9700
 
 
 def test_auto_decay_cleanup_sell_prefers_oldest_allowed_lot_over_smaller_loss() -> None:
@@ -617,31 +619,19 @@ def test_auto_decay_cleanup_sell_prefers_oldest_allowed_lot_over_smaller_loss() 
     assert action.lot_id == old_larger_loss.lot_id
 
 
-def test_cleanup_cooldown_blocks_reentry_even_when_price_drops() -> None:
-    _, _, positions, strategy, risk, snapshot = setup_strategy()
-    position = positions.get("005930", "Test")
-    position.position_state = PositionLifecycle.COOLDOWN_AFTER_CLEANUP.value
-    position.exit_anchor_price = 10600
-    position.reentry_anchor_price = 10600
-    position.cleanup_reentry_cooldown_until = (datetime.now() + timedelta(days=5)).isoformat(timespec="seconds")
-
-    action = strategy.decide(position, 10000, snapshot, risk.account_buy_allowed(snapshot, positions.positions), risk.symbol_buy_allowed(position))
-    context = strategy.context(position, 10000)
-
-    assert action is None
-    assert context.skip_reason == "cleanup_cooldown"
-
-
-def test_cleanup_cooldown_expiry_returns_review_by_default() -> None:
+def test_legacy_cleanup_cooldown_state_migrates_to_wait_reentry() -> None:
     _, _, positions, _, _, _ = setup_strategy()
     position = positions.get("005930", "Test")
     position.position_state = PositionLifecycle.COOLDOWN_AFTER_CLEANUP.value
-    position.cleanup_reentry_cooldown_until = (datetime.now() - timedelta(days=1)).isoformat(timespec="seconds")
+    position.last_fill_side = OrderSide.SELL.value
+    position.cleanup_buy_cooldown_until = (datetime.now() + timedelta(days=3)).isoformat(timespec="seconds")
+    position.cleanup_reentry_cooldown_until = (datetime.now() + timedelta(days=5)).isoformat(timespec="seconds")
 
     position = positions.refresh_from_lots("005930", 9500)
 
-    assert position.position_state == PositionLifecycle.REVIEW_REQUIRED.value
-    assert position.review_reason == "cleanup_cooldown_complete"
+    assert position.position_state == PositionLifecycle.WAIT_REENTRY.value
+    assert not position.cleanup_buy_cooldown_until
+    assert not position.cleanup_reentry_cooldown_until
 
 
 def test_auto_decay_cleanup_sell_is_not_blocked_by_cleanup_loss_budget() -> None:
@@ -1077,7 +1067,7 @@ def test_sync_required_blocks_auto_decay_cleanup_sell() -> None:
     assert position.skip_reason == "sync_required"
 
 
-def test_auto_decay_cleanup_sell_fill_uses_cleanup_lifecycle() -> None:
+def test_auto_decay_cleanup_sell_fill_uses_normal_reentry_lifecycle() -> None:
     strategy_config = StrategyConfig(estimated_fee_tax_pct=0)
     _, _, positions, strategy, risk, snapshot = setup_strategy(strategy_config)
     lot = add_lot(positions, "005930", 10000, 1)
@@ -1091,8 +1081,8 @@ def test_auto_decay_cleanup_sell_fill_uses_cleanup_lifecycle() -> None:
     position = positions.apply_fill(TradeFill("005930", "Test", OrderSide.SELL, 1, 9800, "SELL-1", datetime.now(), lot.lot_id, sell_reason=action.sell_reason))
 
     assert lot.status == "CLOSED"
-    assert position.position_state == PositionLifecycle.COOLDOWN_AFTER_CLEANUP.value
-    assert position.cleanup_reentry_cooldown_until
+    assert position.position_state == PositionLifecycle.WAIT_REENTRY.value
+    assert not position.cleanup_reentry_cooldown_until
 
 
 def test_risk_blocked_blocks_buy_and_sell_conservatively() -> None:

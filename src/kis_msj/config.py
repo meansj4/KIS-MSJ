@@ -122,9 +122,6 @@ class StrategyConfig:
     cleanup_min_age_weeks: int = 12
     cleanup_min_target_rate: float = -0.04
     cleanup_profit_offset_ratio: float = 0.3
-    cleanup_buy_cooldown_days: int = 3
-    cleanup_reentry_cooldown_days: int = 5
-    cleanup_auto_return_to_wait_reentry: bool = False
     deep_loss_recovery_enabled: bool = False
     deep_loss_threshold_rate: float = -0.40
     deep_loss_initial_rebound_rate: float = 0.10

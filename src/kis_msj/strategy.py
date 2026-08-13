@@ -650,7 +650,7 @@ class LotGridStrategy:
         if position.position_state == PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value or position.retire_after_exit:
             return PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value
         if position.position_state == PositionLifecycle.COOLDOWN_AFTER_CLEANUP.value:
-            return PositionLifecycle.COOLDOWN_AFTER_CLEANUP.value
+            return PositionLifecycle.WAIT_REENTRY.value
         if position.position_state == PositionLifecycle.WAIT_REENTRY.value or position.last_fill_side == OrderSide.SELL.value:
             return PositionLifecycle.WAIT_REENTRY.value
         return PositionLifecycle.NEVER_BOUGHT.value
@@ -851,8 +851,6 @@ class LotGridStrategy:
         retire_block = self._retire_buy_block_reason(position, state, current_price)
         if retire_block:
             return retire_block
-        if state == PositionLifecycle.COOLDOWN_AFTER_CLEANUP.value:
-            return "cleanup_cooldown"
         if state == PositionLifecycle.WAIT_REENTRY.value and _parse_time(position.exit_time) is None:
             return "REENTRY_BLOCKED_MISSING_EXIT_TIME"
         if state == PositionLifecycle.WAIT_REENTRY.value and self.force_reentry_eligible(position, current_price):
@@ -867,11 +865,6 @@ class LotGridStrategy:
 
     def _buy_block_reason(self, position: PositionState) -> str:
         state = self._position_state(position)
-        if state == PositionLifecycle.COOLDOWN_AFTER_CLEANUP.value:
-            return "cleanup_cooldown"
-        cooldown_until = _parse_time(position.cleanup_buy_cooldown_until)
-        if cooldown_until is not None and datetime.now() < cooldown_until:
-            return "cleanup_buy_cooldown"
         if position.last_reentry_type != ReentryType.NONE.value:
             elapsed = None
             last_order_time = _parse_time(position.last_order_time)
