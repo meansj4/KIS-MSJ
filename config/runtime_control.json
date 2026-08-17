@@ -1,14 +1,14 @@
 {
   "bot_paused": false,
-  "config_reload_requested": false,
-  "config_reload_requested_at": "",
+  "config_reload_requested": true,
+  "config_reload_requested_at": "2026-08-18T00:42:44",
   "all_orders_paused": false,
   "buy_paused": false,
   "sell_paused": false,
   "cleanup_paused": false,
   "reentry_paused": false,
-  "reason": "kctc_sync_repair_completed",
-  "updated_at": "2026-06-19T15:00:00",
+  "reason": "user_expansion_20260818",
+  "updated_at": "2026-08-18T00:43:39",
   "updated_by": "codex",
   "expires_at": ""
 }
