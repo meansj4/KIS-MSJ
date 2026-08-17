@@ -108,6 +108,23 @@ def test_retired_after_exit_symbol_is_skipped_before_manual_and_quote_work(tmp_p
     assert trader.last_loop_profile["symbols_skipped"] == 1
 
 
+def test_unchanged_no_action_decision_is_throttled_but_action_is_immediate(tmp_path, monkeypatch) -> None:
+    config = replace(_config(tmp_path), decision_record_interval_seconds=300)
+    trader = AutoTrader(config, use_mock_client=True)
+    position = trader.position_manager.get("005930", "Test")
+    now = {"value": 1000.0}
+    monkeypatch.setattr(trader_main.time, "monotonic", lambda: now["value"])
+    trader._last_decision_record_at.clear()
+
+    assert trader.should_record_symbol_decision(position, position.position_state, False, "") is True
+    trader._last_decision_record_at[position.code] = now["value"]
+    assert trader.should_record_symbol_decision(position, position.position_state, False, "") is False
+    assert trader.should_record_symbol_decision(position, position.position_state, True, "") is True
+    assert trader.should_record_symbol_decision(position, position.position_state, False, "blocked") is True
+    now["value"] += 300
+    assert trader.should_record_symbol_decision(position, position.position_state, False, "") is True
+
+
 def test_benchmark_loop_uses_copied_db_and_blocks_order_submission(tmp_path) -> None:
     config = _config(tmp_path)
     config_path = tmp_path / "config.json"

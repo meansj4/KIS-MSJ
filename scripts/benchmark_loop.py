@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import shutil
+import sqlite3
 import sys
 from dataclasses import replace
 from datetime import datetime
@@ -44,7 +44,10 @@ def benchmark_config(config: BotConfig, args: argparse.Namespace, run_dir: Path)
     source_db = Path(config.storage_path)
     benchmark_db = run_dir / "benchmark_state.sqlite3"
     if source_db.exists():
-        shutil.copy2(source_db, benchmark_db)
+        # A live SQLite database may have committed pages in its WAL. Copying
+        # only the main file can produce a malformed benchmark database.
+        with sqlite3.connect(source_db) as source, sqlite3.connect(benchmark_db) as target:
+            source.backup(target)
     order = config.order
     if args.price_sample_interval >= 0:
         order = replace(order, price_sample_interval_seconds=args.price_sample_interval)

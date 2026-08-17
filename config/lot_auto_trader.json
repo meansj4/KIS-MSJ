@@ -6026,6 +6026,7 @@
   "loop_interval_seconds": 15,
   "loop_profiling_enabled": true,
   "loop_interval_warning_min_seconds": 60,
+  "decision_record_interval_seconds": 300,
   "max_loop_count": null,
   "ui_manual_trading_enabled": true,
   "experiment": {

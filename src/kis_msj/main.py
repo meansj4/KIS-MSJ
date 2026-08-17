@@ -86,6 +86,13 @@ class AutoTrader:
         self._last_loop_interval_warning_at = 0.0
         self._completed_session_cache_date = ""
         self._completed_session_prices: dict[str, tuple[str, int, str]] = {}
+        decision_interval = max(0.0, config.decision_record_interval_seconds)
+        decision_schedule_now = time.monotonic()
+        decision_schedule_count = max(1, len(config.stocks))
+        self._last_decision_record_at: dict[str, float] = {
+            stock.code: decision_schedule_now - decision_interval * (index / decision_schedule_count)
+            for index, stock in enumerate(config.stocks)
+        }
 
     def reload_config(self, config: BotConfig, *, use_mock_client: bool = False) -> None:
         self.__init__(config, use_mock_client=use_mock_client)
@@ -262,13 +269,6 @@ class AutoTrader:
                         if profile:
                             profile.symbols_skipped += 1
                         continue
-                    with profile.stage("manual_request") if profile else _null_stage():
-                        self.process_manual_order_requests(snapshot, account_risk)
-                    with profile.stage("runtime_control") if profile else _null_stage():
-                        interrupt = self.runtime_interrupt_reason(f"after_manual_requests_{stock.code}")
-                    if interrupt:
-                        status = interrupt
-                        return interrupt
                     position = self.position_manager.get(stock.code, stock.name)
                     self.apply_stock_retirement_config(position, stock)
                     if stock.danger_state:
@@ -782,20 +782,22 @@ class AutoTrader:
                     self.store.save_position(position)
             else:
                 self.store.save_position(position)
-        with profile.stage("decision_logging") if profile else _null_stage():
-            self.log_symbol_decision(
-                position,
-                current_price,
-                snapshot,
-                account_risk,
-                symbol_risk,
-                action.reason if action else "NONE",
-                portfolio_preview,
-                final_block_reason,
-                action_created,
-                samples=final_samples,
-                previous_position_state=previous_position_state,
-            )
+        if self.should_record_symbol_decision(position, previous_position_state, action_created, final_block_reason):
+            with profile.stage("decision_logging") if profile else _null_stage():
+                self.log_symbol_decision(
+                    position,
+                    current_price,
+                    snapshot,
+                    account_risk,
+                    symbol_risk,
+                    action.reason if action else "NONE",
+                    portfolio_preview,
+                    final_block_reason,
+                    action_created,
+                    samples=final_samples,
+                    previous_position_state=previous_position_state,
+                )
+            self._last_decision_record_at[position.code] = time.monotonic()
         if action is None:
             return
         if final_block_reason:
@@ -821,6 +823,19 @@ class AutoTrader:
         self.store.save_position(updated)
         self.store.save_lots(self.lot_manager.lots.values())
         self.logger.info("fill_applied code=%s side=%s qty=%s price=%s lot_id=%s order_id=%s", fill.code, fill.side.value, fill.quantity, fill.price, fill.lot_id, fill.order_id)
+
+    def should_record_symbol_decision(
+        self,
+        position: PositionState,
+        previous_position_state: str,
+        action_created: bool,
+        final_block_reason: str,
+    ) -> bool:
+        if action_created or final_block_reason or position.position_state != previous_position_state:
+            return True
+        interval = max(0.0, self.config.decision_record_interval_seconds)
+        last_recorded = self._last_decision_record_at.get(position.code)
+        return interval == 0 or last_recorded is None or time.monotonic() - last_recorded >= interval
 
     def auto_recheck_review_required(self, position: PositionState, current_price: int) -> PositionState:
         if not (position.needs_review or position.position_state == PositionLifecycle.REVIEW_REQUIRED.value):
