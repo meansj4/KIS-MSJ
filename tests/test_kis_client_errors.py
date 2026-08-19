@@ -9,7 +9,7 @@ import pytest
 
 from kis_msj.config import KisAccountConfig
 from kis_msj.domestic_quote import is_rate_limit_error
-from kis_msj.kis_client import BALANCE_PATH, DAILY_FILL_PATH, KisApiError, KisClient
+from kis_msj.kis_client import BALANCE_PATH, BUYABLE_CASH_PATH, DAILY_FILL_PATH, KisApiError, KisClient
 from kis_msj.models import OrderSide
 
 
@@ -189,8 +189,13 @@ def test_account_snapshot_reads_all_balance_pages(monkeypatch: pytest.MonkeyPatc
 
     def response(method, path, *, params=None, body=None, tr_id="", tr_cont=""):  # noqa: ANN001, ANN202
         calls.append({"params": dict(params or {}), "tr_cont": tr_cont})
+        if path == BUYABLE_CASH_PATH:
+            assert tr_id == "TTTC8908R"
+            assert params["PDNO"] == "005930"
+            assert params["ORD_UNPR"] == "71000"
+            return {"output": {"ord_psbl_cash": "900000", "nrcvb_buy_amt": "850000"}}
         assert path == BALANCE_PATH
-        if len(calls) == 1:
+        if len([call for call in calls if "CTX_AREA_FK100" in call["params"]]) == 1:
             return {
                 "output1": [{"pdno": "005930", "prdt_name": "삼성전자", "hldg_qty": "2", "pchs_avg_pric": "70000", "prpr": "71000"}],
                 "output2": [{"dnca_tot_amt": "1000000", "tot_evlu_amt": "1200000"}],
@@ -214,9 +219,29 @@ def test_account_snapshot_reads_all_balance_pages(monkeypatch: pytest.MonkeyPatc
     snapshot = client.account_snapshot()
 
     assert [item.code for item in snapshot.positions] == ["005930", "000660"]
-    assert len(calls) == 2
+    assert snapshot.cash_available == 850000
+    assert len(calls) == 3
     assert calls[0]["tr_cont"] == ""
     assert sleeps == [1.0]
+
+
+def test_account_snapshot_does_not_fall_back_to_deposit_when_buyable_cash_is_zero() -> None:
+    client = _client()
+
+    def response(method, path, *, params=None, body=None, tr_id="", tr_cont=""):  # noqa: ANN001, ANN202
+        if path == BALANCE_PATH:
+            return {
+                "output1": [{"pdno": "005930", "prdt_name": "Samsung", "hldg_qty": "1", "prpr": "70000"}],
+                "output2": [{"dnca_tot_amt": "69000000", "tot_evlu_amt": "100000000"}],
+                "ctx_area_fk100": "",
+                "ctx_area_nk100": "",
+            }
+        assert path == BUYABLE_CASH_PATH
+        return {"output": {"ord_psbl_cash": "500000", "nrcvb_buy_amt": "0"}}
+
+    client._request = response
+
+    assert client.account_snapshot().cash_available == 0
 
 
 def test_balance_snapshot_rows_reads_all_balance_pages() -> None:

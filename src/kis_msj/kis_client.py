@@ -22,6 +22,7 @@ from .models import AccountSnapshot, BalanceItem, OrderRequest, OrderResult, Ord
 ORDER_CASH_PATH = "/uapi/domestic-stock/v1/trading/order-cash"
 ORDER_CANCEL_PATH = "/uapi/domestic-stock/v1/trading/order-rvsecncl"
 BALANCE_PATH = "/uapi/domestic-stock/v1/trading/inquire-balance"
+BUYABLE_CASH_PATH = "/uapi/domestic-stock/v1/trading/inquire-psbl-order"
 DAILY_FILL_PATH = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
 OPEN_ORDER_PATH = "/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl"
 HASHKEY_PATH = "/uapi/hashkey"
@@ -112,13 +113,48 @@ class KisClient:
         if len(pages) > 1:
             self.logger.info("account_snapshot_paged pages=%s raw_row_count=%s", len(pages), len(rows))
         positions = tuple(_balance(row) for row in rows if int(float(row.get("hldg_qty") or 0)) > 0)
+        cash_available = self._buyable_cash(rows)
+        deposit_total = int(float(summary.get("dnca_tot_amt") or summary.get("nass_amt") or 0))
+        self.logger.info(
+            "account_cash_snapshot buyable_cash=%s deposit_total=%s source=inquire_psbl_order_nrcvb_buy_amt",
+            cash_available,
+            deposit_total,
+        )
         return AccountSnapshot(
-            cash_available=int(float(summary.get("dnca_tot_amt") or summary.get("nass_amt") or 0)),
+            cash_available=cash_available,
             total_asset=int(float(summary.get("tot_evlu_amt") or summary.get("nass_amt") or 0)),
             total_profit_loss=int(float(summary.get("evlu_pfls_smtl_amt") or 0)),
             daily_profit_loss=int(float(summary.get("thdt_evlu_pfls_amt") or summary.get("thdt_pfls_amt") or 0)),
             positions=positions,
         )
+
+    def _buyable_cash(self, balance_rows: list[dict[str, Any]]) -> int:
+        """Return immediately usable, non-receivable domestic-stock buying power."""
+        self._require_account()
+        reference = next(
+            (row for row in balance_rows if str(row.get("pdno") or "").zfill(6) == "005930"),
+            next(iter(balance_rows), {}),
+        )
+        code = str(reference.get("pdno") or "005930").zfill(6)
+        price = max(1, int(float(reference.get("prpr") or reference.get("pchs_avg_pric") or 1)))
+        params = {
+            "CANO": self.account_number,
+            "ACNT_PRDT_CD": self.account_product_code,
+            "PDNO": code,
+            "ORD_UNPR": str(price),
+            "ORD_DVSN": "01",
+            "CMA_EVLU_AMT_ICLD_YN": "N",
+            "OVRS_ICLD_YN": "N",
+        }
+        tr_id = "VTTC8908R" if self.is_demo else "TTTC8908R"
+        response = self._request("GET", BUYABLE_CASH_PATH, params=params, tr_id=tr_id)
+        output = response.get("output") or {}
+        raw_amount = output.get("nrcvb_buy_amt")
+        if raw_amount in (None, ""):
+            raw_amount = output.get("ord_psbl_cash")
+        if raw_amount in (None, ""):
+            raise RuntimeError("KIS buyable-cash response missing nrcvb_buy_amt and ord_psbl_cash")
+        return max(0, int(float(raw_amount)))
 
     def _balance_pages(self) -> list[dict[str, Any]]:
         self._require_account()

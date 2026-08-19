@@ -363,6 +363,17 @@ class UIService:
         runtime = asdict(load_runtime_control(self.runtime_path))
         raw_mapping = self.execution_mapping_status()
         status_metrics = self._status_metrics(positions)
+        configured_codes = {str(stock.code).zfill(6) for stock in config.stocks}
+        open_lot_codes = {str(code).zfill(6) for code in status_metrics["open_lot_codes"]}
+        relevant_positions = [
+            position
+            for position in positions
+            if (
+                str(position.get("code") or "").zfill(6) in configured_codes
+                or _to_int(position.get("quantity")) > 0
+                or str(position.get("code") or "").zfill(6) in open_lot_codes
+            )
+        ]
         return {
             "bot": {
                 "state": "UNKNOWN",
@@ -375,15 +386,15 @@ class UIService:
                 "consecutive_api_errors": "unknown",
                 "market_status": self.market_status(),
             },
-            "warnings": self.warnings(config, positions, status_metrics["warning_orders"], raw_mapping),
+            "warnings": self.warnings(config, relevant_positions, status_metrics["warning_orders"], raw_mapping),
             "risk_banner": self.risk_banner(config),
             "runtime_control": runtime,
-            "account_risk": self.risk_summary_fast(config, positions, status_metrics),
-            "position_state_counts": _count_by(positions, "position_state"),
+            "account_risk": self.risk_summary_fast(config, relevant_positions, status_metrics),
+            "position_state_counts": _count_by(relevant_positions, "position_state"),
             "order_status_counts": status_metrics["order_status_counts"],
             "reconciliation": self.reconciliation_summary(logs),
             "execution_mapping": raw_mapping,
-            "analysis_status": self.analysis_status_fast(positions, status_metrics),
+            "analysis_status": self.analysis_status_fast(relevant_positions, status_metrics),
             "loop_performance": self.loop_performance_summary(logs),
         }
 
@@ -700,7 +711,7 @@ class UIService:
         open_lots = [lot for lot in lots if int(lot.get("remaining_quantity") or 0) > 0 and lot.get("status") != "CLOSED"]
         pending_orders = [order for order in orders if str(order.get("status") or "") in ORDER_PENDING_STATUSES]
         pending_manual = [request for request in manual_requests if str(request.get("status") or "") in MANUAL_PENDING_STATUSES]
-        sync_required = [position for position in positions if position.get("sync_status") == PositionLifecycle.SYNC_REQUIRED.value or position.get("position_state") == PositionLifecycle.SYNC_REQUIRED.value]
+        sync_required = self._relevant_sync_required_positions(positions, open_lots)
         lot_mismatch = [position for position in positions if position.get("lot_quantity_mismatch")]
         db_hash = _stable_hash(
             [
@@ -1598,12 +1609,59 @@ class UIService:
     def _risk_status_counts(self, positions: list[dict[str, Any]], open_lots: list[dict[str, Any]]) -> dict[str, int]:
         return {
             "review_required_count": sum(1 for position in positions if position.get("needs_review") or position.get("position_state") == PositionLifecycle.REVIEW_REQUIRED.value),
-            "sync_required_count": sum(1 for position in positions if position.get("sync_status") == PositionLifecycle.SYNC_REQUIRED.value or position.get("position_state") == PositionLifecycle.SYNC_REQUIRED.value),
-            "risk_blocked_count": sum(1 for position in positions if position.get("danger_state") or position.get("position_state") == PositionLifecycle.RISK_BLOCKED.value),
+            "sync_required_count": len(self._relevant_sync_required_positions(positions, open_lots)),
+            "risk_blocked_count": len(self._relevant_risk_blocked_positions(positions, open_lots)),
             "stale_lot_count": sum(1 for lot in open_lots if lot.get("stale_lot")),
             "cleanup_candidate_count": sum(1 for lot in open_lots if lot.get("cleanup_candidate")),
             "lot_quantity_mismatch_count": sum(1 for position in positions if position.get("lot_quantity_mismatch")),
         }
+
+    def _relevant_sync_required_positions(
+        self,
+        positions: list[dict[str, Any]],
+        open_lots: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        configured_codes = {str(stock.code).zfill(6) for stock in self.config.stocks}
+        open_lot_codes = {
+            str(lot.get("code") or "").zfill(6)
+            for lot in open_lots
+            if _to_int(lot.get("remaining_quantity")) > 0 and str(lot.get("status") or "") != "CLOSED"
+        }
+        return [
+            position
+            for position in positions
+            if (
+                position.get("sync_status") == PositionLifecycle.SYNC_REQUIRED.value
+                or position.get("position_state") == PositionLifecycle.SYNC_REQUIRED.value
+            )
+            and (
+                str(position.get("code") or "").zfill(6) in configured_codes
+                or _to_int(position.get("quantity")) > 0
+                or str(position.get("code") or "").zfill(6) in open_lot_codes
+            )
+        ]
+
+    def _relevant_risk_blocked_positions(
+        self,
+        positions: list[dict[str, Any]],
+        open_lots: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        configured_codes = {str(stock.code).zfill(6) for stock in self.config.stocks}
+        open_lot_codes = {
+            str(lot.get("code") or "").zfill(6)
+            for lot in open_lots
+            if _to_int(lot.get("remaining_quantity")) > 0 and str(lot.get("status") or "") != "CLOSED"
+        }
+        return [
+            position
+            for position in positions
+            if (position.get("danger_state") or position.get("position_state") == PositionLifecycle.RISK_BLOCKED.value)
+            and (
+                str(position.get("code") or "").zfill(6) in configured_codes
+                or _to_int(position.get("quantity")) > 0
+                or str(position.get("code") or "").zfill(6) in open_lot_codes
+            )
+        ]
 
     def _active_symbol_codes(self, positions: list[dict[str, Any]], open_lots: list[dict[str, Any]], orders: list[dict[str, Any]]) -> set[str]:
         return {

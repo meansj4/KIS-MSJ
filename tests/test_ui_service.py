@@ -1517,6 +1517,108 @@ def test_new_season_status_reports_stale_plan_after_lot_change(tmp_path, monkeyp
     assert after["block_reason"] == "liquidation_plan_db_changed"
 
 
+def test_sync_required_count_ignores_removed_zero_position_without_open_lots(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config_path, db_path, _ = _write_config(tmp_path)
+    store = StateStore(db_path)
+    store.save_position(
+        PositionState(
+            "082640",
+            "Removed halted symbol",
+            quantity=0,
+            position_state=PositionLifecycle.SYNC_REQUIRED.value,
+            sync_status="OK",
+        )
+    )
+    service = UIService(config_path, tmp_path / "runtime.json")
+
+    assert service.new_season_status()["sync_required_count"] == 0
+    assert service._risk_status_counts(service.positions(), [])["sync_required_count"] == 0
+
+
+def test_sync_required_count_keeps_configured_or_exposed_positions(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config_path, db_path, _ = _write_config(tmp_path)
+    store = StateStore(db_path)
+    store.save_position(
+        PositionState(
+            "005930",
+            "Configured symbol",
+            quantity=0,
+            position_state=PositionLifecycle.SYNC_REQUIRED.value,
+            sync_status="OK",
+        )
+    )
+    store.save_position(
+        PositionState(
+            "082640",
+            "Removed but exposed symbol",
+            quantity=1,
+            position_state=PositionLifecycle.SYNC_REQUIRED.value,
+            sync_status="OK",
+        )
+    )
+    service = UIService(config_path, tmp_path / "runtime.json")
+
+    assert service.new_season_status()["sync_required_count"] == 2
+    assert service._risk_status_counts(service.positions(), [])["sync_required_count"] == 2
+
+
+def test_risk_blocked_count_ignores_removed_zero_position_without_open_lots(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config_path, db_path, _ = _write_config(tmp_path)
+    store = StateStore(db_path)
+    store.save_position(
+        PositionState(
+            "082640",
+            "Removed halted symbol",
+            quantity=0,
+            position_state=PositionLifecycle.SYNC_REQUIRED.value,
+            danger_state=True,
+        )
+    )
+    service = UIService(config_path, tmp_path / "runtime.json")
+
+    assert service._risk_status_counts(service.positions(), [])["risk_blocked_count"] == 0
+
+
+def test_risk_blocked_count_keeps_configured_or_exposed_positions(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config_path, db_path, _ = _write_config(tmp_path)
+    store = StateStore(db_path)
+    store.save_position(
+        PositionState("005930", "Configured", quantity=0, danger_state=True)
+    )
+    store.save_position(
+        PositionState("082640", "Removed but exposed", quantity=1, danger_state=True)
+    )
+    service = UIService(config_path, tmp_path / "runtime.json")
+
+    assert service._risk_status_counts(service.positions(), [])["risk_blocked_count"] == 2
+
+
+def test_status_ignores_removed_zero_position_risk_and_sync_warnings(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config_path, db_path, _ = _write_config(tmp_path)
+    store = StateStore(db_path)
+    store.save_position(
+        PositionState(
+            "082640",
+            "Removed halted symbol",
+            quantity=0,
+            position_state=PositionLifecycle.SYNC_REQUIRED.value,
+            sync_status="OK",
+            danger_state=True,
+        )
+    )
+    service = UIService(config_path, tmp_path / "runtime.json")
+
+    status = service.status()
+
+    assert status["position_state_counts"].get("SYNC_REQUIRED", 0) == 0
+    assert not any(item["reason"] in {"SYNC_REQUIRED", "RISK_BLOCKED"} for item in status["warnings"])
+
+
 def test_new_season_status_explains_missing_plan_and_open_lot_reset_block(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     config_path, db_path, _ = _write_config(tmp_path)
