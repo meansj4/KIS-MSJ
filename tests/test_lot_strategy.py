@@ -624,6 +624,7 @@ def test_legacy_cleanup_cooldown_state_migrates_to_wait_reentry() -> None:
     position = positions.get("005930", "Test")
     position.position_state = PositionLifecycle.COOLDOWN_AFTER_CLEANUP.value
     position.last_fill_side = OrderSide.SELL.value
+    position.last_order_time = "2026-08-05T09:36:28"
     position.cleanup_buy_cooldown_until = (datetime.now() + timedelta(days=3)).isoformat(timespec="seconds")
     position.cleanup_reentry_cooldown_until = (datetime.now() + timedelta(days=5)).isoformat(timespec="seconds")
 
@@ -632,6 +633,20 @@ def test_legacy_cleanup_cooldown_state_migrates_to_wait_reentry() -> None:
     assert position.position_state == PositionLifecycle.WAIT_REENTRY.value
     assert not position.cleanup_buy_cooldown_until
     assert not position.cleanup_reentry_cooldown_until
+    assert position.exit_time == "2026-08-05T09:36:28"
+
+
+def test_refresh_repairs_wait_reentry_exit_time_from_last_sell_time() -> None:
+    _, _, positions, _, _, _ = setup_strategy()
+    position = positions.get("005930", "Test")
+    position.position_state = PositionLifecycle.WAIT_REENTRY.value
+    position.last_fill_side = OrderSide.SELL.value
+    position.last_order_time = "2026-08-06T13:25:11"
+
+    refreshed = positions.refresh_from_lots("005930", 9500)
+
+    assert refreshed.position_state == PositionLifecycle.WAIT_REENTRY.value
+    assert refreshed.exit_time == "2026-08-06T13:25:11"
 
 
 def test_auto_decay_cleanup_sell_is_not_blocked_by_cleanup_loss_budget() -> None:

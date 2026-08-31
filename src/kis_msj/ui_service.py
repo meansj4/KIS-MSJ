@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import hashlib
+import csv
 import importlib.util
+import io
 import os
 import re
 import shutil
@@ -36,6 +38,24 @@ MANUAL_CANCEL_CONFIRM_TEXT = "수동요청 차단 확인"
 MANUAL_PENDING_STATUSES = {"REQUESTED", "PROCESSING", "ACCEPTED", "SUBMITTED", "PENDING", "OPEN", "NEW", "CREATED", "RETRYING"}
 ORDER_PENDING_STATUSES = {"REQUESTED", "PARTIAL", "CANCEL_REJECTED", "SUBMITTED", "ACCEPTED", "PENDING", "OPEN", "NEW"}
 UI_CACHE_TTL_SECONDS = 1.0
+UI_HISTORY_DEFAULT_LIMIT = 500
+UI_HISTORY_MAX_LIMIT = 2000
+UI_HISTORY_TABLES = {
+    "lots": {"default_sort": "buy_filled_at", "columns": {"lot_id", "code", "buy_filled_at", "buy_price", "buy_quantity", "remaining_quantity", "status", "age_weeks", "realized_profit_loss"}},
+    "orders": {"default_sort": "requested_at", "columns": {"order_id", "code", "side", "quantity", "limit_price", "status", "reason", "requested_at", "updated_at", "lot_id"}},
+    "fills": {"default_sort": "filled_at", "columns": {"id", "order_id", "code", "name", "side", "quantity", "price", "filled_at", "lot_id", "execution_id", "sell_reason", "reentry_type"}},
+}
+
+
+def _ui_limit(filters: dict[str, Any] | None) -> int:
+    raw = (filters or {}).get("limit", UI_HISTORY_DEFAULT_LIMIT)
+    if isinstance(raw, list):
+        raw = raw[0] if raw else UI_HISTORY_DEFAULT_LIMIT
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = UI_HISTORY_DEFAULT_LIMIT
+    return min(max(value, 1), UI_HISTORY_MAX_LIMIT)
 
 NEW_SEASON_REASON_GUIDE: dict[str, dict[str, str]] = {
     "": {"title": "진행 가능", "description": "현재 단계의 조건을 만족했습니다.", "next_action": "다음 단계로 진행하세요."},
@@ -1001,7 +1021,10 @@ class UIService:
         orders = self.orders()
         fills = self.fills()
         positions_by_code = {str(row.get("code") or ""): row for row in positions}
-        price_snapshots = self._latest_price_snapshot_rows(set(positions_by_code))
+        # positions.current_price is refreshed by the trading loop and is enough
+        # for the summary. Avoid scanning the much larger snapshot history on
+        # every dashboard refresh.
+        price_snapshots: list[dict[str, Any]] = []
         latest_prices = self._latest_prices(price_snapshots, positions_by_code)
         price_snapshot_count = self._price_snapshot_count()
         open_lots = [lot for lot in lots if _to_int(lot.get("remaining_quantity")) > 0 and str(lot.get("status") or "") != "CLOSED"]
@@ -1314,8 +1337,14 @@ class UIService:
         db_path = self._db_path()
         if not db_path.exists():
             return {"rows": [], "generated_at": datetime.now().isoformat(timespec="seconds")}
-        cache_key = ("portfolio_history_chart", str(db_path), self._db_mtime())
-        cached = self._cache_get(cache_key)
+        cache_key = (
+            "portfolio_history_chart",
+            str(db_path),
+            self._table_version("lots"),
+            self._table_version("fills"),
+            self._table_version("daily_prices"),
+        )
+        cached = self._cache_get(cache_key, ttl_seconds=300.0)
         if cached is not None:
             return dict(cached)
         lots = self.lots()
@@ -1336,17 +1365,15 @@ class UIService:
                     daily_prices[(str(row["date"]), str(row["code"]))] = (_to_int(row["close"]), "daily_close")
                 snapshot_rows = connection.execute(
                     """
-                    SELECT ps.code, substr(ps.sampled_at, 1, 10) AS date, ps.current_price
+                    SELECT ps.code, latest.date, ps.current_price
                     FROM price_snapshots AS ps
                     JOIN (
                         SELECT code, substr(sampled_at, 1, 10) AS date, MAX(id) AS id
-                        FROM price_snapshots
-                        WHERE sampled_at >= ? AND current_price > 0
-                        GROUP BY code, substr(sampled_at, 1, 10)
+                        FROM price_snapshots INDEXED BY idx_price_snapshots_date_code_id
+                        GROUP BY substr(sampled_at, 1, 10), code
                     ) AS latest ON latest.id = ps.id
-                    ORDER BY date, ps.code
-                    """,
-                    (first_date,),
+                    ORDER BY latest.date, ps.code
+                    """
                 ).fetchall()
             except sqlite3.Error:
                 snapshot_rows = []
@@ -1359,9 +1386,10 @@ class UIService:
                 snapshot_dates.add(day)
                 daily_prices.setdefault((day, code), (price, "last_daily_snapshot"))
 
-        sell_events: dict[str, list[tuple[str, int, int]]] = defaultdict(list)
+        sell_events_by_date: dict[str, list[tuple[str, int]]] = defaultdict(list)
         realized_by_date: dict[str, int] = defaultdict(int)
         lot_by_id = {str(lot.get("lot_id") or ""): lot for lot in lots}
+        fee_tax_rate = self.config.strategy.estimated_fee_tax_pct / 100.0
         for fill in fills:
             if str(fill.get("side") or "") != OrderSide.SELL.value:
                 continue
@@ -1373,36 +1401,45 @@ class UIService:
             quantity = _to_int(fill.get("quantity"))
             sell_price = _to_int(fill.get("price"))
             buy_price = _to_int(lot.get("buy_price"))
-            fee_tax = int(round(sell_price * quantity * self.config.strategy.estimated_fee_tax_pct / 100.0))
-            sell_events[lot_id].append((day, quantity, sell_price))
+            fee_tax = int(round(sell_price * quantity * fee_tax_rate))
+            sell_events_by_date[day].append((lot_id, quantity))
             realized_by_date[day] += (sell_price - buy_price) * quantity - fee_tax
 
         chart_dates = sorted(day for day in snapshot_dates | {day for day in realized_by_date if day >= first_date} if day >= first_date)
+        prices_by_date: dict[str, list[tuple[str, int]]] = defaultdict(list)
+        for (price_day, code), (price, _) in daily_prices.items():
+            prices_by_date[price_day].append((code, price))
+        lot_records = [
+            (
+                _date_key(lot.get("buy_filled_at")),
+                str(lot.get("lot_id") or ""),
+                str(lot.get("code") or ""),
+                _to_int(lot.get("buy_quantity")),
+                _to_int(lot.get("buy_price")),
+            )
+            for lot in lots
+        ]
         rows: list[dict[str, Any]] = []
         cumulative_realized = 0
         last_prices: dict[str, int] = {}
+        cumulative_sold: dict[str, int] = defaultdict(int)
         for day in chart_dates:
-            for (price_day, code), (price, _) in daily_prices.items():
-                if price_day == day:
-                    last_prices[code] = price
+            for code, price in prices_by_date.get(day, []):
+                last_prices[code] = price
+            for lot_id, sold_quantity in sell_events_by_date.get(day, []):
+                cumulative_sold[lot_id] += sold_quantity
             cumulative_realized += realized_by_date.get(day, 0)
             holding_principal = 0
             market_value = 0
             missing_price_codes: list[str] = []
-            for lot in lots:
-                buy_day = _date_key(lot.get("buy_filled_at"))
+            for buy_day, lot_id, code, buy_quantity, buy_price in lot_records:
                 if not buy_day or buy_day > day:
                     continue
-                lot_id = str(lot.get("lot_id") or "")
-                quantity = _to_int(lot.get("buy_quantity"))
-                quantity -= sum(sold_quantity for sell_day, sold_quantity, _ in sell_events.get(lot_id, []) if sell_day <= day)
-                quantity = max(0, quantity)
+                quantity = max(0, buy_quantity - cumulative_sold.get(lot_id, 0))
                 if not quantity:
                     continue
-                code = str(lot.get("code") or "")
-                buy_price = _to_int(lot.get("buy_price"))
                 holding_principal += buy_price * quantity
-                price = daily_prices.get((day, code), (last_prices.get(code, 0), "carried_forward"))[0]
+                price = last_prices.get(code, 0)
                 if price > 0:
                     market_value += price * quantity
                 else:
@@ -2052,8 +2089,8 @@ class UIService:
     def positions(self) -> list[dict[str, Any]]:
         return self._table("positions")
 
-    def lots(self) -> list[dict[str, Any]]:
-        rows = self._table("lots")
+    def lots(self, filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        rows = self._recent_table("lots", filters) if filters is not None else self._table("lots")
         now = datetime.now()
         by_code_price = {item["code"]: int(item.get("current_price") or 0) for item in self.positions()}
         for row in rows:
@@ -2088,19 +2125,26 @@ class UIService:
                 row["deep_loss_force_sell_on"] = ""
         return rows
 
-    def orders(self) -> list[dict[str, Any]]:
-        rows = self._table("orders")
-        fill_totals: dict[str, dict[str, int]] = {}
-        for fill in self.fills():
+    def orders(self, filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        rows = self._recent_table("orders", filters) if filters is not None else self._table("orders")
+        fill_totals: dict[Any, dict[str, int]] = {}
+        fill_filters = {"limit": str(max(2000, _ui_limit(filters) * 4))} if filters is not None else None
+        for fill in self.fills(fill_filters):
             order_id = str(fill.get("order_id") or "")
             if not order_id:
                 continue
-            item = fill_totals.setdefault(order_id, {"quantity": 0, "count": 0})
+            key: Any = order_id
+            if filters is not None:
+                key = (order_id, str(fill.get("code") or ""), str(fill.get("side") or ""), str(fill.get("filled_at") or "")[:10])
+            item = fill_totals.setdefault(key, {"quantity": 0, "count": 0})
             item["quantity"] += _to_int(fill.get("quantity"))
             item["count"] += 1
         for row in rows:
             order_id = str(row.get("order_id") or "")
-            totals = fill_totals.get(order_id, {"quantity": 0, "count": 0})
+            key: Any = order_id
+            if filters is not None:
+                key = (order_id, str(row.get("code") or ""), str(row.get("side") or ""), str(row.get("requested_at") or "")[:10])
+            totals = fill_totals.get(key, {"quantity": 0, "count": 0})
             filled_quantity = totals["quantity"]
             quantity = _to_int(row.get("quantity"))
             row["filled_quantity"] = filled_quantity
@@ -2121,8 +2165,8 @@ class UIService:
                 row["order_sync_warning"] = ""
         return rows
 
-    def fills(self) -> list[dict[str, Any]]:
-        rows = self._table("fills")
+    def fills(self, filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        rows = self._recent_table("fills", filters) if filters is not None else self._table("fills")
         seen = set()
         for row in rows:
             execution_id = row.get("execution_id", "")
@@ -2133,6 +2177,68 @@ class UIService:
             row["apply_fill"] = True
             row["position_lots_reflected"] = True
         return rows
+
+    def history_page(self, table: str, filters: dict[str, Any] | None = None) -> dict[str, Any]:
+        if table not in UI_HISTORY_TABLES:
+            return {"rows": [], "total_count": 0, "limit": 0, "offset": 0, "db_version": ""}
+        filters = filters or {}
+        if table == "lots":
+            rows = self.lots(filters)
+        elif table == "orders":
+            rows = self.orders(filters)
+        else:
+            rows = self.fills(filters)
+        db_path = self._db_path()
+        total = 0
+        if db_path.exists():
+            with sqlite3.connect(db_path) as connection:
+                total = int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+        limit = _ui_limit(filters)
+        offset = max(_to_int((filters.get("offset") or [0])[0] if isinstance(filters.get("offset"), list) else filters.get("offset")), 0)
+        return {
+            "rows": rows,
+            "total_count": total,
+            "limit": limit,
+            "offset": offset,
+            "db_version": ":".join(str(part) for part in self._db_mtime()),
+            "has_previous": offset > 0,
+            "has_next": offset + len(rows) < total,
+        }
+
+    def history_export_csv(self, table: str, filters: dict[str, Any] | None = None) -> tuple[str, bytes]:
+        """Export the complete selected history table without loading it in the browser."""
+        if table not in UI_HISTORY_TABLES:
+            raise ValueError(f"unsupported history export table: {table}")
+        filters = filters or {}
+        spec = UI_HISTORY_TABLES[table]
+        raw_sort = filters.get("sort", spec["default_sort"])
+        if isinstance(raw_sort, list):
+            raw_sort = raw_sort[0] if raw_sort else spec["default_sort"]
+        sort_column = str(raw_sort or spec["default_sort"])
+        if sort_column not in spec["columns"]:
+            sort_column = str(spec["default_sort"])
+        raw_dir = filters.get("dir", "desc")
+        if isinstance(raw_dir, list):
+            raw_dir = raw_dir[0] if raw_dir else "desc"
+        direction = "ASC" if str(raw_dir).lower() == "asc" else "DESC"
+        db_path = self._db_path()
+        rows: list[dict[str, Any]] = []
+        if db_path.exists():
+            with sqlite3.connect(db_path) as connection:
+                connection.row_factory = sqlite3.Row
+                rows = [
+                    _normalize_row(dict(row))
+                    for row in connection.execute(
+                        f'SELECT * FROM {table} ORDER BY "{sort_column}" {direction}, rowid DESC'
+                    )
+                ]
+        output = io.StringIO(newline="")
+        if rows:
+            writer = csv.DictWriter(output, fieldnames=list(rows[0].keys()), extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(rows)
+        filename = f"kis-msj-{table}-{datetime.now():%Y%m%d-%H%M%S}.csv"
+        return filename, ("\ufeff" + output.getvalue()).encode("utf-8")
 
     def manual_order_requests(self) -> list[dict[str, Any]]:
         rows = self._table("manual_order_requests")
@@ -2565,7 +2671,7 @@ class UIService:
         except OSError:
             log_mtime = 0.0
         key = ("logs", str(log_path), int(limit), log_mtime)
-        cached = self._cache_get(key)
+        cached = self._cache_get(key, ttl_seconds=300.0)
         if cached is not None:
             return list(cached)
         lines = [_mask_sensitive(line.rstrip()) for line in tail_hourly_logs(self.config.log_path, limit)]
@@ -2755,15 +2861,51 @@ class UIService:
         db_path = self._db_path()
         if not db_path.exists():
             return []
-        db_mtime = self._db_mtime()
-        key = ("table", str(db_path), table, db_mtime)
-        cached = self._cache_get(key)
+        key = ("table", str(db_path), table, self._table_version(table))
+        cached = self._cache_get(key, ttl_seconds=300.0)
         if cached is not None:
             return [dict(row) for row in cached]
         with sqlite3.connect(db_path) as connection:
             connection.row_factory = sqlite3.Row
             try:
                 rows = connection.execute(f"SELECT * FROM {table}").fetchall()
+            except sqlite3.Error:
+                return []
+        normalized = [_normalize_row(dict(row)) for row in rows]
+        self._cache_set(key, normalized)
+        return [dict(row) for row in normalized]
+
+    def _recent_table(self, table: str, filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        """Return a bounded newest-first slice for interactive history tabs."""
+        db_path = self._db_path()
+        if not db_path.exists():
+            return []
+        limit = _ui_limit(filters)
+        raw_offset = (filters or {}).get("offset", 0)
+        if isinstance(raw_offset, list):
+            raw_offset = raw_offset[0] if raw_offset else 0
+        offset = max(_to_int(raw_offset), 0)
+        spec = UI_HISTORY_TABLES.get(table, {"default_sort": "rowid", "columns": set()})
+        raw_sort = (filters or {}).get("sort", spec["default_sort"])
+        if isinstance(raw_sort, list):
+            raw_sort = raw_sort[0] if raw_sort else spec["default_sort"]
+        sort = str(raw_sort or spec["default_sort"])
+        raw_dir = (filters or {}).get("dir", "desc")
+        if isinstance(raw_dir, list):
+            raw_dir = raw_dir[0] if raw_dir else "desc"
+        direction = "ASC" if str(raw_dir).lower() == "asc" else "DESC"
+        sort_column = sort if sort in spec["columns"] else str(spec["default_sort"])
+        key = ("recent_table", str(db_path), table, limit, offset, sort_column, direction, self._table_version(table))
+        cached = self._cache_get(key, ttl_seconds=300.0)
+        if cached is not None:
+            return [dict(row) for row in cached]
+        with sqlite3.connect(db_path) as connection:
+            connection.row_factory = sqlite3.Row
+            try:
+                rows = connection.execute(
+                    f'SELECT * FROM {table} ORDER BY "{sort_column}" {direction}, rowid DESC LIMIT ? OFFSET ?',
+                    (limit, offset),
+                ).fetchall()
             except sqlite3.Error:
                 return []
         normalized = [_normalize_row(dict(row)) for row in rows]
@@ -2838,6 +2980,29 @@ class UIService:
             wal_stamp = (0, 0)
         return (*db_stamp, *wal_stamp)
 
+    def _table_version(self, table: str) -> tuple[Any, ...]:
+        """Cheap change token that is not invalidated by unrelated bot tables."""
+        db_path = self._db_path()
+        if not db_path.exists():
+            return (0,)
+        queries = {
+            "positions": "SELECT COUNT(*), MAX(last_update_time) FROM positions",
+            "lots": "SELECT COUNT(*), COALESCE(SUM(remaining_quantity),0), COALESCE(SUM(realized_profit_loss),0), COALESCE(SUM(partial_sold),0) FROM lots",
+            "orders": "SELECT COUNT(*), MAX(rowid), MAX(updated_at) FROM orders",
+            "fills": "SELECT COUNT(*), MAX(id) FROM fills",
+            "manual_order_requests": "SELECT COUNT(*), MAX(updated_at) FROM manual_order_requests",
+            "daily_prices": "SELECT COUNT(*), MAX(date), MAX(collected_at) FROM daily_prices",
+        }
+        sql = queries.get(table)
+        if sql is None:
+            return self._db_mtime()
+        try:
+            with sqlite3.connect(db_path) as connection:
+                row = connection.execute(sql).fetchone()
+        except sqlite3.Error:
+            return self._db_mtime()
+        return tuple(row or (0,))
+
     def _fetch_all(self, connection: sqlite3.Connection, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
         try:
             return [_normalize_row(dict(row)) for row in connection.execute(sql, params).fetchall()]
@@ -2885,14 +3050,14 @@ class UIService:
             return {}
         return {str(row[0] or ""): _to_int(row[1]) for row in rows}
 
-    def _cache_get(self, key: tuple[Any, ...]) -> Any | None:
+    def _cache_get(self, key: tuple[Any, ...], ttl_seconds: float = UI_CACHE_TTL_SECONDS) -> Any | None:
         now = time.monotonic()
         with self._cache_lock:
             item = self._cache.get(key)
             if item is None:
                 return None
             created_at, value = item
-            if now - created_at > UI_CACHE_TTL_SECONDS:
+            if now - created_at > ttl_seconds:
                 self._cache.pop(key, None)
                 return None
             return value

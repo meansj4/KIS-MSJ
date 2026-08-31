@@ -166,6 +166,10 @@ class PositionManager:
             position.cleanup_reentry_cooldown_until = ""
             position.skip_reason = ""
         if position.last_fill_side == OrderSide.SELL.value or any(lot.code == position.code for lot in self.lot_manager.lots.values()):
+            # Legacy cleanup states did not always persist exit_time. Preserve the
+            # actual sell timestamp when migrating them to WAIT_REENTRY.
+            if not position.exit_time and position.last_fill_side == OrderSide.SELL.value:
+                position.exit_time = position.cleanup_time or position.last_order_time
             return PositionLifecycle.WAIT_REENTRY.value
         return PositionLifecycle.NEVER_BOUGHT.value
 

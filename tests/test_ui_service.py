@@ -238,6 +238,55 @@ def test_orders_include_cancel_fill_reconciliation_fields(tmp_path):
     assert row["order_sync_warning"] == "canceled_status_with_fill"
 
 
+def test_history_page_paginates_and_sorts_the_complete_order_table(tmp_path):
+    config_path, db_path, _ = _write_config(tmp_path)
+    store = StateStore(db_path)
+    for index in range(3):
+        request = OrderRequest("005930", "Samsung", OrderSide.BUY, 1, 10000 + index, "initial_buy")
+        store.record_order(OrderResult(request, f"ORDER-{index}", OrderStatus.FILLED, "filled"))
+    with sqlite3.connect(db_path) as connection:
+        for index in range(3):
+            connection.execute("UPDATE orders SET requested_at = ? WHERE order_id = ?", (f"2026-08-2{index}T09:00:00", f"ORDER-{index}"))
+
+    result = UIService(config_path).history_page(
+        "orders", {"limit": ["1"], "offset": ["1"], "sort": ["requested_at"], "dir": ["desc"]}
+    )
+
+    assert result["total_count"] == 3
+    assert result["has_previous"] is True
+    assert result["has_next"] is True
+    assert result["rows"][0]["order_id"] == "ORDER-1"
+
+
+def test_history_ui_uses_server_paging_instead_of_fixed_recent_rows():
+    assert "/api/history/lots?" in INDEX_HTML
+    assert "/api/history/orders?" in INDEX_HTML
+    assert "/api/history/fills?" in INDEX_HTML
+    assert "historyPager" in INDEX_HTML
+
+
+def test_history_export_csv_contains_complete_sorted_order_table(tmp_path):
+    config_path, db_path, _ = _write_config(tmp_path)
+    store = StateStore(db_path)
+    for index in range(3):
+        request = OrderRequest("005930", "Samsung", OrderSide.BUY, 1, 10000 + index, "initial_buy")
+        store.record_order(OrderResult(request, f"EXPORT-{index}", OrderStatus.FILLED, "filled"))
+    with sqlite3.connect(db_path) as connection:
+        for index in range(3):
+            connection.execute("UPDATE orders SET requested_at = ? WHERE order_id = ?", (f"2026-08-2{index}T09:00:00", f"EXPORT-{index}"))
+
+    filename, body = UIService(config_path).history_export_csv(
+        "orders", {"sort": ["requested_at"], "dir": ["desc"]}
+    )
+    text = body.decode("utf-8-sig")
+
+    assert filename.startswith("kis-msj-orders-")
+    assert text.count("\n") == 4
+    assert text.index("EXPORT-2") < text.index("EXPORT-1") < text.index("EXPORT-0")
+    assert "전체 주문 CSV 내보내기" in INDEX_HTML
+    assert "/api/history/export/" in INDEX_HTML
+
+
 def test_ui_status_masks_and_shows_core_tables(tmp_path):
     config_path, db_path, log_path = _write_config(tmp_path)
     _seed_store(db_path)

@@ -336,6 +336,11 @@ function formatSignedRate(value) {
   return sign + n.toFixed(2) + '%';
 }
 const sortState = {};
+const historyState = {
+  lots: {offset:0, limit:200, total:0},
+  orders: {offset:0, limit:200, total:0},
+  fills: {offset:0, limit:200, total:0}
+};
 const DEFAULT_COLUMNS = {
   stocks: ['code','name','enabled','retire_after_exit','buy_blocked','position_state','current_price','open_lot_count','lot_unit_amount','max_symbol_amount','max_lots_per_symbol','lot_sizing_bucket','invested_amount','realized_pnl_rate','realized_pnl','unrealized_pnl_rate','unrealized_pnl','profit_loss_pct','risk_block_reasons','skip_reason','final_block_reason'],
   lots: ['lot_id','code','name','status','buy_price','remaining_quantity','current_price','unrealized_pnl','unrealized_pnl_rate','age_weeks','effective_target_profit_rate','sell_trigger_price','deep_loss_started_on','deep_loss_low_price','deep_loss_elapsed_days','deep_loss_rebound_rate','deep_loss_rebound_trigger_price','deep_loss_force_sell_on','cleanup_candidate','stale_lot','last_sell_reason'],
@@ -534,8 +539,44 @@ function sortTable(tableId, key) {
   if (!current || current.key !== key) sortState[tableId] = {key, dir:'asc'};
   else if (current.dir === 'asc') sortState[tableId] = {key, dir:'desc'};
   else delete sortState[tableId];
+  if (historyState[tableId]) {
+    historyState[tableId].offset = 0;
+    if (tableId === 'lots') { loadLots(); return; }
+    loadOrders(); return;
+  }
   if ((tableId === 'portfolioRealizedDetail' || tableId === 'portfolioUnrealizedDetail') && portfolioDetailState) { renderPortfolioDetailPanel(portfolioDetailState); return; }
   reloadCurrent();
+}
+function historyQuery(tableId, defaultSort) {
+  const page = historyState[tableId];
+  const sort = sortState[tableId] || {key:defaultSort, dir:'desc'};
+  return `limit=${page.limit}&offset=${page.offset}&sort=${encodeURIComponent(sort.key)}&dir=${sort.dir}`;
+}
+function historyPager(tableId, result) {
+  const page = historyState[tableId];
+  page.total = Number(result.total_count || 0);
+  const start = page.total ? page.offset + 1 : 0;
+  const end = Math.min(page.offset + (result.rows || []).length, page.total);
+  return `<div class="rowActions"><button ${result.has_previous ? '' : 'disabled'} onclick="historyPage('${tableId}',-1)">이전</button><span>${start.toLocaleString()}–${end.toLocaleString()} / ${page.total.toLocaleString()}</span><button ${result.has_next ? '' : 'disabled'} onclick="historyPage('${tableId}',1)">다음</button><button onclick="historyRefresh('${tableId}')">새로고침</button></div>`;
+}
+function historyPage(tableId, direction) {
+  const page = historyState[tableId];
+  page.offset = Math.max(0, page.offset + direction * page.limit);
+  if (tableId === 'lots') loadLots(); else loadOrders();
+}
+function historyRefresh(tableId) {
+  if (tableId === 'lots') loadLots(); else loadOrders();
+}
+function exportHistory(tableId) {
+  const defaults = {lots:'buy_filled_at', orders:'requested_at', fills:'filled_at'};
+  const sort = sortState[tableId] || {key:defaults[tableId], dir:'desc'};
+  const url = `/api/history/export/${tableId}?sort=${encodeURIComponent(sort.key)}&dir=${sort.dir}`;
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = '';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
 }
 function sortRows(rows, key, dir) {
   const multiplier = dir === 'desc' ? -1 : 1;
@@ -642,7 +683,7 @@ async function loadPortfolioDashboard() {
       ${summaryCard('평가 수익률', summary.unrealized_pnl_rate, 'RATE', 'unrealized_pnl / open cost')}
     </div>
     <h3>거래 시작 이후 손익 추이</h3>
-    <div id="portfolioHistoryChart"><p class="muted">차트 계산 중...</p></div>
+    <div id="portfolioHistoryChart"><button onclick="loadPortfolioHistoryChart()">손익 추이 그래프 불러오기</button><p class="muted">그래프는 전체 과거 데이터를 계산하므로 필요할 때 불러옵니다.</p></div>
     <div class="manualBox">
       <strong>손익 상세 drill-down</strong>
       <p class="muted">상세 내역은 버튼을 누를 때만 별도 read-only API로 가져옵니다.</p>
@@ -662,7 +703,6 @@ async function loadPortfolioDashboard() {
     ${metrics(d.data_quality || {})}
     <details><summary>지표 정의 보기</summary>${renderReadableObject(d.definitions || {})}</details>
   `;
-  loadPortfolioHistoryChart();
 }
 
 async function loadPortfolioHistoryChart() {
@@ -860,19 +900,24 @@ async function marketSellAll(code, name, lotCount) {
 }
 async function loadLots() {
   currentView = 'lots';
-  const rows = await api('/api/lots');
+  if (!sortState.lots) sortState.lots = {key:'buy_filled_at', dir:'desc'};
+  const result = await api('/api/history/lots?' + historyQuery('lots', 'buy_filled_at'));
+  const rows = result.rows || [];
   window.lotRows = rows;
-  if (!sortState.lots) sortState.lots = {key:'unrealized_pnl_rate', dir:'asc'};
-  document.getElementById('content').innerHTML = '<h2>LOT</h2><div class="manualBox"><strong>LOT별 수동 매도 요청</strong><p class="muted">OPEN LOT 행의 수동 매도 버튼으로 LOT ID와 잔여 수량을 자동 입력할 수 있습니다. CLOSED LOT, open SELL order, RISK_BLOCKED, SYNC_REQUIRED, runtime sell pause 상태에서는 요청 생성도 차단됩니다.</p></div>' + table(rows, 'lots', {actions:true});
+  document.getElementById('content').innerHTML = '<h2>LOT</h2><p><button onclick="exportHistory(\'lots\')">전체 LOT CSV 내보내기</button></p><p class="muted">전체 DB를 서버에서 정렬·페이지 조회합니다. CSV에는 현재 정렬 기준으로 전체 기록이 포함됩니다.</p>'+historyPager('lots', result)+'<div class="manualBox"><strong>LOT별 수동 매도 요청</strong><p class="muted">OPEN LOT 행의 수동 매도 버튼으로 LOT ID와 잔여 수량을 자동 입력할 수 있습니다. CLOSED LOT, open SELL order, RISK_BLOCKED, SYNC_REQUIRED, runtime sell pause 상태에서는 요청 생성도 차단됩니다.</p></div>' + table(rows, 'lots', {actions:true}) + historyPager('lots', result);
 }
 async function loadOrders() {
   currentView = 'orders';
-  const o=await api('/api/orders'), f=await api('/api/fills');
-  window.orderRows = o;
-  window.fillRows = f;
   if (!sortState.orders) sortState.orders = {key:'requested_at', dir:'desc'};
   if (!sortState.fills) sortState.fills = {key:'filled_at', dir:'desc'};
-  document.getElementById('content').innerHTML = '<h2>주문</h2>'+table(o, 'orders')+'<h2>체결</h2>'+table(f, 'fills');
+  const [ordersResult, fillsResult] = await Promise.all([
+    api('/api/history/orders?' + historyQuery('orders', 'requested_at')),
+    api('/api/history/fills?' + historyQuery('fills', 'filled_at'))
+  ]);
+  const o = ordersResult.rows || [], f = fillsResult.rows || [];
+  window.orderRows = o;
+  window.fillRows = f;
+  document.getElementById('content').innerHTML = '<p class="muted">전체 DB를 서버에서 정렬·페이지 조회합니다. CSV에는 현재 정렬 기준으로 전체 기록이 포함됩니다.</p><h2>주문</h2><p><button onclick="exportHistory(\'orders\')">전체 주문 CSV 내보내기</button></p>'+historyPager('orders', ordersResult)+table(o, 'orders')+historyPager('orders', ordersResult)+'<h2>체결</h2><p><button onclick="exportHistory(\'fills\')">전체 체결 CSV 내보내기</button></p>'+historyPager('fills', fillsResult)+table(f, 'fills')+historyPager('fills', fillsResult);
 }
 async function loadLogs() { currentView = 'logs'; const l=await api('/api/logs/tail?limit=300'); document.getElementById('content').innerHTML = '<h2>로그</h2><div class="manualBox"><strong>주요 차단 사유</strong><p>open_order_exists_for_cleanup: 미체결 주문이 있어 cleanup 매도 차단<br>risk_blocked_buy_sell_blocked: 위험 차단으로 매수/매도 모두 차단<br>sync_required: DB/KIS 동기화 필요</p></div><pre>'+esc(l.lines.join('\n'))+'</pre>'; }
 async function loadExecution() { currentView = 'execution'; const e=await api('/api/execution-mapping/status'); document.getElementById('content').innerHTML = '<h2>체결 필드 검증</h2>'+metrics(e)+'<pre>'+esc(e.raw_log_line || '')+'</pre>'; }
@@ -1419,7 +1464,7 @@ loadDashboard = async function() {
   await originalLoadDashboard();
   attachMarketDataControls();
 };
-refreshBanner().then(loadDashboard);
+Promise.all([refreshBanner(), loadPortfolioDashboard()]);
 </script>
 </body>
 </html>
@@ -1442,9 +1487,9 @@ class UIHandler(BaseHTTPRequestHandler):
                 "/api/config/schema": self.service.config_schema,
                 "/api/stocks": self.service.stocks,
                 "/api/positions": self.service.positions,
-                "/api/lots": self.service.lots,
-                "/api/orders": self.service.orders,
-                "/api/fills": self.service.fills,
+                "/api/lots": lambda: self.service.lots(query),
+                "/api/orders": lambda: self.service.orders(query),
+                "/api/fills": lambda: self.service.fills(query),
                 "/api/manual-order-requests": self.service.manual_order_requests,
                 "/api/portfolio-dashboard": self.service.portfolio_dashboard,
                 "/api/portfolio/summary": self.service.portfolio_dashboard,
@@ -1462,6 +1507,15 @@ class UIHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path.startswith("/api/portfolio-dashboard/"):
                 self._send_json(self._portfolio_dashboard_detail(parsed.path, query))
+                return
+            if parsed.path.startswith("/api/history/export/"):
+                table = parsed.path.rsplit("/", 1)[-1]
+                filename, body = self.service.history_export_csv(table, query)
+                self._send_bytes(body, "text/csv; charset=utf-8", filename)
+                return
+            if parsed.path.startswith("/api/history/"):
+                table = parsed.path.rsplit("/", 1)[-1]
+                self._send_json(self.service.history_page(table, query))
                 return
             if parsed.path.startswith("/api/positions/") and parsed.path.endswith("/review-status"):
                 code = parsed.path.split("/")[3].zfill(6)
@@ -1638,19 +1692,37 @@ class UIHandler(BaseHTTPRequestHandler):
 
     def _send_json(self, payload: Any, status: HTTPStatus = HTTPStatus.OK) -> None:
         body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
-        self.send_response(status)
-        self.send_header("content-type", "application/json; charset=utf-8")
-        self.send_header("content-length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("content-type", "application/json; charset=utf-8")
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            return
 
     def _send_text(self, payload: str, content_type: str) -> None:
         body = payload.encode("utf-8")
-        self.send_response(HTTPStatus.OK)
-        self.send_header("content-type", content_type)
-        self.send_header("content-length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("content-type", content_type)
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            return
+
+    def _send_bytes(self, body: bytes, content_type: str, filename: str = "") -> None:
+        try:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("content-type", content_type)
+            self.send_header("content-length", str(len(body)))
+            if filename:
+                self.send_header("content-disposition", f'attachment; filename="{filename}"')
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            return
 
     def log_message(self, format: str, *args: Any) -> None:
         return

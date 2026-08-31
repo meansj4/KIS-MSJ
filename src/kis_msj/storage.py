@@ -388,6 +388,20 @@ class StateStore:
                 )
                 """
             )
+            # Interactive UI history is sorted and paged in SQLite. These indexes
+            # keep full-history navigation fast as the operational DB grows.
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_lots_buy_filled_at ON lots(buy_filled_at DESC)")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_lots_code ON lots(code)")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_orders_requested_at ON orders(requested_at DESC)")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_orders_updated_at ON orders(updated_at DESC)")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_fills_filled_at ON fills(filled_at DESC)")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_fills_order_code_side ON fills(order_id, code, side, filled_at)")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_price_snapshots_code_id ON price_snapshots(code, id DESC)")
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_price_snapshots_date_code_id "
+                "ON price_snapshots(substr(sampled_at, 1, 10), code, id DESC)"
+            )
 
     def _backup_before_migration_if_needed(self, connection: sqlite3.Connection) -> None:
         if self._migration_backup_done or not self._db_existed_before_init:
