@@ -129,7 +129,7 @@ def test_executions_logs_masked_raw_fields_when_enabled(caplog: pytest.LogCaptur
     client = _client()
     client.enable_execution_raw_log = True
 
-    def response(method, path, *, params=None, body=None, tr_id=""):  # noqa: ANN001, ANN202
+    def response(method, path, *, params=None, body=None, tr_id="", tr_cont=""):  # noqa: ANN001, ANN202
         assert path == DAILY_FILL_PATH
         return {
             "output1": [

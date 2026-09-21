@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import calendar
 import csv
 import json
 import logging
@@ -10,7 +11,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -76,6 +77,7 @@ class KisClient:
         enable_execution_raw_log: bool = False,
         min_request_interval_seconds: float = 0.25,
         balance_page_interval_seconds: float = 1.0,
+        use_order_hashkey: bool = False,
     ) -> None:
         set_kis_min_request_interval(min_request_interval_seconds)
         self.credentials = load_credentials()
@@ -86,6 +88,7 @@ class KisClient:
         self.consecutive_errors = 0
         self.enable_execution_raw_log = enable_execution_raw_log
         self.balance_page_interval_seconds = max(0.0, balance_page_interval_seconds)
+        self.use_order_hashkey = use_order_hashkey
         self.logger = logging.getLogger("kis_msj.kis_client")
 
     @property
@@ -158,29 +161,32 @@ class KisClient:
 
     def _balance_pages(self) -> list[dict[str, Any]]:
         self._require_account()
-        params = self._balance_params("", "")
+        return self._inquiry_pages(BALANCE_PATH, self._balance_params("", ""), "VTTC8434R" if self.is_demo else "TTTC8434R")
+
+    def _inquiry_pages(self, path: str, params: dict[str, str], tr_id: str) -> list[dict[str, Any]]:
+        """Return a complete inquiry or fail; never reconcile a truncated snapshot."""
+        params = dict(params)
         pages: list[dict[str, Any]] = []
         seen_tokens: set[tuple[str, str]] = set()
-        tr_id = "VTTC8434R" if self.is_demo else "TTTC8434R"
         continuation = ""
-        for _ in range(20):
-            response = self._request("GET", BALANCE_PATH, params=params, tr_id=tr_id, tr_cont=continuation)
+        for _ in range(100):
+            response = self._request("GET", path, params=params, tr_id=tr_id, tr_cont=continuation)
             pages.append(response)
             next_fk, next_nk = _next_balance_context(response)
             token = (next_fk, next_nk)
-            if not next_fk or not next_nk:
-                break
-            if token in seen_tokens:
-                self.logger.warning("account_snapshot pagination stopped reason=repeated_context ctx_fk=%s ctx_nk=%s", next_fk, next_nk)
-                break
+            flag = response.get("_tr_cont")
+            if flag is not None and flag not in ("M", "F"):
+                return pages
+            if flag is None and not next_nk:
+                return pages
+            if not next_nk or token in seen_tokens:
+                raise RuntimeError(f"KIS incomplete inquiry: invalid continuation path={path}")
             seen_tokens.add(token)
-            params = self._balance_params(next_fk, next_nk)
+            params.update(CTX_AREA_FK100=next_fk, CTX_AREA_NK100=next_nk)
             continuation = "N"
             if self.balance_page_interval_seconds:
                 time.sleep(self.balance_page_interval_seconds)
-        else:
-            self.logger.warning("account_snapshot pagination stopped reason=max_pages pages=%s", len(pages))
-        return pages
+        raise RuntimeError(f"KIS incomplete inquiry: page limit exceeded path={path}")
 
     def _balance_params(self, ctx_fk: str, ctx_nk: str) -> dict[str, str]:
         return {
@@ -215,8 +221,9 @@ class KisClient:
             "ORD_DVSN": "01" if request.market_order else "00",
             "ORD_QTY": str(request.quantity),
             "ORD_UNPR": "0" if request.market_order else str(request.limit_price),
+            "EXCG_ID_DVSN_CD": "KRX",
         }
-        tr_id = ("VTTC0802U" if self.is_demo else "TTTC0802U") if request.side is OrderSide.BUY else ("VTTC0801U" if self.is_demo else "TTTC0801U")
+        tr_id = ("VTTC0012U" if self.is_demo else "TTTC0012U") if request.side is OrderSide.BUY else ("VTTC0011U" if self.is_demo else "TTTC0011U")
         response = self._request("POST", ORDER_CASH_PATH, body=body, tr_id=tr_id)
         output = response.get("output") or {}
         order_id = str(output.get("ODNO") or "").strip()
@@ -224,32 +231,64 @@ class KisClient:
 
     def cancel_order(self, order_id: str, quantity: int) -> OrderStatus:
         self._require_account()
+        if not order_id.strip() or not order_id.strip().isdigit() or not order_id.strip().lstrip("0"):
+            raise ValueError("Cancel order ID must be a nonzero numeric ID")
+        if quantity < 1:
+            raise ValueError("Cancel quantity must be positive")
+        matches = [row for row in self.open_orders() if str(row.get("odno") or "").strip().lstrip("0") == order_id.strip().lstrip("0")]
+        if not matches:
+            raise RuntimeError("APBK0927: no remaining cancelable order; reconcile executions")
+        if len(matches) != 1:
+            raise RuntimeError("KIS cancel inquiry returned ambiguous order")
+        row = matches[0]
+        if row.get("psbl_qty") in (None, ""):
+            raise RuntimeError("KIS cancel inquiry missing cancelable quantity")
+        available = int(float(row["psbl_qty"]))
+        if available <= 0:
+            raise RuntimeError("APBK0927: no remaining cancelable quantity; reconcile executions")
+        organization = str(row.get("krx_fwdg_ord_orgno") or row.get("ord_gno_brno") or "").strip()
+        if not organization:
+            raise RuntimeError("KIS cancel inquiry missing order organization")
+        exchange = str(row.get("excg_id_dvsn_cd") or "KRX").strip()
+        if exchange != "KRX":
+            raise RuntimeError("KIS cancel only supports KRX orders")
         body = {
             "CANO": self.account_number,
             "ACNT_PRDT_CD": self.account_product_code,
-            "KRX_FWDG_ORD_ORGNO": "",
-            "ORGN_ODNO": order_id,
+            "KRX_FWDG_ORD_ORGNO": organization,
+            "ORGN_ODNO": str(row["odno"]).strip(),
             "ORD_DVSN": "00",
             "RVSE_CNCL_DVSN_CD": "02",
-            "ORD_QTY": str(quantity),
+            "ORD_QTY": str(min(quantity, available)),
             "ORD_UNPR": "0",
-            "QTY_ALL_ORD_YN": "Y",
+            "QTY_ALL_ORD_YN": "N",
+            "EXCG_ID_DVSN_CD": exchange,
         }
-        self._request("POST", ORDER_CANCEL_PATH, body=body, tr_id="VTTC0803U" if self.is_demo else "TTTC0803U")
+        self._request("POST", ORDER_CANCEL_PATH, body=body, tr_id="VTTC0013U" if self.is_demo else "TTTC0013U")
         return OrderStatus.CANCELED
 
     def executions(self, *, since: date | None = None) -> tuple[TradeFill, ...]:
+        rows = self._daily_order_rows(since=since)
+        if self.enable_execution_raw_log:
+            self._log_raw_execution_rows(rows)
+        return tuple(self._execution_fills(rows))
+
+    def _daily_order_rows(self, *, since: date | None = None, ccld_dvsn: str = "01") -> list[dict[str, Any]]:
         self._require_account()
         start = since or date.today()
+        today = date.today()
+        if start > today:
+            raise ValueError("Inquiry start date must not be in the future")
         params = {
             "CANO": self.account_number,
             "ACNT_PRDT_CD": self.account_product_code,
             "INQR_STRT_DT": start.strftime("%Y%m%d"),
-            "INQR_END_DT": date.today().strftime("%Y%m%d"),
+            "INQR_END_DT": today.strftime("%Y%m%d"),
             "SLL_BUY_DVSN_CD": "00",
             "INQR_DVSN": "00",
             "PDNO": "",
-            "CCLD_DVSN": "01",
+            "CCLD_DVSN": ccld_dvsn,
+            "EXCG_ID_DVSN_CD": "KRX",
             "ORD_GNO_BRNO": "",
             "ODNO": "",
             "INQR_DVSN_3": "00",
@@ -257,18 +296,24 @@ class KisClient:
             "CTX_AREA_FK100": "",
             "CTX_AREA_NK100": "",
         }
-        response = self._request("GET", DAILY_FILL_PATH, params=params, tr_id="VTTC8001R" if self.is_demo else "TTTC8001R")
-        rows = response.get("output1") or []
-        if self.enable_execution_raw_log:
-            self._log_raw_execution_rows(rows)
+        month_index = today.year * 12 + today.month - 1 - 3
+        year, month = divmod(month_index, 12)
+        cutoff = date(year, month + 1, min(today.day, calendar.monthrange(year, month + 1)[1]))
+        pages = []
+        if start < cutoff:
+            older = {**params, "INQR_END_DT": (cutoff - timedelta(days=1)).strftime("%Y%m%d")}
+            pages.extend(self._inquiry_pages(DAILY_FILL_PATH, older, "VTSC9215R" if self.is_demo else "CTSC9215R"))
+            params["INQR_STRT_DT"] = cutoff.strftime("%Y%m%d")
+        pages.extend(self._inquiry_pages(DAILY_FILL_PATH, params, "VTTC0081R" if self.is_demo else "TTTC0081R"))
+        return [row for page in pages for row in page.get("output1") or []]
+
+    def _execution_fills(self, rows: list[dict[str, Any]]) -> list[TradeFill]:
         fills = []
-        side_text = ""
         for row in rows:
             quantity = int(float(_first_value(row, ("tot_ccld_qty", "ccld_qty", "ord_qty")) or 0))
             price = int(float(_first_value(row, ("avg_prvs", "avg_pric", "ccld_unpr", "ord_unpr")) or 0))
             if quantity < 1 or price < 1:
                 continue
-            side = OrderSide.SELL if "매도" in side_text or "sell" in side_text.lower() else OrderSide.BUY
             order_id = str(_first_value(row, ("odno", "ODNO", "orgn_odno")) or "").strip()
             execution_id = _execution_id(row, order_id)
             side = _execution_side(row)
@@ -284,7 +329,7 @@ class KisClient:
                     execution_id=execution_id,
                 )
             )
-        return tuple(fills)
+        return fills
 
     def _log_raw_execution_rows(self, rows: list[dict[str, Any]]) -> None:
         fields = sorted({key for row in rows for key in row})
@@ -303,9 +348,13 @@ class KisClient:
 
     def open_orders(self) -> tuple[dict[str, Any], ...]:
         self._require_account()
+        if self.is_demo:
+            # The revision/cancellation inquiry has no documented demo TR.
+            rows = self._daily_order_rows(ccld_dvsn="00")
+            return tuple({**row, "psbl_qty": row["rmn_qty"]} for row in rows if int(float(row.get("rmn_qty") or 0)) > 0)
         params = {"CANO": self.account_number, "ACNT_PRDT_CD": self.account_product_code, "CTX_AREA_FK100": "", "CTX_AREA_NK100": "", "INQR_DVSN_1": "0", "INQR_DVSN_2": "0"}
-        response = self._request("GET", OPEN_ORDER_PATH, params=params, tr_id="VTTC8036R" if self.is_demo else "TTTC8036R")
-        return tuple(response.get("output") or [])
+        pages = self._inquiry_pages(OPEN_ORDER_PATH, params, "TTTC0084R")
+        return tuple(row for page in pages for row in page.get("output") or [])
 
     def _request(self, method: str, path: str, *, params: dict[str, str] | None = None, body: dict[str, Any] | None = None, tr_id: str, tr_cont: str = "") -> dict[str, Any]:
         query = f"?{urllib.parse.urlencode(params)}" if params else ""
@@ -321,13 +370,14 @@ class KisClient:
             }
             if tr_cont:
                 headers["tr_cont"] = tr_cont
-            if method == "POST" and body is not None:
+            if method == "POST" and body is not None and getattr(self, "use_order_hashkey", False):
                 headers["hashkey"] = self._hashkey(body)
             request = urllib.request.Request(f"{self.credentials.base_url}{path}{query}", data=json.dumps(body).encode("utf-8") if body is not None else None, headers=headers, method=method)
             try:
                 throttle_kis_request()
                 with urllib.request.urlopen(request, timeout=20) as response:
                     payload = json.loads(response.read().decode("utf-8"))
+                    payload["_tr_cont"] = str(getattr(response, "headers", {}).get("tr_cont", "")).strip()
                 if payload.get("rt_cd") != "0":
                     raise KisApiError(
                         f"KIS API failed: {payload.get('msg_cd')} {payload.get('msg1')}",

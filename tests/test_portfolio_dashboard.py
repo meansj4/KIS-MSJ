@@ -206,7 +206,14 @@ def test_portfolio_history_chart_reconstructs_daily_principal_and_pnl(tmp_path) 
     assert result["read_only"] is True
 
 
-def test_portfolio_unrealized_detail_returns_open_lot_targets_and_price_source(tmp_path) -> None:
+def test_portfolio_unrealized_detail_returns_open_lot_targets_and_price_source(tmp_path, monkeypatch) -> None:
+    # Keep the fixture's LOT age stable; wall-clock aging can lower targets below cost.
+    class FixtureDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 5, 29, 12, tzinfo=tz)
+
+    monkeypatch.setattr("kis_msj.lot_manager.datetime", FixtureDateTime)
     service, store = _service(tmp_path)
     _seed_dashboard_data(store)
 
