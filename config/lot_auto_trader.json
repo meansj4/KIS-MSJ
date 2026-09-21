@@ -3234,7 +3234,7 @@
     {
       "code": "057050",
       "name": "현대홈쇼핑",
-      "enabled": true,
+      "enabled": false,
       "market": "KOSPI",
       "sector": "소비/서비스",
       "note": "Operator requested add 2026-06-13; latest checked close 81,400 KRW; 1LOT 300,000 KRW; max 3,600,000 KRW; duplicate excluded before add",
@@ -3248,7 +3248,9 @@
       "audit_opinion_issue": false,
       "delisting_risk": false,
       "accounting_issue": false,
-      "liquidity_warning": false
+      "liquidity_warning": false,
+      "retire_after_exit": true,
+      "retire_reason": "delisted_after_comprehensive_share_exchange_with_hyundai_gf_holdings_20260720"
     },
     {
       "code": "031210",

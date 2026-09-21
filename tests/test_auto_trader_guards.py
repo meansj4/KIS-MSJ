@@ -52,6 +52,25 @@ def test_deep_loss_recovery_sell_uses_configured_sell_markdown(tmp_path) -> None
     assert request.limit_price == 9_950
 
 
+def test_reentry_trigger_above_live_market_is_capped_to_marketable_buy_limit(tmp_path) -> None:
+    bot = trader(tmp_path)
+    position = PositionState(code="007340", name="DN Automotive")
+    action = StrategyAction(
+        OrderSide.BUY,
+        300_000,
+        None,
+        "reentry_buy",
+        reentry_type=ReentryType.TRAILING_REENTRY.value,
+        limit_price=65_500,
+    )
+
+    request = bot.order_manager.build_request(position, action, 46_400)
+
+    assert request is not None
+    assert request.limit_price == bot.order_manager.buy_limit_price(46_400)
+    assert request.limit_price < action.limit_price
+
+
 def test_deep_loss_recovery_has_no_per_symbol_daily_sell_limit(tmp_path) -> None:
     bot = trader(tmp_path)
     bot.store.record_fill(
@@ -285,6 +304,47 @@ def test_startup_sync_auto_repairs_single_closed_partial_buy_gap(tmp_path) -> No
     assert sum(lot.remaining_quantity for lot in bot.lot_manager.open_lots("009070")) == 7
     assert bot.store.filled_quantity_for_order("0029867200", code="009070", side=OrderSide.BUY) == 7
     assert bot.store.find_order("0029867200").status is OrderStatus.FILLED_AFTER_CANCEL_REQUEST
+
+
+def test_account_mismatch_reconciles_late_aggregate_partial_sell_delta(tmp_path) -> None:
+    config = BotConfig(
+        order=OrderConfig(live_trading=True, account_snapshot_min_interval_seconds=0),
+        storage_path=str(tmp_path / "state.sqlite3"),
+        log_path=str(tmp_path / "trader.log"),
+    )
+    bot = AutoTrader(config, use_mock_client=True)
+    bought_at = datetime.now() - timedelta(days=1)
+    buy = TradeFill("033240", "Test", OrderSide.BUY, 57, 30_000, "BUY-1", bought_at, execution_id="BUY-EXEC")
+    bot.store.record_fill(buy)
+    position = bot.position_manager.apply_fill(buy)
+    lot_id = position.last_buy_lot_id
+    request = OrderRequest("033240", "Test", OrderSide.SELL, 5, 29_950, "sell_profitable_lot", lot_id=lot_id)
+    bot.store.record_order(OrderResult(request, "0013160300", OrderStatus.CANCELED_AFTER_PARTIAL_FILL, "partial"))
+    first = TradeFill("033240", "Test", OrderSide.SELL, 1, 29_950, "0013160300", datetime.now(), lot_id, "AGG:0013160300:033240:1:29950")
+    bot.store.record_fill(first)
+    position = bot.position_manager.apply_fill(first)
+    bot.store.save_position(position)
+    bot.store.save_lots(bot.lot_manager.lots.values())
+    aggregate = TradeFill("033240", "Test", OrderSide.SELL, 5, 29_950, "0013160300", datetime.now(), execution_id="AGG:0013160300:033240:5:29950")
+    bot.client.executions = lambda since=None: (aggregate,)
+    bot.client.account_snapshot = lambda: AccountSnapshot(
+        1_000_000,
+        1_000_000,
+        0,
+        0,
+        (BalanceItem("033240", "Test", 52, 29_315, 28_000),),
+    )
+    bot.client.open_orders = lambda: ()
+
+    bot.startup_sync()
+
+    repaired = bot.position_manager.positions["033240"]
+    assert sum(lot.remaining_quantity for lot in bot.lot_manager.open_lots("033240")) == 52
+    assert bot.store.filled_quantity_for_order("0013160300", code="033240", side=OrderSide.SELL, lot_id=lot_id) == 5
+    assert repaired.sync_status == "OK"
+    assert repaired.lot_quantity_mismatch is False
+    assert repaired.trading_paused is False
+    assert bot.risk_manager.data_mismatch_detected is False
 
 
 def test_startup_sync_keeps_sync_required_when_auto_repair_candidate_is_ambiguous(tmp_path) -> None:

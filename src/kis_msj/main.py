@@ -77,6 +77,8 @@ class AutoTrader:
         self.price_sampler = PriceSampler(self.client, config.order.price_sample_count, config.order.price_sample_interval_seconds)
         self.order_manager = OrderManager(config, self.client, self.store, self.logger)
         self._startup_recent_executions_reconciled = False
+        self._last_mismatch_execution_reconcile_at = 0.0
+        self._mismatch_execution_reconcile_interval_seconds = 300.0
         self._last_account_snapshot: AccountSnapshot | None = None
         self._last_account_snapshot_at = 0.0
         self._account_snapshot_rate_limited_until = 0.0
@@ -141,6 +143,9 @@ class AutoTrader:
                 self.logger.warning("open_orders skipped reason=account_snapshot_rate_limited_using_cache")
             else:
                 self.position_manager.sync_account(snapshot)
+                if self.position_manager.account_mismatch_detected:
+                    self.reconcile_recent_executions_on_mismatch()
+                    self.position_manager.sync_account(snapshot)
                 if self.position_manager.account_mismatch_detected:
                     self.auto_repair_sync_mismatch(snapshot)
                     self.position_manager.sync_account(snapshot)
@@ -591,6 +596,20 @@ class AutoTrader:
             return
         for fill in self.order_manager.reconcile_recent_executions():
             self.apply_reconciled_fill(fill)
+
+    def reconcile_recent_executions_on_mismatch(self) -> int:
+        """Recheck late aggregate executions before leaving the account globally blocked."""
+        now = time.monotonic()
+        if now - self._last_mismatch_execution_reconcile_at < self._mismatch_execution_reconcile_interval_seconds:
+            return 0
+        self._last_mismatch_execution_reconcile_at = now
+        applied = 0
+        for fill in self.order_manager.reconcile_recent_executions():
+            self.apply_reconciled_fill(fill)
+            applied += 1
+        if applied:
+            self.logger.warning("mismatch_execution_reconcile_applied fill_count=%s", applied)
+        return applied
 
     def apply_reconciled_fill(self, fill) -> None:
         self.invalidate_account_snapshot_cache("reconciled_fill_applied")

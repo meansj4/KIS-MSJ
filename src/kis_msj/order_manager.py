@@ -29,7 +29,27 @@ class OrderManager:
         market_order: bool = False,
     ) -> OrderRequest | None:
         if action.side is OrderSide.BUY:
-            limit_price = action.limit_price if action.limit_price > 0 else self.buy_limit_price(current_price)
+            executable_buy_limit = self.buy_limit_price(current_price)
+            if action.limit_price > 0 and action.reason == "reentry_buy":
+                # A stale/decayed trigger can sit above today's exchange upper
+                # limit.  Keep the trigger as the willingness-to-pay ceiling,
+                # but submit a marketable limit near the live quote so KIS does
+                # not reject an otherwise valid "price fell through trigger"
+                # reentry before it reaches the order book.
+                limit_price = min(action.limit_price, executable_buy_limit)
+                if limit_price != action.limit_price:
+                    self.logger.info(
+                        "buy_limit_capped code=%s reason=%s strategy_limit=%s executable_limit=%s current_price=%s",
+                        position.code,
+                        action.reason,
+                        action.limit_price,
+                        limit_price,
+                        current_price,
+                    )
+            elif action.limit_price > 0:
+                limit_price = action.limit_price
+            else:
+                limit_price = executable_buy_limit
             quantity = action.amount // current_price
         else:
             quantity = action.quantity or 0
