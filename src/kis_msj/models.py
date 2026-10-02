@@ -218,6 +218,10 @@ class OrderRequest:
     sell_reason: str = SellReason.UNKNOWN.value
     reentry_type: str = ReentryType.NONE.value
     cleanup_flag: bool = False
+    session: str = ""
+    venue: str = "KRX"
+    order_division: str = "00"
+    quote_market: str = "J"
 
 
 @dataclass(frozen=True)
@@ -229,6 +233,7 @@ class OrderResult:
     requested_at: str = ""
     cancel_retry_count: int = 0
     cancel_checked_at: str = ""
+    order_orgno: str = ""
 
 
 @dataclass(frozen=True)
@@ -244,3 +249,6 @@ class TradeFill:
     execution_id: str = ""
     sell_reason: str = SellReason.UNKNOWN.value
     reentry_type: str = ReentryType.NONE.value
+    # Order-level inquiry does not necessarily identify the execution venue.
+    reported_order_venue: str = ""
+    timestamp_source: str = "provided"

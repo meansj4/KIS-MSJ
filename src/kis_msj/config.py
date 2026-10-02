@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import hashlib
 from dataclasses import asdict, dataclass, field
+from datetime import date, time
 from pathlib import Path
 from typing import Any
 
@@ -221,6 +222,40 @@ class OrderConfig:
 
 
 @dataclass(frozen=True)
+class ExtendedHoursConfig:
+    enabled: bool = False
+    mode: str = "shadow"
+    max_quote_age_seconds: int = 90
+    # Exchange announcements may narrow/delay sessions; they never widen them.
+    calendar_overrides: dict[str, dict[str, str]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.mode not in {"shadow", "live"}:
+            raise ValueError("extended_hours.mode must be shadow or live")
+        if not isinstance(self.enabled, bool):
+            raise ValueError("extended_hours.enabled must be a boolean")
+        if not 1 <= self.max_quote_age_seconds <= 120:
+            raise ValueError("extended_hours.max_quote_age_seconds must be 1..120")
+        if not isinstance(self.calendar_overrides, dict):
+            raise ValueError("extended_hours.calendar_overrides must be an object")
+        for day, rules in self.calendar_overrides.items():
+            date.fromisoformat(day)
+            if not isinstance(rules, dict):
+                raise ValueError("calendar override must be an object")
+            for session, value in rules.items():
+                if session == "closed":
+                    if value not in {"true", "false"}:
+                        raise ValueError("calendar closed must be the string true or false")
+                elif session in {"NXT_PRE", "REGULAR", "NXT_AFTER", "KRX_AFTER"}:
+                    if value != "closed":
+                        parsed = time.fromisoformat(value)
+                        if parsed.tzinfo is not None:
+                            raise ValueError("calendar times must be local Korean times")
+                else:
+                    raise ValueError("unknown calendar session: " + session)
+
+
+@dataclass(frozen=True)
 class MarketHoursConfig:
     open_time: str = "09:00"
     close_time: str = "15:30"
@@ -258,6 +293,7 @@ class BotConfig:
     risk: RiskConfig = field(default_factory=RiskConfig)
     order: OrderConfig = field(default_factory=OrderConfig)
     market_hours: MarketHoursConfig = field(default_factory=MarketHoursConfig)
+    extended_hours: ExtendedHoursConfig = field(default_factory=ExtendedHoursConfig)
     kis_account: KisAccountConfig = field(default_factory=KisAccountConfig)
     upstream_watch: UpstreamWatchConfig = field(default_factory=UpstreamWatchConfig)
     experiment: ExperimentConfig = field(default_factory=ExperimentConfig)
@@ -286,6 +322,7 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> BotConfig:
         risk=RiskConfig(**{**asdict(base.risk), **raw.get("risk", {})}),
         order=OrderConfig(**{**asdict(base.order), **raw.get("order", {})}),
         market_hours=MarketHoursConfig(**{**asdict(base.market_hours), **raw.get("market_hours", {})}),
+        extended_hours=ExtendedHoursConfig(**raw.get("extended_hours", {})),
         kis_account=KisAccountConfig(**{**asdict(base.kis_account), **raw.get("kis_account", {})}),
         upstream_watch=UpstreamWatchConfig(**{**asdict(base.upstream_watch), **raw.get("upstream_watch", {})}),
         experiment=ExperimentConfig(**{**asdict(base.experiment), **raw.get("experiment", {})}),
@@ -344,7 +381,10 @@ def write_default_config(path: Path = DEFAULT_CONFIG_PATH) -> None:
 
 def config_to_dict(config: BotConfig) -> dict[str, Any]:
     """Return a JSON-serializable config dictionary for snapshots/analysis."""
-    return asdict(config)
+    result = asdict(config)
+    if config.extended_hours == ExtendedHoursConfig():
+        result.pop("extended_hours")  # Preserve the reverted baseline config hash.
+    return result
 
 
 def config_hash(config: BotConfig) -> str:

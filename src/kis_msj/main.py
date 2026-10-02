@@ -6,6 +6,8 @@ import argparse
 import json
 import sys
 import time
+import copy
+from dataclasses import replace
 from contextlib import nullcontext
 from datetime import datetime, time as day_time, timedelta
 from pathlib import Path
@@ -28,6 +30,8 @@ from .runtime_control import DEFAULT_RUNTIME_CONTROL_PATH, RuntimeControl, load_
 from .storage import StateStore
 from .strategy import LotGridStrategy, StrategyAction
 from .upstream_watcher import UpstreamWatcher
+from .market_session import SessionMarketData, SessionUnavailable, RoutedQuotes, Route, candidates, extended_window
+from .shadow_state import ShadowStateStore
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -76,6 +80,15 @@ class AutoTrader:
             self.client.logger = self.logger
         self.price_sampler = PriceSampler(self.client, config.order.price_sample_count, config.order.price_sample_interval_seconds)
         self.order_manager = OrderManager(config, self.client, self.store, self.logger)
+        self.session_market = SessionMarketData(self.client, config)
+        self.order_manager.session_market = self.session_market
+        if config.extended_hours.enabled:
+            self.client.execution_all_venues = True
+            self.client.session_order_validator = self.session_market.validate_request
+        # Remains enabled after switching OFF if extended orders need recovery.
+        self._session_audit_active = self.store.has_session_metadata()
+        if self._session_audit_active:
+            self.client.execution_all_venues = True
         self._startup_recent_executions_reconciled = False
         self._last_mismatch_execution_reconcile_at = 0.0
         self._mismatch_execution_reconcile_interval_seconds = 300.0
@@ -243,7 +256,7 @@ class AutoTrader:
                 account_risk = self.risk_manager.account_buy_allowed(snapshot, self.position_manager.positions)
             with profile.stage("manual_request") if profile else _null_stage():
                 self.process_manual_order_requests(snapshot, account_risk)
-            if not in_trade_window(self.config):
+            if not in_trade_window(self.config) and not extended_window(self.config):
                 # Reconciliation, account sync, and manual-request handling above still
                 # run outside market hours. Avoid walking and repeatedly writing the
                 # entire symbol/lot universe when no automatic decision can trade.
@@ -461,7 +474,7 @@ class AutoTrader:
                 if fill is None:
                     continue
                 self.invalidate_account_snapshot_cache("manual_fill_applied")
-                updated = self.position_manager.apply_fill(fill)
+                updated = self._apply_fill_with_session_audit(fill)
                 self.store.save_position(updated)
                 self.store.save_lots(self.lot_manager.lots.values())
                 self.store.update_manual_order_request(request_id, status="FILLED", linked_order_id=result.order_id)
@@ -478,6 +491,17 @@ class AutoTrader:
         )
 
     def manual_request_block_reason(self, manual: dict[str, object], position: PositionState, account_risk) -> str:
+        # Manual UI orders retain their original regular-hours route. They must
+        # not bypass the extended shadow switch or send market orders after hours.
+        if self.config.extended_hours.enabled and not in_trade_window(self.config):
+            return "manual_orders_regular_hours_only"
+        if self.config.extended_hours.enabled:
+            try:
+                route, _ = self.session_market.select(position.code, position.name)
+                if route.session != "REGULAR":
+                    return "manual_orders_regular_hours_only"
+            except SessionUnavailable as error:
+                return str(error)
         if not self.config.ui_manual_trading_enabled:
             return "ui_manual_trading_disabled"
         if not bool(manual.get("confirm_text_verified")):
@@ -613,7 +637,7 @@ class AutoTrader:
 
     def apply_reconciled_fill(self, fill) -> None:
         self.invalidate_account_snapshot_cache("reconciled_fill_applied")
-        updated = self.position_manager.apply_fill(fill)
+        updated = self._apply_fill_with_session_audit(fill)
         self.store.save_position(updated)
         self.store.save_lots(self.lot_manager.lots.values())
         self.logger.info(
@@ -712,15 +736,47 @@ class AutoTrader:
         self.store.mark_order_cancel_check(order.order_id, filled_after_cancel_request=filled_quantity > 0, post_cancel_execution_checked=True)
 
     def evaluate(self, position: PositionState, snapshot: AccountSnapshot, account_risk, profile: LoopProfile | None = None) -> None:
+        if not self.config.extended_hours.enabled:
+            return self._evaluate_strategy(position, snapshot, account_risk, profile)
+        try:
+            route, scan_quote = self.session_market.select(position.code, position.name)
+            if route.session != "REGULAR" and self.config.extended_hours.mode == "shadow":
+                return self._evaluate_shadow(position, snapshot, account_risk, route, scan_quote)
+            return self._evaluate_strategy(position, snapshot, account_risk, profile, route=route, scan_quote=scan_quote)
+        except SessionUnavailable as error:
+            self.logger.info("session_trade_blocked code=%s reason=%s", position.code, error)
+        except KisApiError as error:
+            # A venue-specific quote/order failure must not permanently mark the
+            # underlying stock halted in every other session.
+            self.logger.warning("session_api_unavailable code=%s error=%s", position.code, error)
+
+    def _evaluate_shadow(self, position, snapshot, account_risk, route: Route, scan_quote: Quote) -> None:
+        # The strategy mutates targets/reentry tracking while deciding. Run the
+        # *same* evaluator against detached managers and a read-only ledger.
+        # Do not use paper trading: it invents fills and changes the portfolio.
+        shadow = copy.copy(self)
+        shadow.store = ShadowStateStore(self.store)
+        shadow.lot_manager, shadow.position_manager, shadow.strategy = copy.deepcopy(
+            (self.lot_manager, self.position_manager, self.strategy))
+        shadow.risk_manager = copy.deepcopy(self.risk_manager)
+        shadow._last_decision_record_at = dict(self._last_decision_record_at)
+        shadow._active_loop_profile = None
+        shadow.order_manager = OrderManager(self.config, self.client, shadow.store, self.logger)
+        shadow._evaluate_strategy(copy.deepcopy(position), snapshot, account_risk, route=route, shadow=True, scan_quote=scan_quote)
+
+    def _evaluate_strategy(self, position: PositionState, snapshot: AccountSnapshot, account_risk,
+                           profile: LoopProfile | None = None, *, route: Route | None = None, shadow: bool = False,
+                           scan_quote: Quote | None = None) -> None:
+        self._decision_route, self._decision_shadow = route, shadow
         profile = profile or self._active_loop_profile
-        if not in_trade_window(self.config):
+        if route is None and not in_trade_window(self.config):
             self.logger.info("trade_blocked code=%s name=%s reason=outside_trade_window", position.code, position.name)
             return
-        if profile:
-            with profile.stage("quote_fetch"):
-                scan_quote = self.client.quote(position.code, name=position.name)
-        else:
-            scan_quote = self.client.quote(position.code, name=position.name)
+        quote_client = RoutedQuotes(self.session_market, route) if route else self.client
+        sampler = PriceSampler(quote_client, self.config.order.price_sample_count, self.config.order.price_sample_interval_seconds) if route else self.price_sampler
+        if scan_quote is None:
+            with profile.stage("quote_fetch") if profile else _null_stage():
+                scan_quote = quote_client.quote(position.code, name=position.name)
         current_price = scan_quote.price
         scan_samples = (scan_quote,)
         if current_price <= 0:
@@ -760,7 +816,7 @@ class AutoTrader:
         final_samples = scan_samples
         if action is not None:
             with profile.stage("quote_fetch") if profile else _null_stage():
-                stable_samples = self.price_sampler.sample(position.code, position.name)
+                stable_samples = sampler.sample(position.code, position.name)
                 stable, stable_reason = self.price_sampler.stable(stable_samples, self.config.risk.max_price_sample_volatility_pct)
             final_samples = stable_samples
             stable_price = stable_samples[-1].price if stable_samples else current_price
@@ -769,7 +825,7 @@ class AutoTrader:
                 current_price = stable_price
             else:
                 with profile.stage("quote_fetch") if profile else _null_stage():
-                    final_quote = self.client.quote(position.code, name=position.name)
+                    final_quote = quote_client.quote(position.code, name=position.name)
                 final_samples = (*stable_samples, final_quote)
                 current_price = final_quote.price
                 if current_price <= 0:
@@ -833,15 +889,45 @@ class AutoTrader:
         if request.side is OrderSide.BUY and snapshot.cash_available < request.quantity * request.limit_price:
             self.logger.info("trade_blocked code=%s reason=insufficient_cash", position.code)
             return
+        if route:
+            request = replace(request, session=route.session, venue=route.venue,
+                              quote_market=route.quote_market, order_division=route.order_division)
+            if route not in candidates(self.config, self.session_market.clock()):
+                raise SessionUnavailable("session_changed_before_submission")
+        if shadow:
+            self.logger.info("extended_shadow_signal code=%s side=%s qty=%s limit=%s lot_id=%s venue=%s session=%s quote_market=%s reason=%s submitted=false",
+                             request.code, request.side.value, request.quantity, request.limit_price, request.lot_id,
+                             request.venue, request.session, request.quote_market, request.reason)
+            return
         result, fill = self.order_manager.submit_and_confirm(request)
         if fill is None:
             self.logger.info("order_not_filled code=%s order_id=%s status=%s", position.code, result.order_id, result.status.value)
             return
         self.invalidate_account_snapshot_cache("auto_fill_applied")
-        updated = self.position_manager.apply_fill(fill)
+        updated = self._apply_fill_with_session_audit(fill)
         self.store.save_position(updated)
         self.store.save_lots(self.lot_manager.lots.values())
         self.logger.info("fill_applied code=%s side=%s qty=%s price=%s lot_id=%s order_id=%s", fill.code, fill.side.value, fill.quantity, fill.price, fill.lot_id, fill.order_id)
+
+    def _apply_fill_with_session_audit(self, fill):
+        if not (self.config.extended_hours.enabled or self._session_audit_active):
+            return self.position_manager.apply_fill(fill)
+        before = {key: (lot.remaining_quantity, lot.realized_profit_loss, lot.estimated_fee_tax)
+                  for key, lot in self.lot_manager.lots.items()}
+        updated = self.position_manager.apply_fill(fill)
+        try:
+            for key, lot in self.lot_manager.lots.items():
+                if fill.side is OrderSide.BUY and key not in before:
+                    self.store.record_session_lot_application(fill, key, lot.buy_quantity)
+                elif fill.side is OrderSide.SELL and key == fill.lot_id and key in before:
+                    qty, pnl, fee = before[key]
+                    self.store.record_session_lot_application(fill, key, qty - lot.remaining_quantity,
+                                                             lot.realized_profit_loss - pnl, lot.estimated_fee_tax - fee)
+        except Exception:
+            # Optional attribution must not prevent the caller from persisting
+            # the already-applied real fill. Reports expose unattributed sells.
+            self.logger.exception("session_lot_audit_failed order_id=%s lot_id=%s", fill.order_id, fill.lot_id)
+        return updated
 
     def should_record_symbol_decision(
         self,
@@ -902,6 +988,9 @@ class AutoTrader:
         )
         avg_profit_pct = (current_price - position.average_price) / position.average_price * 100.0 if position.average_price else 0.0
         price_context = self.price_context(position, current_price, samples)
+        decision_route = getattr(self, "_decision_route", None)
+        if decision_route is not None:
+            price_context["source"] = f"KIS_REST:{decision_route.quote_market}:{decision_route.session}:{'shadow' if self._decision_shadow else 'live'}"
         decision_data = dict(
             config_hash=self.config_hash,
             run_id=self.run_id,

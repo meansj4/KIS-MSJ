@@ -6413,5 +6413,11 @@
     "experiment_name": "KOSPI 120 + under-30k balance priority 23",
     "operator_note": "Operator add 2026-06-13: config expanded to 164 enabled symbols after excluding existing duplicates. Risk caps aligned to 164 active symbols, 1,968 total open lots, 190,800,000 KRW max invested amount, and 36,000,000 KRW daily new/initial buy amount. No KIS order API or DB reset performed.",
     "purpose": "theme_lot_amount_equalization_under_30k_balance_priority"
+  },
+  "extended_hours": {
+    "enabled": true,
+    "mode": "live",
+    "max_quote_age_seconds": 90,
+    "calendar_overrides": {}
   }
 }

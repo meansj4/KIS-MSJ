@@ -5,7 +5,8 @@ from __future__ import annotations
 import sqlite3
 import shutil
 import json
-from dataclasses import asdict
+from contextlib import nullcontext
+from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
@@ -823,7 +824,7 @@ class StateStore:
                 ),
             )
 
-    def record_order(self, result: OrderResult) -> None:
+    def record_order(self, result: OrderResult, *, _connection=None) -> None:
         request = result.request
         requested_at = datetime.now().isoformat(timespec="seconds")
         cancel_requested = result.status in {
@@ -842,7 +843,7 @@ class StateStore:
         }
         cancel_rejected = result.status is OrderStatus.CANCEL_REJECTED
         filled_after_cancel = result.status is OrderStatus.FILLED_AFTER_CANCEL_REQUEST
-        with self._connect() as connection:
+        with (self._connect() if _connection is None else nullcontext(_connection)) as connection:
             connection.execute(
                 """
                 INSERT INTO orders (
@@ -901,6 +902,86 @@ class StateStore:
                     int(filled_after_cancel),
                 ),
             )
+
+            if request.session:
+                self._ensure_session_metadata(connection)
+                connection.execute(
+                    """INSERT INTO order_session_metadata
+                       (order_id, code, side, requested_at, session, venue, order_division, quote_market, order_orgno)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(order_id, code, side) DO UPDATE SET
+                       order_orgno=CASE WHEN excluded.order_orgno != '' THEN excluded.order_orgno ELSE order_session_metadata.order_orgno END""",
+                    (result.order_id, request.code, request.side.value, requested_at, request.session,
+                     request.venue, request.order_division, request.quote_market, result.order_orgno),
+                )
+
+    @staticmethod
+    def _ensure_session_metadata(connection) -> None:
+        connection.execute("""CREATE TABLE IF NOT EXISTS order_session_metadata (
+            order_id TEXT NOT NULL, code TEXT NOT NULL, side TEXT NOT NULL,
+            requested_at TEXT NOT NULL, session TEXT NOT NULL, venue TEXT NOT NULL,
+            order_division TEXT NOT NULL, quote_market TEXT NOT NULL, order_orgno TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY(order_id, code, side))""")
+        connection.execute("""CREATE TABLE IF NOT EXISTS fill_session_metadata (
+            fill_id INTEGER PRIMARY KEY, session TEXT NOT NULL, order_session TEXT NOT NULL,
+            order_venue TEXT NOT NULL, reported_order_venue TEXT NOT NULL,
+            actual_execution_venue TEXT NOT NULL DEFAULT '', attribution TEXT NOT NULL)""")
+        connection.execute("""CREATE TABLE IF NOT EXISTS fill_lot_attribution (
+            fill_id INTEGER NOT NULL, lot_id TEXT NOT NULL, applied_quantity INTEGER NOT NULL,
+            realized_pnl INTEGER NOT NULL, fee_tax INTEGER NOT NULL,
+            PRIMARY KEY(fill_id, lot_id))""")
+
+    def record_session_lot_application(self, fill: TradeFill, lot_id: str, quantity: int, pnl: int = 0, fee_tax: int = 0) -> None:
+        with self._connect() as connection:
+            if not connection.execute("SELECT 1 FROM sqlite_master WHERE name='fill_session_metadata'").fetchone():
+                return
+            rows = connection.execute("""SELECT f.id FROM fills f JOIN fill_session_metadata m ON m.fill_id=f.id
+                WHERE f.order_id=? AND f.code=? AND f.side=? AND f.filled_at=? AND f.quantity=? AND f.price=?""",
+                (fill.order_id, fill.code, fill.side.value, fill.filled_at.isoformat(), fill.quantity, fill.price)).fetchall()
+            if len(rows) != 1:
+                return
+            self._ensure_session_metadata(connection)
+            connection.execute("""INSERT OR IGNORE INTO fill_lot_attribution
+                (fill_id, lot_id, applied_quantity, realized_pnl, fee_tax) VALUES (?, ?, ?, ?, ?)""",
+                (rows[0]["id"], lot_id, quantity, pnl, fee_tax))
+
+    def reserve_session_intent(self, result: OrderResult) -> bool:
+        request = result.request
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            placeholders = ",".join("?" for _ in OPEN_ORDER_STATUSES)
+            pending = connection.execute(
+                f"SELECT 1 FROM orders WHERE code=? AND side=? AND status IN ({placeholders}) AND (?='' OR lot_id=?)",
+                (request.code, request.side.value, *OPEN_ORDER_STATUSES,
+                 request.lot_id if request.side is OrderSide.SELL else "", request.lot_id)).fetchone()
+            if pending:
+                return False
+            self.record_order(result, _connection=connection)
+        return True
+
+    def resolve_session_intent(self, intent: OrderResult, result: OrderResult) -> OrderResult:
+        # Rename the single reservation atomically; do not count/reserve twice.
+        result = replace(result, order_id=result.order_id or intent.order_id)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("UPDATE orders SET order_id=? WHERE order_id=?", (result.order_id, intent.order_id))
+            connection.execute("UPDATE order_session_metadata SET order_id=? WHERE order_id=?", (result.order_id, intent.order_id))
+            self.record_order(result, _connection=connection)
+        return result
+
+    def has_session_metadata(self) -> bool:
+        with self._connect() as connection:
+            return connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='order_session_metadata'").fetchone() is not None
+
+    def _restore_order_route(self, request: OrderRequest, order_id: str) -> OrderRequest:
+        with self._connect() as connection:
+            if not connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='order_session_metadata'").fetchone():
+                return request
+            row = connection.execute("SELECT * FROM order_session_metadata WHERE order_id=? AND code=? AND side=?",
+                                     (order_id, request.code, request.side.value)).fetchone()
+        if row is None:
+            return request
+        return replace(request, session=row["session"], venue=row["venue"], order_division=row["order_division"], quote_market=row["quote_market"])
 
     def mark_order_cancel_check(
         self,
@@ -1012,6 +1093,16 @@ class StateStore:
                     self.active_experiment_name,
                 ),
             )
+            if cursor.rowcount > 0 and connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='order_session_metadata'").fetchone():
+                metadata = connection.execute("SELECT * FROM order_session_metadata WHERE order_id=? AND code=? AND side=?",
+                                              (fill.order_id, fill.code, fill.side.value)).fetchone()
+                if metadata:
+                    from .session_audit import fill_session
+                    session, attribution = fill_session(fill, metadata["venue"])
+                    connection.execute("""INSERT OR IGNORE INTO fill_session_metadata
+                        (fill_id, session, order_session, order_venue, reported_order_venue, attribution)
+                        VALUES (?, ?, ?, ?, ?, ?)""",
+                        (cursor.lastrowid, session, metadata["session"], metadata["venue"], fill.reported_order_venue, attribution))
         return cursor.rowcount > 0
 
     def open_orders(self) -> tuple[OrderResult, ...]:
@@ -1038,7 +1129,7 @@ class StateStore:
             )
             orders.append(
                 OrderResult(
-                    request,
+                    self._restore_order_route(request, str(row["order_id"])),
                     str(row["order_id"]),
                     OrderStatus(str(row["status"])),
                     str(row["message"]),
@@ -1085,7 +1176,7 @@ class StateStore:
             )
             orders.append(
                 OrderResult(
-                    request,
+                    self._restore_order_route(request, str(row["order_id"])),
                     str(row["order_id"]),
                     OrderStatus(str(row["status"])),
                     str(row["message"]),
@@ -1121,7 +1212,7 @@ class StateStore:
                 bool(row["cleanup_flag"]),
             )
             return OrderResult(
-                request,
+                self._restore_order_route(request, str(row["order_id"])),
                 str(row["order_id"]),
                 OrderStatus(str(row["status"])),
                 str(row["message"]),

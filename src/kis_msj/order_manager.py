@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import logging
+import json
 import time
+from dataclasses import replace
+from uuid import uuid4
 from datetime import datetime, time as day_time, timedelta
 
 from .config import BotConfig
@@ -71,6 +74,17 @@ class OrderManager:
         )
 
     def submit_and_confirm(self, request: OrderRequest) -> tuple[OrderResult, TradeFill | None]:
+        if request.session:
+            from .market_session import SessionUnavailable, Route
+            if not self.config.extended_hours.enabled:
+                raise SessionUnavailable("extended_hours_disabled")
+            market = getattr(self, "session_market", None)
+            if market is None:
+                raise SessionUnavailable("session_market_validation_missing")
+            market.validate_request(request)
+            # Same ledger guard regardless of venue, before any network POST.
+            if self.store.has_open_order(request.code, request.side, request.lot_id if request.side is OrderSide.SELL else ""):
+                raise SessionUnavailable("existing_order_any_venue")
         self.logger.info(
             "order_request live=%s code=%s side=%s qty=%s limit=%s lot_id=%s reason=%s sell_reason=%s reentry_type=%s cleanup_flag=%s",
             self.config.order.live_trading,
@@ -93,7 +107,46 @@ class OrderManager:
                 return result, None
             return result, fill
 
-        result = self.client.place_order(request)
+        if request.session:
+            # Durable reservation *before* sending. Ambiguous transport failure
+            # stays pending and blocks retransmission, including after restart.
+            intent_id = "INTENT-" + uuid4().hex
+            intent = OrderResult(request, intent_id, OrderStatus.REQUESTED, "submission_in_progress")
+            if not self.store.reserve_session_intent(intent):
+                raise SessionUnavailable("existing_order_any_venue")
+            try:
+                result = self.client.place_order(request)
+            except Exception as error:
+                from .kis_client import KisApiError
+                try:
+                    business_rejection = (isinstance(error, KisApiError) and error.status_code is None
+                                          and json.loads(error.body).get("rt_cd") == "1")
+                except (ValueError, TypeError):
+                    business_rejection = False
+                route = Route(request.session, request.venue, request.quote_market, request.order_division)
+                if business_rejection or isinstance(error, SessionUnavailable):
+                    rejected = replace(intent, status=OrderStatus.REJECTED, message=str(error))
+                    self.store.record_order(rejected)
+                    market.reject_for_day(request.code, route, "session_order_rejected")
+                    self.logger.warning("session_order_rejected code=%s session=%s venue=%s error=%s", request.code, request.session, request.venue, error)
+                    return rejected, None
+                self.store.record_order(replace(intent, message="submission_outcome_unknown:" + type(error).__name__))
+                market.reject_for_day(request.code, route, "submission_requires_reconciliation")
+                raise
+            try:
+                result = self.store.resolve_session_intent(intent, result)
+            except Exception:
+                # Preserve the acknowledged broker ID for manual reconciliation
+                # if the legacy order-number-only key collides or storage fails.
+                self.store.record_order(replace(intent, message="broker_acknowledged:" + result.order_id + ":ledger_reconciliation_required"))
+                market.reject_for_day(request.code, Route(request.session, request.venue, request.quote_market, request.order_division), "submission_requires_reconciliation")
+                self.logger.exception("session_order_ack_storage_failed code=%s intent_id=%s broker_order_id=%s",
+                                      request.code, intent.order_id, result.order_id)
+                raise
+            if result.status is OrderStatus.REJECTED:
+                market.reject_for_day(request.code, Route(request.session, request.venue, request.quote_market, request.order_division), "session_order_rejected")
+        else:
+            result = self.client.place_order(request)
         self.store.record_order(result)
         if result.status is not OrderStatus.REQUESTED:
             return result, None
@@ -104,7 +157,7 @@ class OrderManager:
                 return self._record_filled(result, fill)
             time.sleep(2)
         try:
-            status = self.client.cancel_order(result.order_id, request.quantity)
+            status = self._cancel(result, request.quantity)
         except RuntimeError as error:
             fill = self._find_matching_fill(result)
             if fill:
@@ -162,6 +215,10 @@ class OrderManager:
                 len(fetched_fills),
             )
         for result in open_orders:
+            if result.order_id.startswith("INTENT-"):
+                self.logger.error("order_submission_unknown code=%s intent_id=%s manual_broker_reconciliation_required=true",
+                                  result.request.code, result.order_id)
+                continue
             fills = self._matching_fills(result, fetched_fills)
             for original_fill in fills:
                 fill = self._dedupe_or_delta_fill(original_fill)
@@ -185,7 +242,7 @@ class OrderManager:
             if elapsed is None or elapsed < self.config.order.limit_order_timeout_seconds:
                 continue
             try:
-                status = self.client.cancel_order(result.order_id, max(1, result.request.quantity - filled_quantity))
+                status = self._cancel(result, max(1, result.request.quantity - filled_quantity))
             except RuntimeError as error:
                 if filled_quantity == 0 and "APBK0927" in str(error):
                     # KIS reports that there is no remaining cancelable quantity when
@@ -313,6 +370,9 @@ class OrderManager:
             if order is None or order.request.code != fill.code or order.request.side != fill.side:
                 ignored_unmatched_count += 1
                 continue
+            if order.request.session and not self._matching_fills(order, (fill,)):
+                ignored_unmatched_count += 1
+                continue
             matched = TradeFill(
                 fill.code,
                 fill.name,
@@ -325,6 +385,8 @@ class OrderManager:
                 fill.execution_id,
                 order.request.sell_reason,
                 order.request.reentry_type,
+                fill.reported_order_venue,
+                fill.timestamp_source,
             )
             original_matched = matched
             matched = self._dedupe_or_delta_fill(matched)
@@ -378,6 +440,8 @@ class OrderManager:
                 f"{fill.execution_id}:delta:{already_filled}->{fill.quantity}",
                 fill.sell_reason,
                 fill.reentry_type,
+                fill.reported_order_venue,
+                fill.timestamp_source,
             )
         return fill
 
@@ -385,14 +449,32 @@ class OrderManager:
         fills = self._matching_fills(result)
         return fills[0] if fills else None
 
+    def _cancel(self, result: OrderResult, quantity: int) -> OrderStatus:
+        if result.request.session:
+            try:
+                return self.client.cancel_order(result.order_id, quantity, original_request=result.request,
+                                                original_requested_at=result.requested_at)
+            except RuntimeError as error:
+                # An order absent from the cancelable list during a venue gap is
+                # not proof of cancellation. Require final broker quantities.
+                if self.client.session_order_terminal(result):
+                    raise RuntimeError("APBK0927: session order terminal quantities confirmed") from error
+                raise RuntimeError("session_cancel_outcome_unconfirmed") from error
+        return self.client.cancel_order(result.order_id, quantity)
+
     def _matching_fills(self, result: OrderResult, fetched_fills: tuple[TradeFill, ...] | None = None) -> list[TradeFill]:
         request = result.request
         order_id = _normalize_order_id(result.order_id)
         matches = []
         source_fills = fetched_fills if fetched_fills is not None else self.client.executions()
         for fill in source_fills:
+            if request.session:
+                if fill.reported_order_venue and fill.reported_order_venue != request.venue:
+                    continue
+                if result.requested_at and fill.filled_at.date().isoformat() != result.requested_at[:10]:
+                    continue
             if _normalize_order_id(fill.order_id) == order_id and fill.code == request.code and fill.side == request.side:
-                matches.append(TradeFill(fill.code, fill.name, fill.side, fill.quantity, fill.price, fill.order_id, fill.filled_at, request.lot_id, fill.execution_id, request.sell_reason, request.reentry_type))
+                matches.append(replace(fill, lot_id=request.lot_id, sell_reason=request.sell_reason, reentry_type=request.reentry_type))
         return matches
 
     def _execution_query_start(self, open_orders: tuple[OrderResult, ...]) -> datetime:
@@ -450,6 +532,9 @@ class OrderManager:
             return False
         max_retries = max(1, self.config.order.cancel_rejected_max_retries)
         if result.cancel_retry_count >= max_retries:
+            if result.request.session:
+                self.logger.error("session_order_reconciliation_required order_id=%s reservation_retained=true", result.order_id)
+                return True
             status = OrderStatus.CANCELED_AFTER_PARTIAL_FILL if filled_quantity > 0 else OrderStatus.CANCELED_NO_FILL
             self.store.mark_order_cancel_check(result.order_id, post_cancel_execution_checked=True)
             self.store.record_order(OrderResult(result.request, result.order_id, status, "cancel_rejected_retry_limit_no_remaining_fill"))

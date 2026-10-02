@@ -214,28 +214,38 @@ class KisClient:
 
     def place_order(self, request: OrderRequest) -> OrderResult:
         self._require_account()
+        if request.session:
+            validator = getattr(self, "session_order_validator", None)
+            if validator is None:
+                raise RuntimeError("Session order requires market validation")
+            validator(request)
         body = {
             "CANO": self.account_number,
             "ACNT_PRDT_CD": self.account_product_code,
             "PDNO": request.code,
-            "ORD_DVSN": "01" if request.market_order else "00",
+            "ORD_DVSN": "01" if request.market_order else request.order_division,
             "ORD_QTY": str(request.quantity),
             "ORD_UNPR": "0" if request.market_order else str(request.limit_price),
-            "EXCG_ID_DVSN_CD": "KRX",
+            "EXCG_ID_DVSN_CD": request.venue,
         }
         tr_id = ("VTTC0012U" if self.is_demo else "TTTC0012U") if request.side is OrderSide.BUY else ("VTTC0011U" if self.is_demo else "TTTC0011U")
-        response = self._request("POST", ORDER_CASH_PATH, body=body, tr_id=tr_id)
+        options = {"retry_ambiguous_post": False} if request.session else {}
+        response = self._request("POST", ORDER_CASH_PATH, body=body, tr_id=tr_id, **options)
         output = response.get("output") or {}
         order_id = str(output.get("ODNO") or "").strip()
-        return OrderResult(request, order_id, OrderStatus.REQUESTED if order_id else OrderStatus.REJECTED, str(response.get("msg1", "")))
+        return OrderResult(request, order_id, OrderStatus.REQUESTED if order_id else OrderStatus.REJECTED,
+                           str(response.get("msg1", "")), order_orgno=str(output.get("KRX_FWDG_ORD_ORGNO") or ""))
 
-    def cancel_order(self, order_id: str, quantity: int) -> OrderStatus:
+    def cancel_order(self, order_id: str, quantity: int, *, original_request: OrderRequest | None = None, original_requested_at: str = "") -> OrderStatus:
         self._require_account()
         if not order_id.strip() or not order_id.strip().isdigit() or not order_id.strip().lstrip("0"):
             raise ValueError("Cancel order ID must be a nonzero numeric ID")
         if quantity < 1:
             raise ValueError("Cancel quantity must be positive")
-        matches = [row for row in self.open_orders() if str(row.get("odno") or "").strip().lstrip("0") == order_id.strip().lstrip("0")]
+        if original_request and original_requested_at and original_requested_at[:10] != date.today().isoformat():
+            raise RuntimeError("Historical session order requires terminal-state reconciliation")
+        matches = [row for row in self.open_orders() if str(row.get("odno") or "").strip().lstrip("0") == order_id.strip().lstrip("0")
+                   and (original_request is None or str(row.get("pdno") or "").zfill(6) == original_request.code)]
         if not matches:
             raise RuntimeError("APBK0927: no remaining cancelable order; reconcile executions")
         if len(matches) != 1:
@@ -249,23 +259,47 @@ class KisClient:
         organization = str(row.get("krx_fwdg_ord_orgno") or row.get("ord_gno_brno") or "").strip()
         if not organization:
             raise RuntimeError("KIS cancel inquiry missing order organization")
-        exchange = str(row.get("excg_id_dvsn_cd") or "KRX").strip()
-        if exchange != "KRX":
+        exchange = str(row.get("excg_id_dvsn_cd") or (original_request.venue if original_request else "KRX")).strip()
+        if original_request is not None and exchange != original_request.venue:
+            raise RuntimeError("Cancel inquiry venue conflicts with original order")
+        if exchange not in {"KRX", "NXT", "SOR"} or (original_request is None and exchange != "KRX"):
             raise RuntimeError("KIS cancel only supports KRX orders")
+        division = original_request.order_division if original_request else "00"
+        if original_request and row.get("ord_dvsn_cd") and str(row["ord_dvsn_cd"]) != division:
+            raise RuntimeError("Cancel inquiry order type conflicts with original order")
         body = {
             "CANO": self.account_number,
             "ACNT_PRDT_CD": self.account_product_code,
             "KRX_FWDG_ORD_ORGNO": organization,
             "ORGN_ODNO": str(row["odno"]).strip(),
-            "ORD_DVSN": "00",
+            "ORD_DVSN": division,
             "RVSE_CNCL_DVSN_CD": "02",
             "ORD_QTY": str(min(quantity, available)),
             "ORD_UNPR": "0",
             "QTY_ALL_ORD_YN": "N",
             "EXCG_ID_DVSN_CD": exchange,
         }
-        self._request("POST", ORDER_CANCEL_PATH, body=body, tr_id="VTTC0013U" if self.is_demo else "TTTC0013U")
+        options = {"retry_ambiguous_post": False} if original_request else {}
+        self._request("POST", ORDER_CANCEL_PATH, body=body, tr_id="VTTC0013U" if self.is_demo else "TTTC0013U", **options)
         return OrderStatus.CANCELED
+
+    def session_order_terminal(self, result: OrderResult) -> bool:
+        request = result.request
+        day = date.fromisoformat(result.requested_at[:10]) if result.requested_at else date.today()
+        matches = [row for row in self._daily_order_rows(since=day, ccld_dvsn="00")
+                   if str(row.get("odno") or "").lstrip("0") == result.order_id.lstrip("0")
+                   and str(row.get("pdno") or "").zfill(6) == request.code
+                   and str(row.get("ord_dt") or "") == day.strftime("%Y%m%d")
+                   and _execution_side(row) == request.side
+                   and str(row.get("excg_id_dvsn_cd") or row.get("excg_id_dvsn_Cd") or "") == request.venue]
+        if len(matches) != 1:
+            return False
+        row = matches[0]
+        if str(row.get("rmn_qty", "")) not in {"0", "0.0"}:
+            return False
+        canceled = int(float(row.get("cnc_cfrm_qty") or row.get("cncl_cfrm_qty") or 0))
+        accounted = canceled + sum(int(float(row.get(key) or 0)) for key in ("tot_ccld_qty", "rjct_qty"))
+        return accounted >= request.quantity
 
     def executions(self, *, since: date | None = None) -> tuple[TradeFill, ...]:
         rows = self._daily_order_rows(since=since)
@@ -288,7 +322,7 @@ class KisClient:
             "INQR_DVSN": "00",
             "PDNO": "",
             "CCLD_DVSN": ccld_dvsn,
-            "EXCG_ID_DVSN_CD": "KRX",
+            "EXCG_ID_DVSN_CD": "ALL" if getattr(self, "execution_all_venues", False) and not self.is_demo else "KRX",
             "ORD_GNO_BRNO": "",
             "ODNO": "",
             "INQR_DVSN_3": "00",
@@ -327,6 +361,8 @@ class KisClient:
                     order_id,
                     _execution_datetime(row),
                     execution_id=execution_id,
+                    reported_order_venue=str(row.get("excg_id_dvsn_cd") or row.get("excg_id_dvsn_Cd") or ""),
+                    timestamp_source="execution" if _first_value(row, ("ccld_dtime", "ccld_tmd")) else "order_time",
                 )
             )
         return fills
@@ -356,7 +392,7 @@ class KisClient:
         pages = self._inquiry_pages(OPEN_ORDER_PATH, params, "TTTC0084R")
         return tuple(row for page in pages for row in page.get("output") or [])
 
-    def _request(self, method: str, path: str, *, params: dict[str, str] | None = None, body: dict[str, Any] | None = None, tr_id: str, tr_cont: str = "") -> dict[str, Any]:
+    def _request(self, method: str, path: str, *, params: dict[str, str] | None = None, body: dict[str, Any] | None = None, tr_id: str, tr_cont: str = "", retry_ambiguous_post: bool = True) -> dict[str, Any]:
         query = f"?{urllib.parse.urlencode(params)}" if params else ""
         token_refreshed = False
         for attempt in range(3):
@@ -399,6 +435,8 @@ class KisClient:
                     status_code=error.code,
                     body=error_body,
                 )
+                if method == "POST" and not retry_ambiguous_post:
+                    raise wrapped from error
                 if not token_refreshed and is_token_expired_error(wrapped):
                     self.refresh_access_token(f"{path}:http_token_expired")
                     token_refreshed = True
@@ -409,11 +447,15 @@ class KisClient:
             except urllib.error.URLError as error:
                 self.consecutive_errors += 1
                 wrapped = KisApiError(f"KIS network request failed: {error.reason}", method=method, path=path, tr_id=tr_id)
+                if method == "POST" and not retry_ambiguous_post:
+                    raise wrapped from error
                 if attempt >= 2:
                     raise wrapped from error
                 time.sleep(2**attempt)
             except KisApiError as error:
                 self.consecutive_errors += 1
+                if method == "POST" and not retry_ambiguous_post:
+                    raise
                 if not token_refreshed and is_token_expired_error(error):
                     self.refresh_access_token(f"{path}:api_token_expired")
                     token_refreshed = True
