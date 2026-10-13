@@ -229,7 +229,7 @@ class KisClient:
             "EXCG_ID_DVSN_CD": request.venue,
         }
         tr_id = ("VTTC0012U" if self.is_demo else "TTTC0012U") if request.side is OrderSide.BUY else ("VTTC0011U" if self.is_demo else "TTTC0011U")
-        options = {"retry_ambiguous_post": False} if request.session else {}
+        options = {"retry_ambiguous_post": False} if request.session or getattr(self, "durable_order_submission", False) else {}
         response = self._request("POST", ORDER_CASH_PATH, body=body, tr_id=tr_id, **options)
         output = response.get("output") or {}
         order_id = str(output.get("ODNO") or "").strip()
@@ -279,7 +279,7 @@ class KisClient:
             "QTY_ALL_ORD_YN": "N",
             "EXCG_ID_DVSN_CD": exchange,
         }
-        options = {"retry_ambiguous_post": False} if original_request else {}
+        options = {"retry_ambiguous_post": False} if original_request or getattr(self, "durable_order_submission", False) else {}
         self._request("POST", ORDER_CANCEL_PATH, body=body, tr_id="VTTC0013U" if self.is_demo else "TTTC0013U", **options)
         return OrderStatus.CANCELED
 

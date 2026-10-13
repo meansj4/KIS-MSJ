@@ -32,6 +32,8 @@ from .strategy import LotGridStrategy, StrategyAction
 from .upstream_watcher import UpstreamWatcher
 from .market_session import SessionMarketData, SessionUnavailable, RoutedQuotes, Route, candidates, extended_window
 from .shadow_state import ShadowStateStore
+from .cash_rotation import (decide_with_cash_signal, handle_shortfall,
+                            buy_block_reason as cash_rotation_buy_block, abandon_invalid_target)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -206,6 +208,7 @@ class AutoTrader:
 
     def run_once(self) -> str:
         self._loop_id += 1
+        self._cash_rotation_submitted_this_loop = False
         profile = (
             LoopProfile(
                 loop_id=self._loop_id,
@@ -275,7 +278,16 @@ class AutoTrader:
                 return ""
             with profile.stage("deep_loss_price_cache") if profile else _null_stage():
                 self.refresh_completed_session_price_cache()
-            for stock in self.config.stocks:
+            stocks = list(self.config.stocks)
+            if self.config.risk.cash_shortfall_rotation_enabled:
+                plan = self.store.load_cash_rotation_plan()
+                if plan:
+                    target = self.stock_config_for_code(plan["target_code"])
+                    if (target is None or not target.enabled or target.manual_only or target.danger_state) and not self.store.open_orders():
+                        self.store.clear_cash_rotation_plan()
+                    else:
+                        stocks.sort(key=lambda stock: stock.code != plan["target_code"])
+            for stock in stocks:
                 with profile.stage("runtime_control") if profile else _null_stage():
                     interrupt = self.runtime_interrupt_reason(f"before_symbol_{stock.code}")
                 if interrupt:
@@ -770,6 +782,14 @@ class AutoTrader:
                            profile: LoopProfile | None = None, *, route: Route | None = None, shadow: bool = False,
                            scan_quote: Quote | None = None) -> None:
         self._decision_route, self._decision_shadow = route, shadow
+        if self.config.risk.cash_shortfall_rotation_enabled and self.config.order.live_trading and not shadow:
+            # A previous symbol's fill invalidated the loop's cash. Fetch again
+            # before evaluating another real order; do not reuse the old object.
+            if self._last_account_snapshot is None:
+                snapshot = self.startup_sync()
+            else:
+                snapshot = self._last_account_snapshot
+            account_risk = self.risk_manager.account_buy_allowed(snapshot, self.position_manager.positions)
         profile = profile or self._active_loop_profile
         if route is None and not in_trade_window(self.config):
             self.logger.info("trade_blocked code=%s name=%s reason=outside_trade_window", position.code, position.name)
@@ -811,7 +831,9 @@ class AutoTrader:
                 self.store.save_position(position)
         with profile.stage("strategy_decision") if profile else _null_stage():
             symbol_risk = self.risk_manager.symbol_buy_allowed(position)
-            action = self.strategy.decide(position, current_price, snapshot, account_risk, symbol_risk)
+            action = decide_with_cash_signal(self, position, current_price, snapshot, account_risk, symbol_risk)
+        if not shadow:
+            abandon_invalid_target(self, position, action)
         portfolio_preview = ""
         final_block_reason = ""
         action_created = bool(action)
@@ -838,7 +860,7 @@ class AutoTrader:
                     with profile.stage("strategy_decision") if profile else _null_stage():
                         final_account_risk = self.risk_manager.account_buy_allowed(snapshot, self.position_manager.positions)
                         final_symbol_risk = self.risk_manager.symbol_buy_allowed(position)
-                        final_action = self.strategy.decide(position, current_price, snapshot, final_account_risk, final_symbol_risk)
+                        final_action = decide_with_cash_signal(self, position, current_price, snapshot, final_account_risk, final_symbol_risk)
                     if final_action is None:
                         final_block_reason = "final_quote_action_cleared"
                     elif final_action.side is not action.side:
@@ -888,9 +910,13 @@ class AutoTrader:
         if request is None:
             self.logger.info("trade_blocked code=%s reason=quantity_below_one", position.code)
             return
-        if request.side is OrderSide.BUY and snapshot.cash_available < request.quantity * request.limit_price:
-            self.logger.info("trade_blocked code=%s reason=insufficient_cash", position.code)
-            return
+        if request.side is OrderSide.BUY:
+            if self.config.risk.cash_shortfall_rotation_enabled:
+                if handle_shortfall(self, position, action, request, snapshot, shadow=shadow):
+                    return
+            elif snapshot.cash_available < request.quantity * request.limit_price:
+                self.logger.info("trade_blocked code=%s reason=insufficient_cash", position.code)
+                return
         if route:
             request = replace(request, session=route.session, venue=route.venue,
                               quote_market=route.quote_market, order_division=route.order_division)
@@ -902,6 +928,8 @@ class AutoTrader:
                              request.venue, request.session, request.quote_market, request.reason)
             return
         result, fill = self.order_manager.submit_and_confirm(request)
+        if self.config.risk.cash_shortfall_rotation_enabled:
+            self.invalidate_account_snapshot_cache("auto_order_submitted")
         if fill is None:
             self.logger.info("order_not_filled code=%s order_id=%s status=%s", position.code, result.order_id, result.status.value)
             return
@@ -909,6 +937,10 @@ class AutoTrader:
         updated = self._apply_fill_with_session_audit(fill)
         self.store.save_position(updated)
         self.store.save_lots(self.lot_manager.lots.values())
+        if self.config.risk.cash_shortfall_rotation_enabled and request.side is OrderSide.BUY:
+            plan = self.store.load_cash_rotation_plan()
+            if plan and plan["target_code"] == position.code:
+                self.store.clear_cash_rotation_plan()
         self.logger.info("fill_applied code=%s side=%s qty=%s price=%s lot_id=%s order_id=%s", fill.code, fill.side.value, fill.quantity, fill.price, fill.lot_id, fill.order_id)
 
     def _apply_fill_with_session_audit(self, fill):
@@ -1248,6 +1280,9 @@ class AutoTrader:
         if request_gap:
             return request_gap
         if action.side is OrderSide.BUY:
+            rotation_block = cash_rotation_buy_block(self, position)
+            if rotation_block:
+                return rotation_block
             cooldown = self.order_cooldown_reason(position)
             if cooldown:
                 return cooldown

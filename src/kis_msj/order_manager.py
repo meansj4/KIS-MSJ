@@ -23,6 +23,10 @@ class OrderManager:
         self.client = client
         self.store = store
         self.logger = logger
+        if config.risk.cash_shortfall_rotation_enabled:
+            # A durable ledger cannot prevent duplicate sales if the HTTP layer
+            # silently repeats a POST whose broker outcome is unknown.
+            self.client.durable_order_submission = True
 
     def build_request(
         self,
@@ -108,7 +112,8 @@ class OrderManager:
                 return result, None
             return result, fill
 
-        if request.session:
+        if request.session or self.config.risk.cash_shortfall_rotation_enabled:
+            from .market_session import SessionUnavailable
             # Durable reservation *before* sending. Ambiguous transport failure
             # stays pending and blocks retransmission, including after restart.
             intent_id = "INTENT-" + uuid4().hex
@@ -124,15 +129,18 @@ class OrderManager:
                                           and str(json.loads(error.body).get("rt_cd")) in {"1", "7"})
                 except (ValueError, TypeError):
                     business_rejection = False
-                route = Route(request.session, request.venue, request.quote_market, request.order_division)
                 if business_rejection or isinstance(error, SessionUnavailable):
                     rejected = replace(intent, status=OrderStatus.REJECTED, message=str(error))
                     self.store.record_order(rejected)
-                    market.reject_for_day(request.code, route, "session_order_rejected")
+                    if request.session:
+                        route = Route(request.session, request.venue, request.quote_market, request.order_division)
+                        market.reject_for_day(request.code, route, "session_order_rejected")
                     self.logger.warning("session_order_rejected code=%s session=%s venue=%s error=%s", request.code, request.session, request.venue, error)
                     return rejected, None
                 self.store.record_order(replace(intent, message="submission_outcome_unknown:" + type(error).__name__))
-                market.reject_for_day(request.code, route, "submission_requires_reconciliation")
+                if request.session:
+                    route = Route(request.session, request.venue, request.quote_market, request.order_division)
+                    market.reject_for_day(request.code, route, "submission_requires_reconciliation")
                 raise
             try:
                 result = self.store.resolve_session_intent(intent, result)
@@ -140,11 +148,12 @@ class OrderManager:
                 # Preserve the acknowledged broker ID for manual reconciliation
                 # if the legacy order-number-only key collides or storage fails.
                 self.store.record_order(replace(intent, message="broker_acknowledged:" + result.order_id + ":ledger_reconciliation_required"))
-                market.reject_for_day(request.code, Route(request.session, request.venue, request.quote_market, request.order_division), "submission_requires_reconciliation")
+                if request.session:
+                    market.reject_for_day(request.code, Route(request.session, request.venue, request.quote_market, request.order_division), "submission_requires_reconciliation")
                 self.logger.exception("session_order_ack_storage_failed code=%s intent_id=%s broker_order_id=%s",
                                       request.code, intent.order_id, result.order_id)
                 raise
-            if result.status is OrderStatus.REJECTED:
+            if request.session and result.status is OrderStatus.REJECTED:
                 market.reject_for_day(request.code, Route(request.session, request.venue, request.quote_market, request.order_division), "session_order_rejected")
         else:
             result = self.client.place_order(request)
@@ -466,7 +475,7 @@ class OrderManager:
                 if self.client.session_order_terminal(replace(result, order_id=broker_order_id(result.order_id))):
                     raise RuntimeError("APBK0927: session order terminal quantities confirmed") from error
                 raise RuntimeError("session_cancel_outcome_unconfirmed") from error
-        return self.client.cancel_order(result.order_id, quantity)
+        return self.client.cancel_order(broker_order_id(result.order_id), quantity)
 
     def _matching_fills(self, result: OrderResult, fetched_fills: tuple[TradeFill, ...] | None = None) -> list[TradeFill]:
         request = result.request
@@ -474,7 +483,7 @@ class OrderManager:
         matches = []
         source_fills = fetched_fills if fetched_fills is not None else self.client.executions()
         for fill in source_fills:
-            if request.session:
+            if request.session or result.order_id.startswith("SESSION:"):
                 if fill.reported_order_venue and fill.reported_order_venue != request.venue:
                     continue
                 if result.requested_at and fill.filled_at.date().isoformat() != result.requested_at[:10]:

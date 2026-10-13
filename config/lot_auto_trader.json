@@ -6360,7 +6360,9 @@
     "max_new_buy_per_day": 300,
     "max_new_buy_amount_per_day": 30000000,
     "max_total_initial_buy_amount_per_day": 30000000,
-    "profile": "aggressive_1m_rebalance_transition_safe"
+    "profile": "aggressive_1m_rebalance_transition_safe",
+    "cash_shortfall_rotation_enabled": true,
+    "cash_shortfall_rotation_buy_cooldown_minutes": 60
   },
   "order": {
     "live_trading": true,

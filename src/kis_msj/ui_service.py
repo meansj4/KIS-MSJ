@@ -93,6 +93,8 @@ PLAN_STATUS_GUIDE: dict[str, str] = {
 
 
 CONFIG_METADATA: tuple[dict[str, Any], ...] = (
+    {"section": "Risk", "key": "risk.cash_shortfall_rotation_enabled", "label_ko": "현금 부족 시 오래된 LOT 교체", "description_ko": "다른 매수 조건을 통과한 BUY에 현금이 부족하면 오래된 LOT부터 필요한 수량을 현재가 지정가로 정리합니다. 손실이 확정될 수 있습니다.", "type": "boolean", "unit": "bool", "display_format": "boolean", "config_format": "boolean", "warning_level": "warning", "requires_restart": True},
+    {"section": "Risk", "key": "risk.cash_shortfall_rotation_buy_cooldown_minutes", "label_ko": "교체 매도 종목 재매수 대기", "description_ko": "교체 매도한 종목을 곧바로 다시 사지 않도록 모든 BUY를 보류하는 시간입니다.", "type": "number", "unit": "분", "display_format": "integer", "config_format": "integer", "warning_level": "normal", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.review_loss_pct", "label_ko": "검토 필요 손실률", "description_ko": "종목 손실이 이 수준에 도달하면 REVIEW_REQUIRED 후보가 됩니다.", "type": "number", "unit": "%", "display_format": "percent_value", "config_format": "percent_value", "warning_level": "warning", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.max_open_lots_before_review", "label_ko": "검토 전 최대 OPEN LOT 수", "description_ko": "OPEN LOT이 많아진 종목을 재검토 대상으로 보기 위한 기준입니다.", "type": "number", "unit": "개", "display_format": "integer", "config_format": "integer", "warning_level": "warning", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.pnl_minus_threshold", "label_ko": "MINUS 모드 기준", "description_ko": "포지션 손익률이 이 값 이하이면 MINUS 모드입니다. UI는 %로 표시하지만 config에는 소수로 저장됩니다.", "type": "number", "unit": "%", "display_format": "decimal_percent", "config_format": "decimal_rate", "warning_level": "normal", "requires_restart": True},
@@ -552,6 +554,8 @@ class UIService:
         }
 
     def risk_summary_fast(self, config: BotConfig, positions: list[dict[str, Any]], metrics: dict[str, Any]) -> dict[str, Any]:
+        rotation_rows = self._table("cash_rotation_plan") if config.risk.cash_shortfall_rotation_enabled else []
+        rotation_plan = json.loads(rotation_rows[0]["payload_json"]) if rotation_rows else {}
         active_codes = {
             str(item.get("code") or "")
             for item in positions
@@ -568,6 +572,8 @@ class UIService:
         active_codes |= set(metrics["open_order_codes"])
         return {
             "cash_available": "unknown_ui_read_only",
+            "cash_rotation_enabled": config.risk.cash_shortfall_rotation_enabled,
+            "cash_rotation_target_code": rotation_plan.get("target_code", ""),
             "min_cash_available": config.risk.min_cash_available,
             "daily_profit_loss": "unknown_ui_read_only",
             "daily_account_loss_limit_pct": config.risk.daily_account_loss_limit_pct,

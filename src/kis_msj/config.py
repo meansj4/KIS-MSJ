@@ -194,6 +194,15 @@ class RiskConfig:
     max_new_buy_amount_per_day: int = 0
     max_total_initial_buy_amount_per_day: int = 0
     profile: str = "default"
+    cash_shortfall_rotation_enabled: bool = False
+    cash_shortfall_rotation_buy_cooldown_minutes: int = 60
+
+    def __post_init__(self) -> None:
+        if type(self.cash_shortfall_rotation_enabled) is not bool:
+            raise ValueError("cash_shortfall_rotation_enabled must be a boolean")
+        cooldown = self.cash_shortfall_rotation_buy_cooldown_minutes
+        if type(cooldown) is not int or cooldown < 1:
+            raise ValueError("cash_shortfall_rotation_buy_cooldown_minutes must be a positive integer")
 
 
 @dataclass(frozen=True)

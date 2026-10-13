@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
-from .models import LotState, OrderRequest, OrderResult, OrderSide, OrderStatus, PositionState, TradeFill
+from .models import LotState, OrderRequest, OrderResult, OrderSide, OrderStatus, PositionState, SellReason, TradeFill
 
 
 POSITION_COLUMNS = tuple(PositionState.__dataclass_fields__.keys())
@@ -42,6 +42,8 @@ class StateStore:
 
     def _init_schema(self) -> None:
         with self._connect() as connection:
+            connection.execute("""CREATE TABLE IF NOT EXISTS cash_rotation_plan (
+                slot INTEGER PRIMARY KEY CHECK(slot=1), payload_json TEXT NOT NULL)""")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS positions (
@@ -985,9 +987,48 @@ class StateStore:
             local_id = session_order_id(result.request, result.order_id, requested_at) if result.order_id else intent.order_id
             result = replace(result, order_id=local_id, requested_at=requested_at)
             connection.execute("UPDATE orders SET order_id=? WHERE order_id=?", (result.order_id, intent.order_id))
-            connection.execute("UPDATE order_session_metadata SET order_id=? WHERE order_id=?", (result.order_id, intent.order_id))
+            if connection.execute("SELECT 1 FROM sqlite_master WHERE name='order_session_metadata'").fetchone():
+                connection.execute("UPDATE order_session_metadata SET order_id=? WHERE order_id=?", (result.order_id, intent.order_id))
             self.record_order(result, _connection=connection)
         return result
+
+    def load_cash_rotation_plan(self) -> dict | None:
+        with self._connect() as connection:
+            row = connection.execute("SELECT payload_json FROM cash_rotation_plan WHERE slot=1").fetchone()
+        return json.loads(row[0]) if row else None
+
+    def start_cash_rotation_plan(self, target_code: str, cash: int) -> dict:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT payload_json FROM cash_rotation_plan WHERE slot=1").fetchone()
+            if row:
+                return json.loads(row[0])
+            watermark = connection.execute("SELECT coalesce(max(id),0) FROM fills").fetchone()[0]
+            plan = {"target_code": target_code, "baseline_cash": cash, "fill_watermark": watermark,
+                    "created_at": datetime.now().isoformat(timespec="seconds")}
+            connection.execute("INSERT INTO cash_rotation_plan VALUES (1,?)", (json.dumps(plan),))
+        return plan
+
+    def clear_cash_rotation_plan(self) -> None:
+        with self._connect() as connection:
+            connection.execute("DELETE FROM cash_rotation_plan WHERE slot=1")
+
+    def cash_rotation_proceeds(self, watermark: int, fee_tax_pct: float) -> int:
+        with self._connect() as connection:
+            amounts = connection.execute("""SELECT quantity*price FROM fills
+                WHERE id>? AND side='SELL' AND sell_reason=?""",
+                (watermark, SellReason.CASH_SHORTFALL_ROTATION.value)).fetchall()
+        return sum(row[0] - int(round(row[0]*fee_tax_pct/100)) for row in amounts)
+
+    def cash_rotation_buy_cooldown(self, code: str, minutes: int) -> bool:
+        with self._connect() as connection:
+            row = connection.execute("""SELECT filled_at FROM fills WHERE code=? AND side='SELL'
+                AND sell_reason=? ORDER BY filled_at DESC LIMIT 1""",
+                (code, SellReason.CASH_SHORTFALL_ROTATION.value)).fetchone()
+        if not row:
+            return False
+        last = datetime.fromisoformat(row[0].replace("Z", "+00:00")).replace(tzinfo=None)
+        return (datetime.now()-last).total_seconds() < minutes*60
 
     def has_session_metadata(self) -> bool:
         with self._connect() as connection:
