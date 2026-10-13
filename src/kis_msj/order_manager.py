@@ -10,6 +10,7 @@ from uuid import uuid4
 from datetime import datetime, time as day_time, timedelta
 
 from .config import BotConfig
+from .order_identity import broker_order_id
 from .lot_manager import round_price
 from .models import OrderRequest, OrderResult, OrderSide, OrderStatus, PositionState, TradeFill
 from .storage import StateStore
@@ -120,7 +121,7 @@ class OrderManager:
                 from .kis_client import KisApiError
                 try:
                     business_rejection = (isinstance(error, KisApiError) and error.status_code is None
-                                          and json.loads(error.body).get("rt_cd") == "1")
+                                          and str(json.loads(error.body).get("rt_cd")) in {"1", "7"})
                 except (ValueError, TypeError):
                     business_rejection = False
                 route = Route(request.session, request.venue, request.quote_market, request.order_division)
@@ -199,6 +200,7 @@ class OrderManager:
         return canceled, None
 
     def reconcile_open_orders(self) -> tuple[TradeFill, ...]:
+        self._recover_acknowledged_intents()
         applied: list[TradeFill] = []
         open_orders = self.store.open_orders()
         query_start = self._execution_query_start(open_orders)
@@ -359,6 +361,7 @@ class OrderManager:
         return tuple(applied)
 
     def reconcile_recent_executions(self) -> tuple[TradeFill, ...]:
+        self._recover_acknowledged_intents()
         days = max(1, self.config.order.startup_execution_lookup_days)
         query_start = datetime.now() - timedelta(days=days - 1)
         fetched_fills = self.client.executions(since=query_start.date())
@@ -366,7 +369,8 @@ class OrderManager:
         duplicate_fill_count = 0
         ignored_unmatched_count = 0
         for fill in fetched_fills:
-            order = self.store.find_order(fill.order_id, code=fill.code, side=fill.side)
+            order = self.store.find_order(fill.order_id, code=fill.code, side=fill.side,
+                                          trade_date=fill.filled_at.date().isoformat(), venue=fill.reported_order_venue)
             if order is None or order.request.code != fill.code or order.request.side != fill.side:
                 ignored_unmatched_count += 1
                 continue
@@ -388,6 +392,8 @@ class OrderManager:
                 fill.reported_order_venue,
                 fill.timestamp_source,
             )
+            if order.request.session:
+                matched = self._matching_fills(order, (fill,))[0]
             original_matched = matched
             matched = self._dedupe_or_delta_fill(matched)
             if matched is None:
@@ -452,19 +458,19 @@ class OrderManager:
     def _cancel(self, result: OrderResult, quantity: int) -> OrderStatus:
         if result.request.session:
             try:
-                return self.client.cancel_order(result.order_id, quantity, original_request=result.request,
+                return self.client.cancel_order(broker_order_id(result.order_id), quantity, original_request=result.request,
                                                 original_requested_at=result.requested_at)
             except RuntimeError as error:
                 # An order absent from the cancelable list during a venue gap is
                 # not proof of cancellation. Require final broker quantities.
-                if self.client.session_order_terminal(result):
+                if self.client.session_order_terminal(replace(result, order_id=broker_order_id(result.order_id))):
                     raise RuntimeError("APBK0927: session order terminal quantities confirmed") from error
                 raise RuntimeError("session_cancel_outcome_unconfirmed") from error
         return self.client.cancel_order(result.order_id, quantity)
 
     def _matching_fills(self, result: OrderResult, fetched_fills: tuple[TradeFill, ...] | None = None) -> list[TradeFill]:
         request = result.request
-        order_id = _normalize_order_id(result.order_id)
+        order_id = _normalize_order_id(broker_order_id(result.order_id))
         matches = []
         source_fills = fetched_fills if fetched_fills is not None else self.client.executions()
         for fill in source_fills:
@@ -474,8 +480,34 @@ class OrderManager:
                 if result.requested_at and fill.filled_at.date().isoformat() != result.requested_at[:10]:
                     continue
             if _normalize_order_id(fill.order_id) == order_id and fill.code == request.code and fill.side == request.side:
-                matches.append(replace(fill, lot_id=request.lot_id, sell_reason=request.sell_reason, reentry_type=request.reentry_type))
+                identity = fill.execution_id
+                if identity and result.order_id.startswith("SESSION:"):
+                    identity += ":" + result.order_id
+                matches.append(replace(fill, order_id=result.order_id, execution_id=identity,
+                                       lot_id=request.lot_id, sell_reason=request.sell_reason, reentry_type=request.reentry_type))
         return matches
+
+    def _recover_acknowledged_intents(self) -> None:
+        """Recover only a recorded acknowledgment verified by a fresh broker GET.
+
+        Never submit a replacement order. Unknown outcomes without an explicit
+        broker number remain blocked for manual reconciliation.
+        """
+        for intent in self.store.open_orders():
+            if not intent.order_id.startswith("INTENT-") or not intent.message.startswith("broker_acknowledged:"):
+                continue
+            number = intent.message.split(":")[1]
+            verifier = getattr(self.client, "verify_session_acknowledgment", None)
+            if verifier is None:
+                continue
+            row = verifier(intent, number)
+            if row is None:
+                self.logger.error("session_ack_recovery_unconfirmed intent_id=%s broker_order_id=%s", intent.order_id, number)
+                continue
+            recovered = self.store.resolve_session_intent(intent, replace(intent, order_id=number,
+                message="broker_ack_recovered", order_orgno=str(row.get("ord_gno_brno") or row.get("krx_fwdg_ord_orgno") or "")))
+            self.logger.info("session_ack_recovered intent_id=%s local_order_id=%s broker_order_id=%s",
+                             intent.order_id, recovered.order_id, number)
 
     def _execution_query_start(self, open_orders: tuple[OrderResult, ...]) -> datetime:
         now = datetime.now()

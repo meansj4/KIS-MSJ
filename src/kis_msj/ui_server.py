@@ -352,6 +352,24 @@ const DEFAULT_COLUMNS = {
   portfolioRealizedDetail: ['code','name','lot_id','buy_filled_at','sell_filled_at','sell_quantity','buy_price','sell_price','buy_amount','sell_amount','realized_pnl','realized_pnl_rate','fee_tax_estimate','sell_reason','holding_days'],
   portfolioUnrealizedDetail: ['code','name','lot_id','buy_filled_at','remaining_quantity','buy_price','remaining_buy_amount','current_price','current_market_value','unrealized_pnl','unrealized_pnl_rate','target_price','target_amount','target_remaining_amount','target_remaining_rate','deep_loss_low_price','deep_loss_rebound_rate','deep_loss_rebound_trigger_price','deep_loss_force_sell_on','stale_lot','cleanup_candidate','price_snapshot_at']
 };
+Object.assign(LABELS, {
+  broker_order_id:'증권사 주문번호', order_session:'주문 세션', order_venue:'주문 거래소',
+  execution_session:'체결 세션', actual_execution_venue:'실제 체결 거래소',
+  order_division:'주문 구분', session_attribution:'세션 확인 근거',
+  buy_order_session:'매수 주문 세션', buy_order_venue:'매수 주문 거래소',
+  enabled:'확장 시간 사용', configured_mode:'설정 모드', regular_live_trading:'기존 실매매 설정',
+  current_time_sessions:'현재 시간대 세션', nxt_pre_hours:'NXT 프리', regular_hours:'정규장 자동매매',
+  nxt_after_hours:'NXT 애프터', krx_after_hours:'KRX 애프터',
+  max_quote_age_seconds:'시세 유효시간(초)', unresolved_order_intents:'대사 필요 주문 수'
+});
+Object.assign(VALUE_LABELS, {NXT_PRE:'NXT 프리', REGULAR:'정규장', NXT_AFTER:'NXT 애프터',
+  KRX_AFTER:'KRX 애프터', UNKNOWN:'확인 불가', live:'실매매', shadow:'신호 기록', disabled:'꺼짐'});
+DEFAULT_COLUMNS.orders.splice(1, 0, 'broker_order_id','order_session','order_venue','order_division');
+DEFAULT_COLUMNS.fills.splice(4, 0, 'broker_order_id','order_session','order_venue','execution_session','actual_execution_venue');
+for (const key of ['lots','stockLots','portfolioUnrealizedDetail']) {
+  DEFAULT_COLUMNS[key].splice(3, 0, 'buy_order_session','buy_order_venue');
+}
+DEFAULT_COLUMNS.portfolioRealizedDetail.splice(3, 0, 'buy_order_session','order_session','order_venue','actual_execution_venue');
 const columnPrefs = {};
 let portfolioDetailState = null;
 let portfolioHistoryExportData = null;
@@ -662,7 +680,13 @@ async function loadDashboard(status=null) {
     risk_blocked_count: s.position_state_counts.RISK_BLOCKED || 0,
     review_required_count: s.position_state_counts.REVIEW_REQUIRED || 0
   };
-  document.getElementById('content').innerHTML = `<h2>대시보드</h2><h3>핵심 요약</h3>${metrics(top)}<h3>Loop performance</h3>${metrics(s.loop_performance || {})}<h3>Analysis data status</h3>${metrics(s.analysis_status || {})}<h3>봇 상태</h3>${metrics(s.bot)}<h3>계좌/리스크</h3>${metrics(s.account_risk)}<h3>보유 상태별 종목 수</h3>${metrics(s.position_state_counts)}<h3>주문 상태</h3>${metrics(s.order_status_counts)}<h3>경고</h3>${table(s.warnings, 'warnings')}<h3>런타임 제어</h3>${metrics(s.runtime_control)}`;
+  document.getElementById('content').innerHTML = `<h2>대시보드</h2><h3>핵심 요약</h3>${metrics(top)}${extendedTradingPanel(s.extended_trading)}<h3>Loop performance</h3>${metrics(s.loop_performance || {})}<h3>Analysis data status</h3>${metrics(s.analysis_status || {})}<h3>봇 상태</h3>${metrics(s.bot)}<h3>계좌/리스크</h3>${metrics(s.account_risk)}<h3>보유 상태별 종목 수</h3>${metrics(s.position_state_counts)}<h3>주문 상태</h3>${metrics(s.order_status_counts)}<h3>경고</h3>${table(s.warnings, 'warnings')}<h3>런타임 제어</h3>${metrics(s.runtime_control)}`;
+}
+function extendedTradingPanel(info) {
+  if (!info) return '';
+  const warning = Number(info.unresolved_order_intents || 0) > 0
+    ? `<div class="danger">접수 확인/원장 복구가 필요한 주문 ${esc(info.unresolved_order_intents)}건이 있습니다. 주문/체결 탭에서 대사 경고와 증권사 주문번호를 확인하세요.</div>` : '';
+  return `<section class="manualBox"><h3>확장 거래시간 · 세션/거래소</h3>${warning}${metrics(info)}</section>`;
 }
 async function loadPortfolioDashboard() {
   currentView = 'portfolioDashboard';
@@ -670,6 +694,7 @@ async function loadPortfolioDashboard() {
   const summary = d.overall_summary || {};
   document.getElementById('content').innerHTML = `
     <h2>운용 현황</h2>
+    ${extendedTradingPanel(d.pre_after_night_status)}
     <div class="manualBox"><strong>Read-only</strong><p class="muted">이 탭은 DB 조회만 수행하며 주문 API 호출, LOT/position/fill 변경, DB reset을 하지 않습니다. ${esc(d.pre_after_night_status?.message || '')}</p></div>
     <h3>전체 요약</h3>
     <div class="grid">

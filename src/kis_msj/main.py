@@ -739,7 +739,9 @@ class AutoTrader:
         if not self.config.extended_hours.enabled:
             return self._evaluate_strategy(position, snapshot, account_risk, profile)
         try:
-            route, scan_quote = self.session_market.select(position.code, position.name)
+            active_profile = profile or self._active_loop_profile
+            with active_profile.stage("quote_fetch") if active_profile else _null_stage():
+                route, scan_quote = self.session_market.select(position.code, position.name)
             if route.session != "REGULAR" and self.config.extended_hours.mode == "shadow":
                 return self._evaluate_shadow(position, snapshot, account_risk, route, scan_quote)
             return self._evaluate_strategy(position, snapshot, account_risk, profile, route=route, scan_quote=scan_quote)
@@ -1168,18 +1170,15 @@ class AutoTrader:
             block_reason=final_block_reason or portfolio_risk_block_reason or context.skip_reason,
         )
         log_decision(self.logger, **decision_data)
-        decision_id = self.store.record_decision(decision_data)
         price_context.update(
             {
                 "code": position.code,
                 "current_price": current_price,
                 "run_id": self.run_id,
                 "config_hash": self.config_hash,
-                "decision_id": decision_id,
             }
         )
-        snapshot_id = self.store.record_price_snapshot(price_context)
-        self.store.link_decision_price_snapshot(decision_id, snapshot_id)
+        self.store.record_decision_context(decision_data, price_context)
 
     def price_context(self, position: PositionState, current_price: int, samples: Sequence[Quote]) -> dict[str, object]:
         sampled_at = samples[-1].timestamp.isoformat(timespec="seconds") if samples else datetime.now().isoformat(timespec="seconds")

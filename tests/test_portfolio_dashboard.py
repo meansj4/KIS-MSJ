@@ -130,7 +130,7 @@ def test_portfolio_dashboard_is_read_only_and_handles_zero_limits_and_missing_sn
     assert before == after
     assert all(row["usage_pct"] is None for row in dashboard["limit_usage"] if row["limit"] == 0)
     assert dashboard["data_quality"]["notes"]
-    assert dashboard["pre_after_night_status"]["status"] == "on_hold"
+    assert dashboard["pre_after_night_status"]["status"] == "disabled"
 
 
 def test_portfolio_dashboard_ui_contains_tab_and_progress_bar() -> None:

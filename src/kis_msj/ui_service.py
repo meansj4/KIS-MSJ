@@ -395,6 +395,7 @@ class UIService:
             )
         ]
         return {
+            "extended_trading": self.extended_trading_status(),
             "bot": {
                 "state": "UNKNOWN",
                 "last_loop_at": self._latest_log_time(),
@@ -1069,10 +1070,7 @@ class UIService:
         latest_price_at = max((str(item.get("timestamp") or "") for item in latest_prices.values()), default="")
         return {
             "generated_at": datetime.now().isoformat(timespec="seconds"),
-            "pre_after_night_status": {
-                "status": "on_hold",
-                "message": "Pre/After/Night expansion is on hold; this dashboard uses the existing REGULAR-session DB data only.",
-            },
+            "pre_after_night_status": self.extended_trading_status(),
             "overall_summary": overall,
             "limit_usage": limit_usage,
             "daily_summary": daily_summary,
@@ -1133,7 +1131,12 @@ class UIService:
                 "realized_pnl_rate": _safe_rate(realized_pnl, buy_amount),
                 "pnl_basis": "sell_fill_net_estimate",
                 "sell_reason": fill.get("sell_reason") or lot.get("last_sell_reason") or "",
-                "market_session": fill.get("market_session") or lot.get("buy_market_session") or "REGULAR",
+                "market_session": fill.get("execution_session") or "UNKNOWN",
+                "order_session": fill.get("order_session", "UNKNOWN"),
+                "order_venue": fill.get("order_venue", "UNKNOWN"),
+                "buy_order_session": lot.get("buy_order_session", "UNKNOWN"),
+                "buy_order_venue": lot.get("buy_order_venue", "UNKNOWN"),
+                "actual_execution_venue": fill.get("actual_execution_venue", "UNKNOWN"),
                 "holding_days": _holding_days(lot.get("buy_filled_at"), fill.get("filled_at")),
                 "config_hash": fill.get("config_hash", ""),
                 "run_id": fill.get("run_id", ""),
@@ -1225,7 +1228,9 @@ class UIService:
                 "stale_lot": bool(lot.get("stale_lot")),
                 "cleanup_candidate": bool(lot.get("cleanup_candidate")),
                 "position_state": position.get("position_state", ""),
-                "market_session": lot.get("buy_market_session") or "REGULAR",
+                "market_session": lot.get("buy_order_session", "UNKNOWN"),
+                "buy_order_session": lot.get("buy_order_session", "UNKNOWN"),
+                "buy_order_venue": lot.get("buy_order_venue", "UNKNOWN"),
                 "price_snapshot_at": price_info.get("timestamp", ""),
                 "current_price_source": price_info.get("source", ""),
                 "data_quality_note": "현재 기준 참고값입니다. target 가격/금액은 실제 주문 예정가가 아니라 현재 로직 기준 목표값입니다.",
@@ -2123,10 +2128,14 @@ class UIService:
                 row["deep_loss_rebound_rate"] = 0.0
                 row["deep_loss_rebound_trigger_price"] = 0
                 row["deep_loss_force_sell_on"] = ""
+        from .session_ui import annotate_sessions
+        annotate_sessions(self._db_path(), rows, "lots")
         return rows
 
     def orders(self, filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         rows = self._recent_table("orders", filters) if filters is not None else self._table("orders")
+        from .session_ui import annotate_sessions
+        annotate_sessions(self._db_path(), rows, "orders")
         fill_totals: dict[Any, dict[str, int]] = {}
         fill_filters = {"limit": str(max(2000, _ui_limit(filters) * 4))} if filters is not None else None
         for fill in self.fills(fill_filters):
@@ -2153,7 +2162,9 @@ class UIService:
             row["remaining_quantity"] = max(0, quantity - filled_quantity)
             status = str(row.get("status") or "")
             row["post_cancel_execution_checked"] = bool(row.get("post_cancel_execution_checked_at"))
-            if status in {"CANCELED", "CANCELED_NO_FILL"} and filled_quantity > 0:
+            if order_id.startswith("INTENT-") and status in {"REQUESTED", "PARTIAL", "CANCEL_REJECTED"}:
+                row["order_sync_warning"] = "접수 확인/원장 복구 필요 — 재주문 금지"
+            elif status in {"CANCELED", "CANCELED_NO_FILL"} and filled_quantity > 0:
                 row["order_sync_warning"] = "canceled_status_with_fill"
             elif status in {"CANCELED", "CANCELED_NO_FILL"} and not row["post_cancel_execution_checked"]:
                 row["order_sync_warning"] = "canceled_without_post_cancel_execution_check"
@@ -2167,6 +2178,8 @@ class UIService:
 
     def fills(self, filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         rows = self._recent_table("fills", filters) if filters is not None else self._table("fills")
+        from .session_ui import annotate_sessions
+        annotate_sessions(self._db_path(), rows, "fills")
         seen = set()
         for row in rows:
             execution_id = row.get("execution_id", "")
@@ -3098,6 +3111,10 @@ class UIService:
 
     def market_status(self) -> str:
         config = self.config
+        if config.extended_hours.enabled:
+            from .market_session import candidates, korea_now
+            routes = candidates(config, korea_now())
+            return ", ".join(r.session for r in routes) + " (시간 기준·거래 가능 여부 별도 확인)" if routes else "신규 자동매매 시간 아님"
         now = datetime.now()
         open_hour, open_minute = [int(part) for part in config.market_hours.open_time.split(":", 1)]
         close_hour, close_minute = [int(part) for part in config.market_hours.close_time.split(":", 1)]
@@ -3112,6 +3129,32 @@ class UIService:
         if not (start <= now.timestamp() <= end):
             return "매매 차단 구간"
         return "장중"
+
+    def extended_trading_status(self) -> dict[str, Any]:
+        from .market_session import candidates, korea_now
+        config = self.config
+        ext = config.extended_hours
+        hours = config.market_hours
+        now = korea_now()
+        start = datetime.combine(now.date(), day_time.fromisoformat(hours.open_time)) + timedelta(minutes=hours.block_after_open_minutes)
+        end = datetime.combine(now.date(), day_time.fromisoformat(hours.close_time)) - timedelta(minutes=hours.block_before_close_minutes)
+        pending = 0
+        path = self._db_path()
+        if path.exists():
+            from contextlib import closing
+            with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as c:
+                if c.execute("SELECT 1 FROM sqlite_master WHERE name='orders'").fetchone():
+                    pending = c.execute("SELECT COUNT(*) FROM orders WHERE order_id LIKE 'INTENT-%' AND status IN ('REQUESTED','PARTIAL','CANCEL_REJECTED')").fetchone()[0]
+        return {
+            "status": ext.mode if ext.enabled else "disabled",
+            "enabled": ext.enabled, "configured_mode": ext.mode,
+            "regular_live_trading": config.order.live_trading,
+            "current_time_sessions": [r.session for r in candidates(config, now)],
+            "nxt_pre_hours": "08:00–08:50", "regular_hours": f"{start:%H:%M}–{end:%H:%M}",
+            "nxt_after_hours": "15:40–20:00", "krx_after_hours": "16:00–20:00",
+            "max_quote_age_seconds": ext.max_quote_age_seconds, "unresolved_order_intents": pending,
+            "message": "설정 파일 기준입니다. 실행 중 봇의 적용 여부는 최근 로그에서 확인하세요. 세션은 거래시간, 거래소는 KRX/NXT입니다. 미기록/실제 체결정보 미제공은 UNKNOWN으로 표시합니다.",
+        }
 
     def _append_config_history(self, before: dict[str, Any], after: dict[str, Any], updated_by: str, backup_path: Path) -> None:
         history_path = self.config_path.parent / "config_change_history.jsonl"

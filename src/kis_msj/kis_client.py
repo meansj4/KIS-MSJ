@@ -301,6 +301,22 @@ class KisClient:
         accounted = canceled + sum(int(float(row.get(key) or 0)) for key in ("tot_ccld_qty", "rjct_qty"))
         return accounted >= request.quantity
 
+    def verify_session_acknowledgment(self, intent: OrderResult, number: str) -> dict | None:
+        if not number.isdigit() or not number.lstrip("0") or not intent.requested_at:
+            return None
+        day = date.fromisoformat(intent.requested_at[:10])
+        request = intent.request
+        matches = [row for row in self._daily_order_rows(since=day, ccld_dvsn="00")
+                   if str(row.get("odno") or "").lstrip("0") == number.lstrip("0")
+                   and str(row.get("ord_dt") or "") == day.strftime("%Y%m%d")
+                   and str(row.get("pdno") or "").zfill(6) == request.code
+                   and _execution_side(row) == request.side
+                   and str(row.get("excg_id_dvsn_cd") or row.get("excg_id_dvsn_Cd") or "") == request.venue
+                   and str(row.get("ord_dvsn_cd") or "") == request.order_division
+                   and int(float(row.get("ord_qty") or 0)) == request.quantity
+                   and int(float(row.get("ord_unpr") or 0)) == request.limit_price]
+        return matches[0] if len(matches) == 1 else None
+
     def executions(self, *, since: date | None = None) -> tuple[TradeFill, ...]:
         rows = self._daily_order_rows(since=since)
         if self.enable_execution_raw_log:

@@ -682,8 +682,8 @@ class StateStore:
                 ),
             )
 
-    def record_decision(self, payload: dict[str, object]) -> int:
-        with self._connect() as connection:
+    def record_decision(self, payload: dict[str, object], *, _connection=None) -> int:
+        with (self._connect() if _connection is None else nullcontext(_connection)) as connection:
             cursor = connection.execute(
                 """
                 INSERT INTO decisions (
@@ -709,14 +709,14 @@ class StateStore:
             )
             return int(cursor.lastrowid)
 
-    def record_price_snapshot(self, snapshot: dict[str, object]) -> int:
+    def record_price_snapshot(self, snapshot: dict[str, object], *, _connection=None) -> int:
         missing_fields = snapshot.get("missing_fields_json", snapshot.get("missing_fields", []))
         if not isinstance(missing_fields, str):
             missing_fields = json.dumps(missing_fields, ensure_ascii=False, sort_keys=True)
         raw_json = snapshot.get("raw_json", {})
         if not isinstance(raw_json, str):
             raw_json = json.dumps(raw_json, ensure_ascii=False, sort_keys=True)
-        with self._connect() as connection:
+        with (self._connect() if _connection is None else nullcontext(_connection)) as connection:
             cursor = connection.execute(
                 """
                 INSERT INTO price_snapshots (
@@ -754,6 +754,14 @@ class StateStore:
     def link_decision_price_snapshot(self, decision_id: int, snapshot_id: int) -> None:
         with self._connect() as connection:
             connection.execute("UPDATE decisions SET price_snapshot_id = ? WHERE id = ?", (snapshot_id, decision_id))
+
+    def record_decision_context(self, payload: dict[str, object], snapshot: dict[str, object]) -> tuple[int, int]:
+        """Persist a decision, its price and the link with one commit."""
+        with self._connect() as connection:
+            decision_id = self.record_decision(payload, _connection=connection)
+            snapshot_id = self.record_price_snapshot({**snapshot, "decision_id": decision_id}, _connection=connection)
+            connection.execute("UPDATE decisions SET price_snapshot_id=? WHERE id=?", (snapshot_id, decision_id))
+        return decision_id, snapshot_id
 
     def upsert_daily_price(self, row: dict[str, object]) -> str:
         with self._connect() as connection:
@@ -827,6 +835,8 @@ class StateStore:
     def record_order(self, result: OrderResult, *, _connection=None) -> None:
         request = result.request
         requested_at = datetime.now().isoformat(timespec="seconds")
+        if request.session:
+            requested_at = result.requested_at or requested_at
         cancel_requested = result.status in {
             OrderStatus.CANCEL_REJECTED,
             OrderStatus.CANCELED,
@@ -844,6 +854,10 @@ class StateStore:
         cancel_rejected = result.status is OrderStatus.CANCEL_REJECTED
         filled_after_cancel = result.status is OrderStatus.FILLED_AFTER_CANCEL_REQUEST
         with (self._connect() if _connection is None else nullcontext(_connection)) as connection:
+            if request.session:
+                existing = connection.execute("SELECT requested_at FROM orders WHERE order_id=?", (result.order_id,)).fetchone()
+                if existing:
+                    requested_at = str(existing["requested_at"])
             connection.execute(
                 """
                 INSERT INTO orders (
@@ -961,9 +975,15 @@ class StateStore:
 
     def resolve_session_intent(self, intent: OrderResult, result: OrderResult) -> OrderResult:
         # Rename the single reservation atomically; do not count/reserve twice.
-        result = replace(result, order_id=result.order_id or intent.order_id)
+        from .order_identity import session_order_id
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT requested_at FROM orders WHERE order_id=?", (intent.order_id,)).fetchone()
+            if row is None:
+                raise ValueError("Session intent no longer exists")
+            requested_at = str(row["requested_at"])
+            local_id = session_order_id(result.request, result.order_id, requested_at) if result.order_id else intent.order_id
+            result = replace(result, order_id=local_id, requested_at=requested_at)
             connection.execute("UPDATE orders SET order_id=? WHERE order_id=?", (result.order_id, intent.order_id))
             connection.execute("UPDATE order_session_metadata SET order_id=? WHERE order_id=?", (result.order_id, intent.order_id))
             self.record_order(result, _connection=connection)
@@ -1187,12 +1207,24 @@ class StateStore:
             )
         return tuple(orders)
 
-    def find_order(self, order_id: str, *, code: str = "", side: OrderSide | None = None) -> OrderResult | None:
+    def find_order(self, order_id: str, *, code: str = "", side: OrderSide | None = None,
+                   trade_date: str = "", venue: str = "") -> OrderResult | None:
+        from .order_identity import broker_order_id
         normalized = _normalize_order_id(order_id)
         with self._connect() as connection:
-            rows = connection.execute("SELECT * FROM orders").fetchall()
+            rows = connection.execute("SELECT * FROM orders WHERE (?='' OR code=?) AND (?='' OR side=?)",
+                                      (code, code, side.value if side else "", side.value if side else "")).fetchall()
+        matches = []
         for row in rows:
-            if _normalize_order_id(str(row["order_id"])) != normalized:
+            local_id = str(row["order_id"])
+            if _normalize_order_id(local_id) != normalized and _normalize_order_id(broker_order_id(local_id)) != normalized:
+                continue
+            if local_id.startswith("SESSION:"):
+                if trade_date and str(row["requested_at"])[:10] != trade_date:
+                    continue
+                if venue and local_id.split(":")[2] != venue:
+                    continue
+            elif trade_date and str(row["requested_at"])[:10] != trade_date and any(str(r["order_id"]).startswith("SESSION:") for r in rows):
                 continue
             if code and str(row["code"]).zfill(6) != str(code).zfill(6):
                 continue
@@ -1211,7 +1243,7 @@ class StateStore:
                 str(row["reentry_type"]),
                 bool(row["cleanup_flag"]),
             )
-            return OrderResult(
+            matches.append(OrderResult(
                 self._restore_order_route(request, str(row["order_id"])),
                 str(row["order_id"]),
                 OrderStatus(str(row["status"])),
@@ -1219,8 +1251,8 @@ class StateStore:
                 str(row["requested_at"]),
                 int(row["cancel_retry_count"] or 0),
                 str(row["cancel_checked_at"] or ""),
-            )
-        return None
+            ))
+        return matches[0] if len(matches) == 1 else None
 
     def open_order_count(self, code: str | None = None) -> int:
         placeholders = ", ".join("?" for _ in OPEN_ORDER_STATUSES)
