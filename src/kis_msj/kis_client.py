@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import KisAccountConfig
-from .domestic_quote import fetch_current_quote, get_access_token, is_rate_limit_error, is_token_expired_error, load_credentials, set_kis_min_request_interval, throttle_kis_request
+from .domestic_quote import fetch_current_quote, get_access_token, is_rate_limit_error, is_token_expired_error, load_credentials, set_kis_min_request_interval, throttle_kis_request, NETWORK_READ_ERRORS
 from .models import AccountSnapshot, BalanceItem, OrderRequest, OrderResult, OrderSide, OrderStatus, Quote, TradeFill
 
 
@@ -460,9 +460,9 @@ class KisClient:
                 if attempt >= 2 or not _is_transient_http_status(error.code):
                     raise wrapped from error
                 time.sleep(2**attempt)
-            except urllib.error.URLError as error:
+            except NETWORK_READ_ERRORS as error:
                 self.consecutive_errors += 1
-                wrapped = KisApiError(f"KIS network request failed: {error.reason}", method=method, path=path, tr_id=tr_id)
+                wrapped = KisApiError(f"KIS network request failed: {type(error).__name__}", method=method, path=path, tr_id=tr_id)
                 if method == "POST" and not retry_ambiguous_post:
                     raise wrapped from error
                 if attempt >= 2:

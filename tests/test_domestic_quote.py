@@ -10,6 +10,30 @@ if str(SRC_PATH) not in sys.path:
 from kis_msj.domestic_quote import is_rate_limit_error, is_token_expired_error, normalize_quote_output, read_master_codes
 
 
+def test_quote_connection_reset_retries_bounded_reads(monkeypatch):
+    from kis_msj.domestic_quote import fetch_current_quote, KisReadError
+    from types import SimpleNamespace
+    import pytest
+    attempts = []
+    class Response:
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return False
+        def read(self):
+            raise ConnectionResetError('read reset')
+    def open_url(*args, **kwargs):
+        attempts.append(True)
+        return Response()
+    monkeypatch.setattr('kis_msj.domestic_quote.urllib.request.urlopen', open_url)
+    monkeypatch.setattr('kis_msj.domestic_quote.time.sleep', lambda seconds: None)
+    credentials = SimpleNamespace(base_url='https://example.test', app_key='hidden-key', app_secret='hidden-secret')
+    with pytest.raises(KisReadError) as error:
+        fetch_current_quote('005930', credentials=credentials, access_token='hidden-token')
+    assert len(attempts) == 3
+    assert 'hidden-' not in str(error.value)
+
+
 def test_normalize_quote_output_extracts_current_price_and_volume() -> None:
     row = normalize_quote_output(
         "005930",

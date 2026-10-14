@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import http.client
 import os
+import ssl
 import sys
 import threading
 import time
@@ -54,6 +56,13 @@ QUOTE_COLUMNS = (
 _REQUEST_THROTTLE_LOCK = threading.Lock()
 _LAST_REQUEST_AT = 0.0
 _MIN_REQUEST_INTERVAL_SECONDS = DEFAULT_MIN_REQUEST_INTERVAL_SECONDS
+
+NETWORK_READ_ERRORS = (urllib.error.URLError, ConnectionError, TimeoutError,
+                       http.client.IncompleteRead, http.client.RemoteDisconnected, ssl.SSLError)
+
+
+class KisReadError(RuntimeError):
+    """A failed read-only quote transport, distinct from strategy/code errors."""
 
 
 def set_kis_min_request_interval(seconds: float) -> None:
@@ -149,6 +158,8 @@ def _get_json(url: str, headers: dict[str, str]) -> dict[str, Any]:
     except urllib.error.HTTPError as error:
         body = error.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"KIS request failed ({error.code}): {body}") from error
+    except NETWORK_READ_ERRORS as error:
+        raise KisReadError(f"KIS quote network read failed: {type(error).__name__}") from error
 
 
 def is_rate_limit_error(error: RuntimeError) -> bool:
@@ -268,10 +279,12 @@ def fetch_current_quote(
                 break
             raise RuntimeError(f"KIS quote failed for {short_code}: {response.get('msg_cd')} {response.get('msg1')}")
         except RuntimeError as error:
-            if attempt >= max_retries or not is_rate_limit_error(error):
+            read_failure = isinstance(error, KisReadError)
+            retry_limit = min(max_retries, 2) if read_failure else max_retries
+            if attempt >= retry_limit or not (read_failure or is_rate_limit_error(error)):
                 raise
             delay = retry_base_seconds * (2**attempt)
-            print(f"rate limit for {short_code}; retrying in {delay:.1f}s...")
+            print(f"{'network read failure' if read_failure else 'rate limit'} for {short_code}; retrying in {delay:.1f}s...")
             time.sleep(delay)
 
     output = response.get("output") or {}

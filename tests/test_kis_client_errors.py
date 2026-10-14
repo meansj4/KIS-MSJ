@@ -13,6 +13,47 @@ from kis_msj.kis_client import BALANCE_PATH, BUYABLE_CASH_PATH, DAILY_FILL_PATH,
 from kis_msj.models import OrderSide
 
 
+@pytest.mark.parametrize('method,retry_post,expected_attempts', [('GET', True, 3), ('POST', False, 1)])
+def test_response_read_reset_is_wrapped_and_post_is_not_repeated(monkeypatch, method, retry_post, expected_attempts):
+    attempts = []
+    class Response:
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return False
+        def read(self):
+            raise ConnectionResetError('connection reset while reading')
+    def open_url(*args, **kwargs):
+        attempts.append(True)
+        return Response()
+    monkeypatch.setattr('kis_msj.kis_client.urllib.request.urlopen', open_url)
+    monkeypatch.setattr('kis_msj.kis_client.time.sleep', lambda seconds: None)
+    with pytest.raises(KisApiError) as error:
+        _client()._request(method, BALANCE_PATH, tr_id='test', retry_ambiguous_post=retry_post)
+    assert len(attempts) == expected_attempts
+    assert 'ConnectionResetError' in str(error.value)
+
+
+def test_response_read_reset_recovers_on_next_get(monkeypatch):
+    attempts = []
+    class Response:
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return False
+        def read(self):
+            if len(attempts) == 1:
+                raise ConnectionResetError('read reset')
+            return b'{"rt_cd":"0"}'
+    def open_url(*args, **kwargs):
+        attempts.append(True)
+        return Response()
+    monkeypatch.setattr('kis_msj.kis_client.urllib.request.urlopen', open_url)
+    monkeypatch.setattr('kis_msj.kis_client.time.sleep', lambda seconds: None)
+    assert _client()._request('GET', BALANCE_PATH, tr_id='test')['rt_cd'] == '0'
+    assert len(attempts) == 2
+
+
 def _client() -> KisClient:
     client = KisClient.__new__(KisClient)
     client.credentials = SimpleNamespace(base_url="https://example.test", app_key="app-key", app_secret="app-secret", env="real")
