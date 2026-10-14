@@ -291,15 +291,40 @@ class AutoTrader:
                     return ""
                 self._cash_rotation_scan_targets = {}
                 self._cash_rotation_scanning = True
+            rotation_scanned_codes = set()
+            rotation_checkpoint_at = time.monotonic()
             for stock in stocks:
                 with profile.stage("runtime_control") if profile else _null_stage():
                     interrupt = self.runtime_interrupt_reason(f"before_symbol_{stock.code}")
                 if interrupt:
                     status = interrupt
                     return interrupt
+                if self._cash_rotation_scanning and time.monotonic()-rotation_checkpoint_at >= 30:
+                    # Keep funding active while discovering fresh BUY signals.
+                    # A full universe scan takes minutes on the REST client.
+                    plan = self.store.load_cash_rotation_plan()
+                    targets = dict(plan.get("targets", {})) if plan else {}
+                    for code in rotation_scanned_codes:
+                        targets.pop(code, None)
+                        if code in self._cash_rotation_scan_targets:
+                            targets[code] = self._cash_rotation_scan_targets[code]
+                    funding_snapshot = self._last_account_snapshot or snapshot
+                    self.store.set_cash_rotation_targets(targets, funding_snapshot.cash_available)
+                    self.logger.info("cash_rotation_scan_checkpoint scanned=%s targets=%s",
+                                     len(rotation_scanned_codes), len(targets))
+                    if targets:
+                        self._cash_rotation_scanning = False
+                        try:
+                            snapshot = process_rotation(self, funding_snapshot)
+                        finally:
+                            self._cash_rotation_scanning = True
+                        account_risk = self.risk_manager.account_buy_allowed(snapshot, self.position_manager.positions)
+                    rotation_scanned_codes.clear()
+                    rotation_checkpoint_at = time.monotonic()
                 symbol_start = time.perf_counter()
                 try:
                     if not stock.enabled or stock.manual_only or self.automatic_symbol_is_retired(stock):
+                        rotation_scanned_codes.add(stock.code)
                         if profile:
                             profile.symbols_skipped += 1
                         continue
@@ -310,6 +335,7 @@ class AutoTrader:
                         position.position_state = PositionLifecycle.RISK_BLOCKED.value
                         position.auto_buy_enabled = False
                     self.evaluate(position, snapshot, account_risk)
+                    rotation_scanned_codes.add(stock.code)
                     if profile:
                         profile.add_symbol(stock.code, (time.perf_counter() - symbol_start) * 1000.0)
                 except Exception as error:  # noqa: BLE001
