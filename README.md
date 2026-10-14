@@ -25,7 +25,7 @@ UI: `http://127.0.0.1:8765`
 - 추가매수 간격은 보유 LOT 수에 따라 -4%에서 -24%, 이익 목표는 +3%에서 +0.5%로 완화됩니다.
 - 이익매도는 LOT 단위이며, 고노출 구간에서는 설정에 따라 부분매도가 적용될 수 있습니다.
 - `buy_blocked=true`는 신규·추가·재진입 매수만 막고 필요한 매도는 허용합니다.
-- `risk.cash_shortfall_rotation_enabled=true`이면 적격 BUY의 현금 부족 시 다른 종목의 오래된 LOT부터 필요한 수량을 현재가 지정가로 정리하고, 체결·주문가능금액 확인 후 BUY를 재평가합니다. 손실 확정이 가능하며 [교체 정책](docs/cash_shortfall_rotation.md)을 참고하십시오.
+- `risk.cash_shortfall_rotation_enabled=true`이면 대기 BUY 전체의 부족금액을 갱신해 오래된 LOT을 순차 정리합니다. 교체에도 운영 매도 할인 −0.5% 지정가를 적용하고, 체결·주문가능금액 확인 후 가능한 BUY부터 처리합니다. [전체 부족금액 기반 교체 정책](docs/cash_rotation_aggregate.md)을 참고하십시오.
 - `retire_after_exit=true` 종목은 남은 LOT이 모두 청산되면 `TRADE_STOPPED_AFTER_EXIT`가 됩니다.
 - 심각손실 LOT은 -40% 이하 종가에서 recovery 추적을 시작합니다. 최저 종가 대비 요구 반등률은 +10%에서 30일간 0%까지 선형 감소하고, 30일째에는 강제 정리합니다. 추적 중 -40% 위로 회복해도 상태를 유지합니다.
 - 단순 장기보유만으로 `REVIEW_REQUIRED`가 되지는 않습니다.

@@ -16,3 +16,4 @@ data/*.json
 data/*.mst
 data/*.zip
 data/*.sqlite3
+tmp/

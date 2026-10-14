@@ -1013,6 +1013,36 @@ class StateStore:
         with self._connect() as connection:
             connection.execute("DELETE FROM cash_rotation_plan WHERE slot=1")
 
+    def set_cash_rotation_targets(self, targets: dict, cash: int) -> dict:
+        """Replace observed BUY demand, retaining uncredited proceeds across refreshes."""
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT payload_json FROM cash_rotation_plan WHERE slot=1").fetchone()
+            if row:
+                plan = json.loads(row[0])
+            else:
+                watermark = connection.execute("SELECT coalesce(max(id),0) FROM fills").fetchone()[0]
+                plan = {"baseline_cash": cash, "fill_watermark": watermark,
+                        "created_at": datetime.now().isoformat(timespec="seconds")}
+            plan.update(mode="aggregate", target_code="", targets=targets,
+                        updated_at=datetime.now().isoformat(timespec="seconds"))
+            connection.execute("INSERT INTO cash_rotation_plan VALUES (1,?) ON CONFLICT(slot) DO UPDATE SET payload_json=excluded.payload_json",
+                               (json.dumps(plan,ensure_ascii=False),))
+        return plan
+
+    def save_cash_rotation_totals(self, totals: dict) -> None:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT payload_json FROM cash_rotation_plan WHERE slot=1").fetchone()
+            if row:
+                plan = json.loads(row[0])
+                plan.update(totals)
+                connection.execute("UPDATE cash_rotation_plan SET payload_json=? WHERE slot=1", (json.dumps(plan,ensure_ascii=False),))
+
+    def cash_rotation_buy_spending(self, watermark: int) -> int:
+        with self._connect() as connection:
+            return connection.execute("SELECT coalesce(sum(quantity*price),0) FROM fills WHERE id>? AND side='BUY'", (watermark,)).fetchone()[0]
+
     def cash_rotation_proceeds(self, watermark: int, fee_tax_pct: float) -> int:
         with self._connect() as connection:
             amounts = connection.execute("""SELECT quantity*price FROM fills

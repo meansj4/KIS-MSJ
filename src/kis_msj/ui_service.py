@@ -93,7 +93,7 @@ PLAN_STATUS_GUIDE: dict[str, str] = {
 
 
 CONFIG_METADATA: tuple[dict[str, Any], ...] = (
-    {"section": "Risk", "key": "risk.cash_shortfall_rotation_enabled", "label_ko": "현금 부족 시 오래된 LOT 교체", "description_ko": "다른 매수 조건을 통과한 BUY에 현금이 부족하면 오래된 LOT부터 필요한 수량을 현재가 지정가로 정리합니다. 손실이 확정될 수 있습니다.", "type": "boolean", "unit": "bool", "display_format": "boolean", "config_format": "boolean", "warning_level": "warning", "requires_restart": True},
+    {"section": "Risk", "key": "risk.cash_shortfall_rotation_enabled", "label_ko": "현금 부족 시 오래된 LOT 교체", "description_ko": "대기 BUY 전체의 부족금액을 갱신하며 오래된 LOT부터 정리합니다. 교체에도 매도 할인 지정가를 적용하고 회수 현금으로 가능한 BUY부터 처리합니다. 손실이 확정될 수 있습니다.", "type": "boolean", "unit": "bool", "display_format": "boolean", "config_format": "boolean", "warning_level": "warning", "requires_restart": True},
     {"section": "Risk", "key": "risk.cash_shortfall_rotation_buy_cooldown_minutes", "label_ko": "교체 매도 종목 재매수 대기", "description_ko": "교체 매도한 종목을 곧바로 다시 사지 않도록 모든 BUY를 보류하는 시간입니다.", "type": "number", "unit": "분", "display_format": "integer", "config_format": "integer", "warning_level": "normal", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.review_loss_pct", "label_ko": "검토 필요 손실률", "description_ko": "종목 손실이 이 수준에 도달하면 REVIEW_REQUIRED 후보가 됩니다.", "type": "number", "unit": "%", "display_format": "percent_value", "config_format": "percent_value", "warning_level": "warning", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.max_open_lots_before_review", "label_ko": "검토 전 최대 OPEN LOT 수", "description_ko": "OPEN LOT이 많아진 종목을 재검토 대상으로 보기 위한 기준입니다.", "type": "number", "unit": "개", "display_format": "integer", "config_format": "integer", "warning_level": "warning", "requires_restart": True},
@@ -573,7 +573,12 @@ class UIService:
         return {
             "cash_available": "unknown_ui_read_only",
             "cash_rotation_enabled": config.risk.cash_shortfall_rotation_enabled,
+            "cash_rotation_mode": rotation_plan.get("mode", "aggregate"),
             "cash_rotation_target_code": rotation_plan.get("target_code", ""),
+            "cash_rotation_target_count": len(rotation_plan.get("targets", {})),
+            "cash_rotation_total_required": rotation_plan.get("total_required", 0),
+            "cash_rotation_shortfall": rotation_plan.get("shortfall", 0),
+            "cash_rotation_pending_credit": rotation_plan.get("pending_credit", 0),
             "min_cash_available": config.risk.min_cash_available,
             "daily_profit_loss": "unknown_ui_read_only",
             "daily_account_loss_limit_pct": config.risk.daily_account_loss_limit_pct,

@@ -7,8 +7,8 @@
   "sell_paused": false,
   "cleanup_paused": false,
   "reentry_paused": false,
-  "reason": "config_reloaded",
-  "updated_at": "2026-08-18T14:56:53",
+  "reason": "aggregate_rotation_applied",
+  "updated_at": "2026-10-14T11:20:01",
   "updated_by": "codex",
   "expires_at": ""
 }

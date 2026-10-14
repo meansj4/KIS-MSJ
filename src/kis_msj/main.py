@@ -33,7 +33,8 @@ from .upstream_watcher import UpstreamWatcher
 from .market_session import SessionMarketData, SessionUnavailable, RoutedQuotes, Route, candidates, extended_window
 from .shadow_state import ShadowStateStore
 from .cash_rotation import (decide_with_cash_signal, handle_shortfall,
-                            buy_block_reason as cash_rotation_buy_block, abandon_invalid_target)
+                            buy_block_reason as cash_rotation_buy_block, abandon_invalid_target,
+                            process_rotation, target_record, remove_target)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -98,6 +99,9 @@ class AutoTrader:
         self._last_account_snapshot_at = 0.0
         self._account_snapshot_rate_limited_until = 0.0
         self._loop_id = 0
+        self._cash_rotation_scanning = False
+        self._cash_rotation_scan_targets = {}
+        self._cash_rotation_last_full_scan_at = 0.0
         self.last_loop_profile: dict[str, object] = {}
         self._active_loop_profile: LoopProfile | None = None
         self._last_loop_interval_warning_at = 0.0
@@ -208,7 +212,6 @@ class AutoTrader:
 
     def run_once(self) -> str:
         self._loop_id += 1
-        self._cash_rotation_submitted_this_loop = False
         profile = (
             LoopProfile(
                 loop_id=self._loop_id,
@@ -279,14 +282,15 @@ class AutoTrader:
             with profile.stage("deep_loss_price_cache") if profile else _null_stage():
                 self.refresh_completed_session_price_cache()
             stocks = list(self.config.stocks)
-            if self.config.risk.cash_shortfall_rotation_enabled:
+            rotation_window = in_trade_window(self.config) or (
+                self.config.extended_hours.mode == "live" and extended_window(self.config))
+            if self.config.risk.cash_shortfall_rotation_enabled and rotation_window:
                 plan = self.store.load_cash_rotation_plan()
-                if plan:
-                    target = self.stock_config_for_code(plan["target_code"])
-                    if (target is None or not target.enabled or target.manual_only or target.danger_state) and not self.store.open_orders():
-                        self.store.clear_cash_rotation_plan()
-                    else:
-                        stocks.sort(key=lambda stock: stock.code != plan["target_code"])
+                if plan and plan.get("targets") and time.monotonic()-self._cash_rotation_last_full_scan_at < 300:
+                    process_rotation(self, snapshot)
+                    return ""
+                self._cash_rotation_scan_targets = {}
+                self._cash_rotation_scanning = True
             for stock in stocks:
                 with profile.stage("runtime_control") if profile else _null_stage():
                     interrupt = self.runtime_interrupt_reason(f"before_symbol_{stock.code}")
@@ -326,11 +330,18 @@ class AutoTrader:
                 if interrupt:
                     status = interrupt
                     return interrupt
+            if self.config.risk.cash_shortfall_rotation_enabled and self._cash_rotation_scanning:
+                self._cash_rotation_scanning = False
+                self._cash_rotation_last_full_scan_at = time.monotonic()
+                funding_snapshot = self._last_account_snapshot or snapshot
+                self.store.set_cash_rotation_targets(self._cash_rotation_scan_targets, funding_snapshot.cash_available)
+                process_rotation(self, funding_snapshot)
             with profile.stage("db") if profile else _null_stage():
                 self.store.save_positions(self.position_manager.positions.values())
                 self.store.save_lots(self.lot_manager.lots.values())
             return ""
         finally:
+            self._cash_rotation_scanning = False
             self._active_loop_profile = None
             if profile is not None:
                 summary = profile.finish(status)
@@ -832,6 +843,19 @@ class AutoTrader:
         with profile.stage("strategy_decision") if profile else _null_stage():
             symbol_risk = self.risk_manager.symbol_buy_allowed(position)
             action = decide_with_cash_signal(self, position, current_price, snapshot, account_risk, symbol_risk)
+        if not shadow and getattr(self, "_cash_rotation_scanning", False) and action and action.side is OrderSide.BUY:
+            guard = self.pre_request_block_reason(position, action)
+            request = self.order_manager.build_request(position, action, current_price) if not guard else None
+            if request:
+                self._cash_rotation_scan_targets[position.code] = target_record(request)
+            position.skip_reason = guard or "cash_rotation_demand_queued"
+            self.store.save_position(position)
+            if self.should_record_symbol_decision(position, previous_position_state, True, position.skip_reason):
+                self.log_symbol_decision(position, current_price, snapshot, account_risk, symbol_risk,
+                                         action.reason, "", position.skip_reason, True,
+                                         samples=scan_samples, previous_position_state=previous_position_state)
+                self._last_decision_record_at[position.code] = time.monotonic()
+            return
         if not shadow:
             abandon_invalid_target(self, position, action)
         portfolio_preview = ""
@@ -863,8 +887,12 @@ class AutoTrader:
                         final_action = decide_with_cash_signal(self, position, current_price, snapshot, final_account_risk, final_symbol_risk)
                     if final_action is None:
                         final_block_reason = "final_quote_action_cleared"
+                        if not shadow and self.config.risk.cash_shortfall_rotation_enabled:
+                            remove_target(self, position.code)
                     elif final_action.side is not action.side:
                         final_block_reason = "final_quote_action_changed"
+                        if not shadow and self.config.risk.cash_shortfall_rotation_enabled:
+                            remove_target(self, position.code)
                     else:
                         action = final_action
                         account_risk = final_account_risk
@@ -938,9 +966,7 @@ class AutoTrader:
         self.store.save_position(updated)
         self.store.save_lots(self.lot_manager.lots.values())
         if self.config.risk.cash_shortfall_rotation_enabled and request.side is OrderSide.BUY:
-            plan = self.store.load_cash_rotation_plan()
-            if plan and plan["target_code"] == position.code:
-                self.store.clear_cash_rotation_plan()
+            remove_target(self, position.code)
         self.logger.info("fill_applied code=%s side=%s qty=%s price=%s lot_id=%s order_id=%s", fill.code, fill.side.value, fill.quantity, fill.price, fill.lot_id, fill.order_id)
 
     def _apply_fill_with_session_audit(self, fill):
