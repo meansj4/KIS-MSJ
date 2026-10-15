@@ -195,7 +195,7 @@ class RiskConfig:
     max_total_initial_buy_amount_per_day: int = 0
     profile: str = "default"
     cash_shortfall_rotation_enabled: bool = False
-    cash_shortfall_rotation_buy_cooldown_minutes: int = 60
+    cash_shortfall_rotation_buy_cooldown_minutes: int = 60  # Saved-config compatibility; no longer a time gate.
 
     def __post_init__(self) -> None:
         if type(self.cash_shortfall_rotation_enabled) is not bool:

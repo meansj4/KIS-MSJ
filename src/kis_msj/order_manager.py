@@ -62,6 +62,13 @@ class OrderManager:
         else:
             quantity = action.quantity or 0
             limit_price = action.limit_price if action.limit_price > 0 else self.sell_limit_price(current_price)
+        if action.side is OrderSide.BUY and self.config.risk.cash_shortfall_rotation_enabled:
+            from .cash_rotation import rebuy_price_limit
+            ceiling = rebuy_price_limit(self, position)
+            if ceiling is not None:
+                limit_price = min(limit_price, ceiling)
+                if limit_price <= 0:
+                    return None
         if quantity < 1:
             return None
         return OrderRequest(

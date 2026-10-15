@@ -211,7 +211,7 @@ const VALUE_LABELS = {
   cash_rotation_mode:'LOT 교체 방식', aggregate:'전체 BUY 부족금액',
   cash_rotation_shortfall:'추가 회수 필요금액', cash_rotation_pending_credit:'체결 후 현금 반영 대기액',
   cash_rotation_demand_queued:'총 매수 필요금액에 포함', cash_rotation_aggregate_cash_shortfall:'총 매수자금 부족으로 대기',
-  cash_rotation_sell_buy_cooldown:'교체 매도 후 재매수 대기', cash_rotation_funding_other_buy:'다른 매수 종목의 자금 확보 중',
+  cash_rotation_sell_buy_cooldown:'교체 매도 후 재매수 대기', cash_rotation_wait_new_buy_price:'교체 매도 후 새 매수 가격 대기', cash_rotation_funding_other_buy:'다른 매수 종목의 자금 확보 중',
   cash_rotation_wait_open_orders:'미체결 주문 확인 대기', cash_rotation_wait_buyable_cash:'매도 체결 후 주문가능금액 반영 대기',
   cash_rotation_recheck_after_sell:'LOT 매도 후 매수 조건 재확인', cash_rotation_no_eligible_donor:'정리 가능한 다른 종목 LOT 없음',
   CASH_SHORTFALL_ROTATION:'매수 자금 확보용 LOT 교체',

@@ -1050,6 +1050,32 @@ class StateStore:
                 (watermark, SellReason.CASH_SHORTFALL_ROTATION.value)).fetchall()
         return sum(row[0] - int(round(row[0]*fee_tax_pct/100)) for row in amounts)
 
+    def cash_rotation_open_lot_count(self, code: str) -> int:
+        with self._connect() as connection:
+            return connection.execute("SELECT COUNT(*) FROM lots WHERE code=? AND remaining_quantity>0 AND status!='CLOSED'",
+                                      (code,)).fetchone()[0]
+
+    def cash_rotation_rebuy_anchor(self, code: str) -> float | None:
+        """Actual latest rotation SELL VWAP, until a later BUY consumes it."""
+        with self._connect() as connection:
+            last = connection.execute("""SELECT id, order_id, filled_at FROM fills
+                WHERE code=? AND side='SELL' AND sell_reason=?
+                ORDER BY julianday(filled_at) DESC, id DESC LIMIT 1""",
+                (code, SellReason.CASH_SHORTFALL_ROTATION.value)).fetchone()
+            if last is None:
+                return None
+            bought = connection.execute("""SELECT 1 FROM fills WHERE code=? AND side='BUY'
+                AND (julianday(filled_at)>julianday(?) OR
+                     (julianday(filled_at)=julianday(?) AND id>?)) LIMIT 1""",
+                (code, last['filled_at'], last['filled_at'], last['id'])).fetchone()
+            if bought:
+                return None
+            row = connection.execute("""SELECT SUM(quantity*price), SUM(quantity) FROM fills
+                WHERE code=? AND side='SELL' AND sell_reason=? AND order_id=?
+                AND date(filled_at)=date(?)""",
+                (code, SellReason.CASH_SHORTFALL_ROTATION.value, last['order_id'], last['filled_at'])).fetchone()
+            return row[0]/row[1] if row[1] else None
+
     def cash_rotation_buy_cooldown(self, code: str, minutes: int) -> bool:
         with self._connect() as connection:
             row = connection.execute("""SELECT filled_at FROM fills WHERE code=? AND side='SELL'
