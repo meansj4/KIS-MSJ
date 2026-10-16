@@ -91,6 +91,8 @@ class OrderManager:
             from .market_session import SessionUnavailable
             from .lot_manager import LotManager
             from .strategy import LotGridStrategy
+            if not self.config.strategy.cash_capacity_reentry_active():
+                raise SessionUnavailable("reentry_not_started_until_start_date")
             if self.store.open_orders():
                 raise SessionUnavailable("cash_capacity_reentry_wait_open_orders")
             if self.config.order.live_trading:

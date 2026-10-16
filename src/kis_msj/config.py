@@ -112,6 +112,7 @@ class StrategyConfig:
     reentry_buy_cooldown_minutes: int = 60
     reentry_policy: str = "legacy_price"
     reentry_cash_lot_multiple: int = 30
+    reentry_start_date: str = ""
     reentry_decay_enabled: bool = True
     normal_reentry_decay_days: int = 30
     normal_reentry_daily_decay_rate: float = 0.0016666667
@@ -122,6 +123,8 @@ class StrategyConfig:
     force_reentry_timeout_days: int = 30
     force_reentry_starts_new_cycle: bool = True
     age_decay_rate: float = 0.005
+    age_decay_mode: str = "fixed"
+    age_decay_per_open_lot_rate: float = 0.001
     cash_target_profit_enabled: bool = False
     cash_target_reference_amount: int = 200_000_000
     cash_target_reference_rate: float = 0.50
@@ -189,6 +192,15 @@ class StrategyConfig:
             raise ValueError("reentry_policy must be legacy_price or cash_capacity_oldest")
         if type(self.reentry_cash_lot_multiple) is not int or self.reentry_cash_lot_multiple < 1:
             raise ValueError("reentry_cash_lot_multiple must be a positive integer")
+        if not isinstance(self.reentry_start_date, str):
+            raise ValueError("reentry_start_date must be an ISO date or empty")
+        if self.reentry_start_date:
+            date.fromisoformat(self.reentry_start_date)
+        if self.age_decay_mode not in {"fixed", "current_open_lot_count"}:
+            raise ValueError("age_decay_mode must be fixed or current_open_lot_count")
+        if (type(self.age_decay_per_open_lot_rate) not in (int, float)
+                or not math.isfinite(self.age_decay_per_open_lot_rate) or self.age_decay_per_open_lot_rate < 0):
+            raise ValueError("age_decay_per_open_lot_rate must be a finite nonnegative rate")
         if type(self.cash_target_profit_enabled) is not bool:
             raise ValueError("cash_target_profit_enabled must be a boolean")
         if type(self.cash_target_reference_amount) is not int or self.cash_target_reference_amount <= 0:
@@ -215,6 +227,17 @@ class StrategyConfig:
 
     def cash_capacity_reentry_enabled(self) -> bool:
         return self.reentry_policy == "cash_capacity_oldest"
+
+    def cash_capacity_reentry_active(self, now: datetime | None = None) -> bool:
+        """Return whether cash-capacity reentry is allowed on the Korean date."""
+        if not self.cash_capacity_reentry_enabled():
+            return False
+        if not self.reentry_start_date:
+            return True
+        korea = timezone(timedelta(hours=9))
+        now = now or datetime.now(korea)
+        today = now.astimezone(korea).date() if now.tzinfo else now.date()
+        return today >= date.fromisoformat(self.reentry_start_date)
 
 
 @dataclass(frozen=True)

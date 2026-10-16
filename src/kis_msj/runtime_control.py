@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass
-from datetime import datetime
+from dataclasses import asdict, dataclass, replace
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -26,13 +26,14 @@ class RuntimeControl:
     sell_paused: bool = False
     cleanup_paused: bool = False
     reentry_paused: bool = False
+    reentry_resume_on: str = ""
     reason: str = ""
     updated_at: str = ""
     updated_by: str = "local_ui"
     expires_at: str = ""
 
 
-def load_runtime_control(path: str | Path = DEFAULT_RUNTIME_CONTROL_PATH) -> RuntimeControl:
+def load_runtime_control(path: str | Path = DEFAULT_RUNTIME_CONTROL_PATH, now: datetime | None = None) -> RuntimeControl:
     control_path = Path(path)
     if not control_path.exists():
         return RuntimeControl()
@@ -41,6 +42,17 @@ def load_runtime_control(path: str | Path = DEFAULT_RUNTIME_CONTROL_PATH) -> Run
     control = RuntimeControl(**data)
     if _expired(control):
         return RuntimeControl(updated_at=control.updated_at, updated_by=control.updated_by)
+    if control.reentry_paused and control.reentry_resume_on:
+        try:
+            resume_date = date.fromisoformat(control.reentry_resume_on)
+            korea = timezone(timedelta(hours=9))
+            now = now or datetime.now(korea)
+            today = now.astimezone(korea).date() if now.tzinfo else now.date()
+            if today >= resume_date:
+                return replace(control, reentry_paused=False, reentry_resume_on="")
+        except (TypeError, ValueError):
+            # An invalid schedule never resumes trading.
+            pass
     return control
 
 
@@ -75,6 +87,8 @@ def runtime_block_reason(control: RuntimeControl, action: Any) -> str:
 def updated_control(**updates: Any) -> RuntimeControl:
     base = asdict(load_runtime_control())
     base.update(updates)
+    if "reentry_paused" in updates and "reentry_resume_on" not in updates:
+        base["reentry_resume_on"] = ""
     base["updated_at"] = datetime.now().isoformat(timespec="seconds")
     return RuntimeControl(**{key: base.get(key) for key in RuntimeControl.__dataclass_fields__})
 

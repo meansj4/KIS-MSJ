@@ -7,8 +7,9 @@
     "sell_paused":  false,
     "cleanup_paused":  false,
     "reentry_paused":  true,
-    "reason":  "user_requested_pause_reentry",
-    "updated_at":  "2026-10-15T13:31:04",
+    "reentry_resume_on":  "2026-10-19",
+    "reason":  "user_requested_reentry_resume_20261019",
+    "updated_at":  "2026-10-16T16:12:52+09:00",
     "updated_by":  "codex",
     "expires_at":  ""
 }

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from statistics import median
+from typing import NamedTuple
 
 from .config import BotConfig
 from .lot_manager import LotManager, ceil_price, lot_buy_timestamp, round_price
@@ -27,6 +28,15 @@ class StrategyAction:
     reentry_type: str = ReentryType.NONE.value
     cleanup_flag: bool = False
     limit_price: int = 0
+
+
+class SellCandidate(NamedTuple):
+    lot: LotState
+    reason: str
+    expected_loss: int
+    allowed: bool
+    trigger_lot: LotState
+    limit_price: int
 
 
 @dataclass(frozen=True)
@@ -141,6 +151,7 @@ class StrategyContext:
     cash_target_profit_active: bool = False
     cash_available_for_target: int = 0
     low_cash_high_cost_sell: bool = False
+    negative_target_high_cost_sell: bool = False
     sell_trigger_lot_id: str = ""
     sell_trigger_price: int = 0
     sell_limit_price: int = 0
@@ -327,7 +338,7 @@ class LotGridStrategy:
         candidate = self._sell_candidate(position, current_price, snapshot)
         if candidate is None:
             return None
-        lot, sell_reason, expected_cleanup_loss, cleanup_allowed = candidate
+        lot, sell_reason, expected_cleanup_loss, cleanup_allowed = candidate[:4]
         quantity = lot.remaining_quantity
         if sell_reason == SellReason.PROFIT_TAKE.value and exposure > self.config.strategy.auto_buy_limit:
             quantity = max(1, int(lot.remaining_quantity * self.config.strategy.high_exposure_partial_sell_pct / 100.0))
@@ -340,6 +351,9 @@ class LotGridStrategy:
         if sell_reason == SellReason.CLEANUP_SELL.value and not cleanup_allowed:
             return None
         reason = (
+            "negative_target_high_cost_sell_lot"
+            if sell_reason == SellReason.NEGATIVE_TARGET_HIGH_COST_SELL.value
+            else
             "low_cash_high_cost_sell_lot"
             if sell_reason == SellReason.LOW_CASH_HIGH_COST_SELL.value
             else "decay_cleanup_sell_lot"
@@ -352,15 +366,8 @@ class LotGridStrategy:
         )
         # A zero limit delegates pricing to OrderManager, which applies the
         # configured sell_limit_markdown_pct to the latest validated quote.
-        limit_price = (
-            0
-            if sell_reason == SellReason.DEEP_LOSS_RECOVERY_SELL.value
-            else self._target_sell_price(
-                self.lot_manager.lowest_open_buy_lot(position.code)
-                if sell_reason == SellReason.LOW_CASH_HIGH_COST_SELL.value else lot
-            )
-        )
-        if sell_reason == SellReason.LOW_CASH_HIGH_COST_SELL.value:
+        limit_price = candidate.limit_price
+        if sell_reason in {SellReason.LOW_CASH_HIGH_COST_SELL.value, SellReason.NEGATIVE_TARGET_HIGH_COST_SELL.value}:
             expected_cleanup_loss = max(0, -self.calculate_expected_realized_pnl(lot, limit_price, quantity))
         return StrategyAction(OrderSide.SELL, 0, quantity, reason, lot.lot_id, lot, sell_reason, cleanup_flag=expected_cleanup_loss > 0, limit_price=limit_price)
 
@@ -368,7 +375,25 @@ class LotGridStrategy:
         raw_price = lot.buy_price * (1.0 + lot.effective_target_profit_rate)
         return ceil_price(raw_price) if self.config.strategy.cash_target_profit_active() else round_price(raw_price)
 
-    def _sell_candidate(self, position: PositionState, current_price: int, snapshot: AccountSnapshot) -> tuple[LotState, str, int, bool] | None:
+    def _sell_candidate(self, position: PositionState, current_price: int, snapshot: AccountSnapshot) -> SellCandidate | None:
+        candidate = self._base_sell_candidate(position, current_price, snapshot)
+        if candidate is None:
+            return None
+        lot, reason, loss, allowed = candidate
+        trigger_lot = self.lot_manager.lowest_open_buy_lot(position.code) if reason == SellReason.LOW_CASH_HIGH_COST_SELL.value else lot
+        limit_price = 0 if reason == SellReason.DEEP_LOSS_RECOVERY_SELL.value else self._target_sell_price(trigger_lot)
+        if (self.config.strategy.age_decay_mode == "current_open_lot_count"
+                and self.config.strategy.cash_target_profit_active()
+                and reason in {SellReason.PROFIT_TAKE.value, SellReason.AUTO_DECAY_CLEANUP_SELL.value, SellReason.CLEANUP_SELL.value}
+                and trigger_lot.effective_target_profit_rate < -EPSILON
+                and self.calculate_expected_realized_pnl(trigger_lot, limit_price) < 0):
+            lot = self.lot_manager.highest_open_buy_lot(position.code)
+            reason = SellReason.NEGATIVE_TARGET_HIGH_COST_SELL.value
+            loss = max(0, -self.calculate_expected_realized_pnl(lot, limit_price))
+            allowed = True
+        return SellCandidate(lot, reason, loss, allowed, trigger_lot, limit_price)
+
+    def _base_sell_candidate(self, position: PositionState, current_price: int, snapshot: AccountSnapshot) -> tuple[LotState, str, int, bool] | None:
         profit_candidates: list[LotState] = []
         deep_loss_candidates: list[tuple[LotState, int]] = []
         decay_cleanup_candidates: list[tuple[LotState, int]] = []
@@ -563,11 +588,8 @@ class LotGridStrategy:
         selected_target_lot = sell_candidate[0] if sell_candidate else (profit_take_lots[0] if profit_take_lots else (self.lot_manager.open_lots(position.code)[0] if self.lot_manager.open_lots(position.code) else None))
         cash_target_active = self.config.strategy.cash_target_profit_active()
         low_cash = cash_target_active and snapshot.cash_available <= self.config.strategy.cash_target_low_cash_threshold
-        trigger_lot = lowest if low_cash else selected_target_lot
-        trigger_price = self._target_sell_price(trigger_lot) if trigger_lot else 0
-        if sell_candidate and sell_candidate[1] == SellReason.DEEP_LOSS_RECOVERY_SELL.value:
-            trigger_lot = selected_target_lot
-            trigger_price = 0
+        trigger_lot = sell_candidate.trigger_lot if sell_candidate else (lowest if low_cash else selected_target_lot)
+        trigger_price = sell_candidate.limit_price if sell_candidate else (self._target_sell_price(trigger_lot) if trigger_lot else 0)
         cleanup_budget = self.cleanup_loss_budget(snapshot)
         buy_condition = False
         active_buy_drop_rate = 0.0
@@ -590,7 +612,7 @@ class LotGridStrategy:
         selected_effective_target = trigger_lot.effective_target_profit_rate if trigger_lot else 0.0
         selected_base_target = (current_base_rate if cash_target_active else trigger_lot.base_target_profit_rate) if trigger_lot else 0.0
         selected_age_decay = (
-            trigger_lot.age_weeks * self.config.strategy.age_decay_rate
+            trigger_lot.age_weeks * self.lot_manager.age_decay_rate_for(position.code)
             if cash_target_active and trigger_lot else max(0.0, selected_base_target - selected_effective_target)
         )
         return StrategyContext(
@@ -668,7 +690,7 @@ class LotGridStrategy:
             cleanup_candidate=bool(cleanup_candidate_lots),
             cleanup_loss_budget=cleanup_budget,
             expected_cleanup_loss=sell_candidate[2] if sell_candidate else 0,
-            cleanup_allowed=bool(sell_candidate and sell_candidate[1] in {SellReason.CLEANUP_SELL.value, SellReason.AUTO_DECAY_CLEANUP_SELL.value, SellReason.LOW_CASH_HIGH_COST_SELL.value} and sell_candidate[3]),
+            cleanup_allowed=bool(sell_candidate and sell_candidate[1] in {SellReason.CLEANUP_SELL.value, SellReason.AUTO_DECAY_CLEANUP_SELL.value, SellReason.LOW_CASH_HIGH_COST_SELL.value, SellReason.NEGATIVE_TARGET_HIGH_COST_SELL.value} and sell_candidate[3]),
             cleanup_buy_cooldown_until=position.cleanup_buy_cooldown_until,
             cleanup_reentry_cooldown_until=position.cleanup_reentry_cooldown_until,
             profit_take_lot_count=len(profit_take_lots),
@@ -699,7 +721,7 @@ class LotGridStrategy:
             position_state_after_max_lots_check=PositionLifecycle.HOLDING.value if max_lots_reached and self.lot_manager.open_lots(position.code) and not position.needs_review else self._position_state(position),
             effective_target_profit_rate=selected_effective_target,
             lot_age_weeks=trigger_lot.age_weeks if trigger_lot else 0.0,
-            age_decay_rate=self.config.strategy.age_decay_rate,
+            age_decay_rate=self.lot_manager.age_decay_rate_for(position.code),
             base_target_profit_rate=selected_base_target,
             age_decay_applied=selected_age_decay,
             lot_unrealized_pnl_rate=selected_pnl_rate,
@@ -707,6 +729,7 @@ class LotGridStrategy:
             cash_target_profit_active=cash_target_active,
             cash_available_for_target=snapshot.cash_available,
             low_cash_high_cost_sell=bool(sell_candidate and sell_candidate[1] == SellReason.LOW_CASH_HIGH_COST_SELL.value),
+            negative_target_high_cost_sell=bool(sell_candidate and sell_candidate[1] == SellReason.NEGATIVE_TARGET_HIGH_COST_SELL.value),
             sell_trigger_lot_id=trigger_lot.lot_id if trigger_lot else "",
             sell_trigger_price=trigger_price,
             sell_limit_price=trigger_price if sell_candidate else 0,
@@ -870,7 +893,7 @@ class LotGridStrategy:
         snapshot: AccountSnapshot | None = None, now: datetime | None = None,
     ) -> dict[str, object]:
         """Check funding for one fresh-cycle LOT, without old price signals."""
-        now = now or datetime.now()
+        now = now or datetime.now(timezone(timedelta(hours=9)))
         if now.tzinfo is not None:
             now = now.astimezone(timezone(timedelta(hours=9))).replace(tzinfo=None)
         started = _parse_time(position.exit_time)
@@ -884,6 +907,8 @@ class LotGridStrategy:
         block = ""
         if not waiting:
             block = "not_waiting_reentry"
+        elif not self.config.strategy.cash_capacity_reentry_active(now):
+            block = "reentry_not_started_until_start_date"
         elif not timestamp_valid:
             block = "REENTRY_BLOCKED_MISSING_EXIT_TIME"
         elif current_price <= 0:
@@ -907,7 +932,7 @@ class LotGridStrategy:
         }
 
     def reentry_details(self, position: PositionState, current_price: int, now: datetime | None = None, snapshot: AccountSnapshot | None = None) -> dict[str, object]:
-        now = now or datetime.now()
+        now = now or datetime.now(timezone(timedelta(hours=9))).replace(tzinfo=None)
         if self.config.strategy.cash_capacity_reentry_enabled():
             cash_details = self.cash_capacity_reentry_details(position, current_price, snapshot, now)
             waiting = self._position_state(position) == PositionLifecycle.WAIT_REENTRY.value

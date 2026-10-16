@@ -1220,6 +1220,7 @@ class AutoTrader:
             cash_target_profit_active=context.cash_target_profit_active,
             cash_available_for_target=context.cash_available_for_target,
             low_cash_high_cost_sell=context.low_cash_high_cost_sell,
+            negative_target_high_cost_sell=context.negative_target_high_cost_sell,
             sell_trigger_lot_id=context.sell_trigger_lot_id,
             sell_trigger_price=context.sell_trigger_price,
             sell_limit_price=context.sell_limit_price,
@@ -1409,6 +1410,10 @@ class AutoTrader:
         runtime_block = runtime_block_reason(load_runtime_control(), action)
         if runtime_block:
             return runtime_block
+        if (action.side is OrderSide.BUY and action.reentry_type != ReentryType.NONE.value
+                and self.config.strategy.cash_capacity_reentry_enabled()
+                and not self.config.strategy.cash_capacity_reentry_active()):
+            return "reentry_not_started_until_start_date"
         portfolio_block = portfolio_preview or self.portfolio_buy_block_reason(position, action)
         if portfolio_block:
             return portfolio_block
@@ -1489,6 +1494,7 @@ class AutoTrader:
             SellReason.AUTO_DECAY_CLEANUP_SELL.value,
             SellReason.DEEP_LOSS_RECOVERY_SELL.value,
             SellReason.LOW_CASH_HIGH_COST_SELL.value,
+            SellReason.NEGATIVE_TARGET_HIGH_COST_SELL.value,
         }
         if action.side is OrderSide.SELL and action.sell_reason in cleanup_reasons and self.store.has_any_open_order(position.code):
             position.skip_reason = "open_order_exists_for_cleanup"
@@ -1617,6 +1623,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         sell_paused=runtime.sell_paused,
                         cleanup_paused=runtime.cleanup_paused,
                         reentry_paused=runtime.reentry_paused,
+                        reentry_resume_on=runtime.reentry_resume_on,
                         reason="config_reloaded",
                         updated_by=runtime.updated_by,
                         expires_at=runtime.expires_at,

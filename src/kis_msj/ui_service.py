@@ -115,12 +115,15 @@ CONFIG_METADATA: tuple[dict[str, Any], ...] = (
     {"section": "Strategy", "key": "strategy.force_reentry_after_timeout_enabled", "label_ko": "30일 timeout 강제 재진입", "description_ko": "true이면 WAIT_REENTRY가 timeout일을 넘고 조건 재진입이 없을 때 새 initial cycle BUY 후보를 만듭니다.", "type": "boolean", "unit": "bool", "display_format": "boolean", "config_format": "boolean", "warning_level": "warning", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.force_reentry_timeout_days", "label_ko": "강제 재진입 timeout", "description_ko": "WAIT_REENTRY 시작일(exit_time)부터 이 calendar day 이상 지나면 force reentry 후보가 됩니다.", "type": "number", "unit": "일", "display_format": "integer", "config_format": "integer", "warning_level": "warning", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.force_reentry_starts_new_cycle", "label_ko": "강제 재진입 새 cycle", "description_ko": "true이면 force reentry BUY 체결은 기존 anchor/lot sizing을 carry-over하지 않고 현재가 기준 새 cycle로 처리합니다.", "type": "boolean", "unit": "bool", "display_format": "boolean", "config_format": "boolean", "warning_level": "warning", "requires_restart": True},
-    {"section": "Strategy", "key": "strategy.age_decay_rate", "label_ko": "LOT 목표수익률 주간 감소폭", "description_ko": "오래된 LOT의 목표수익률을 주마다 낮추는 값입니다. UI는 %p/주로 표시하지만 config에는 소수로 저장됩니다.", "type": "number", "unit": "%p/주", "display_format": "decimal_percent", "config_format": "decimal_rate", "warning_level": "warning", "requires_restart": True},
+    {"section": "Strategy", "key": "strategy.age_decay_rate", "label_ko": "고정 주간 목표 감소폭", "description_ko": "고정 decay 모드 또는 예수금 비례 정책 시작 전의 주간 감소폭입니다. 현재 LOT 수 모드가 적용 중이면 LOT당 감소폭을 사용합니다.", "type": "number", "unit": "%p/주", "display_format": "decimal_percent", "config_format": "decimal_rate", "warning_level": "warning", "requires_restart": True},
+    {"section": "Strategy", "key": "strategy.age_decay_mode", "label_ko": "매도 목표 decay 계산 방식", "description_ko": "current_open_lot_count는 예수금 비례 정책 적용 중 해당 종목의 현재 OPEN LOT 수 × LOT당 주간 감소폭을 사용합니다. fixed는 고정 주간 감소폭을 사용합니다.", "type": "text", "unit": "mode", "display_format": "text", "config_format": "string", "warning_level": "warning", "requires_restart": True},
+    {"section": "Strategy", "key": "strategy.age_decay_per_open_lot_rate", "label_ko": "OPEN LOT당 주간 목표 감소폭", "description_ko": "현재 LOT 수 모드의 LOT당 주간 감소폭입니다. 0.1%p이면 12 LOT 보유 시 주당 1.2%p를 각 LOT의 원래 보유기간에 적용합니다. 체결로 LOT 수가 바뀌면 남은 LOT도 다시 계산합니다.", "type": "number", "unit": "%p/LOT/주", "display_format": "decimal_percent", "config_format": "decimal_rate", "warning_level": "warning", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.cash_target_profit_enabled", "label_ko": "예수금 비례 목표수익률", "description_ko": "가용현금에 비례한 공통 기본 목표에 기존 LOT별 age decay를 계속 적용합니다.", "type": "boolean", "unit": "bool", "display_format": "boolean", "config_format": "boolean", "warning_level": "danger", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.cash_target_reference_amount", "label_ko": "목표수익률 기준 현금", "description_ko": "기본 목표 = 가용현금 / 기준 현금 × 기준 수익률. 기본 2억원입니다.", "type": "number", "unit": "원", "display_format": "integer", "config_format": "integer", "warning_level": "warning", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.cash_target_reference_rate", "label_ko": "기준 현금 목표수익률", "description_ko": "가용현금이 기준 현금과 같을 때 적용할 기본 목표수익률입니다. 기본 50%입니다.", "type": "number", "unit": "%", "display_format": "decimal_percent", "config_format": "decimal_rate", "warning_level": "warning", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.cash_target_low_cash_threshold", "label_ko": "고원가 LOT 매도 현금 기준", "description_ko": "이 금액 이하에서는 최저 매수단가 LOT의 decay 목표가를 신호로 최고 매수단가 LOT을 지정가 매도하며 손실을 허용합니다.", "type": "number", "unit": "원", "display_format": "integer", "config_format": "integer", "warning_level": "danger", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.cash_target_start_date", "label_ko": "예수금 비례 목표 시작일", "description_ko": "YYYY-MM-DD 형식의 적용 시작일입니다. 비워두면 즉시 적용합니다.", "type": "text", "unit": "date", "display_format": "text", "config_format": "string", "warning_level": "warning", "requires_restart": True},
+    {"section": "Strategy", "key": "strategy.reentry_start_date", "label_ko": "현금 여유 재진입 시작일", "description_ko": "YYYY-MM-DD 형식의 적용 시작일입니다. 현금 여유 재진입 정책은 이 날짜부터 허용합니다. 런타임 일시정지는 별도로 적용합니다.", "type": "text", "unit": "date", "display_format": "text", "config_format": "string", "warning_level": "warning", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.cleanup_enabled", "label_ko": "Cleanup 손실 정리 활성화", "description_ko": "조건을 만족하는 오래된 손실 LOT의 제한적 CLEANUP_SELL을 허용합니다.", "type": "boolean", "unit": "bool", "display_format": "boolean", "config_format": "boolean", "warning_level": "danger", "requires_restart": True, "danger_confirm_required": True},
     {"section": "Strategy", "key": "strategy.cleanup_min_age_weeks", "label_ko": "Cleanup 최소 보유기간", "description_ko": "이 주수 이상 오래된 LOT만 cleanup 후보가 됩니다.", "type": "number", "unit": "주", "display_format": "integer", "config_format": "integer", "warning_level": "warning", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.cleanup_min_target_rate", "label_ko": "Cleanup 최대 손실 허용률", "description_ko": "이 손실률보다 더 큰 손실은 자동 cleanup하지 않습니다. UI는 %로 표시하지만 config에는 소수로 저장됩니다.", "type": "number", "unit": "%", "display_format": "decimal_percent", "config_format": "decimal_rate", "warning_level": "danger", "requires_restart": True},
@@ -205,7 +208,7 @@ DETAILED_CONFIG_DESCRIPTIONS: dict[str, str] = {
     "strategy.min_reentry_wait_minutes": "전량 PROFIT_TAKE 후 바로 다시 사는 것을 막기 위한 최소 대기시간입니다. WAIT_REENTRY가 된 뒤 이 시간이 지나야 NORMAL_REENTRY 또는 TRAILING_REENTRY가 실제 매수 후보가 될 수 있습니다.",
     "strategy.max_trailing_reentry_per_day": "TRAILING_REENTRY는 상승 후 눌림목을 사는 장치라 과하면 추격매수가 될 수 있습니다. 이 값은 하루에 허용할 trailing 재진입 횟수입니다. NORMAL_REENTRY와는 별도로 관리됩니다.",
     "strategy.reentry_buy_cooldown_minutes": "재진입 매수 체결 후 바로 추가매수가 이어지는 것을 막는 쿨다운입니다. NORMAL_REENTRY 또는 TRAILING_REENTRY로 새 LOT이 생긴 뒤 이 시간 동안 해당 종목의 추가 BUY를 막습니다.",
-    "strategy.age_decay_rate": "오래된 LOT이 목표수익률 때문에 영구 보존되는 문제를 줄이기 위한 주간 목표수익률 감소폭입니다. effective_target_profit_rate = base_target_profit_rate - lot_age_weeks * age_decay_rate로 계산됩니다. 예: base 6%, 값 0.5%p/주이면 12주 후 목표가 0% 근처까지 내려갑니다.",
+    "strategy.age_decay_rate": "fixed 모드 또는 예수금 비례 정책 시작 전의 주간 목표 감소폭입니다. current_open_lot_count 모드가 적용 중이면 이 값 대신 해당 종목의 현재 OPEN LOT 수 × age_decay_per_open_lot_rate를 각 LOT의 원래 보유 주수에 곱합니다.",
     "strategy.cleanup_enabled": "오래된 손실 LOT을 제한적으로 정리하는 CLEANUP_SELL 기능입니다. 켜도 아무 손실이나 팔지 않습니다. LOT 나이, effective target, 실제 손실률, cleanup_min_target_rate, 당일 실현수익 기반 cleanup_loss_budget, open order 없음, HOLDING 상태 조건을 모두 만족해야 합니다.",
     "strategy.cleanup_min_age_weeks": "CLEANUP_SELL 후보가 되기 위한 LOT 최소 보유 주수입니다. 이보다 젊은 손실 LOT은 cleanup 대상이 아니며, 기존 전략대로 보유하거나 수익권 회복을 기다립니다.",
     "strategy.cleanup_min_target_rate": "자동 cleanup으로 허용할 최대 손실률입니다. 예: -4%이면 -4%보다 더 큰 손실(-5%, -10% 등)은 자동 매도하지 않습니다. 0% 이상 매도는 cleanup이 아니라 PROFIT_TAKE입니다.",
@@ -430,6 +433,7 @@ class UIService:
             snapshot_status = "current" if 0 <= age <= 900 else "stale"
             if snapshot_status != "current":
                 cash = None
+        runtime = load_runtime_control(self.runtime_path)
         policy = {
             "cash_target_profit_enabled": config.cash_target_profit_enabled,
             "cash_target_profit_active": active,
@@ -442,10 +446,15 @@ class UIService:
             "cash_target_low_cash_threshold": config.cash_target_low_cash_threshold,
             "low_cash_high_cost_sell": active and cash is not None and cash <= config.cash_target_low_cash_threshold,
             "age_decay_rate": config.age_decay_rate,
+            "age_decay_mode": config.age_decay_mode,
+            "age_decay_per_open_lot_rate": config.age_decay_per_open_lot_rate,
             "reentry_policy": config.reentry_policy,
             "cash_capacity_reentry_enabled": cash_reentry,
+            "cash_capacity_reentry_active": config.cash_capacity_reentry_active(),
+            "reentry_start_date": config.reentry_start_date,
             "reentry_cash_lot_multiple": config.reentry_cash_lot_multiple,
-            "reentry_paused": load_runtime_control(self.runtime_path).reentry_paused,
+            "reentry_paused": runtime.reentry_paused,
+            "reentry_resume_on": runtime.reentry_resume_on,
         }
         return dict(self._cache_set(("cash_target_policy",), policy))
 
@@ -1303,9 +1312,12 @@ class UIService:
                 "target_source": target_source,
                 "current_base_target_profit_rate": current_base_rate,
                 "effective_target_profit_rate": effective_rate if cash_known else None,
+                "current_symbol_open_lot_count": len(lot_manager.open_lots(code)),
+                "effective_weekly_age_decay_rate": lot_manager.age_decay_rate_for(code),
                 "cash_target_sell_candidate": lot.get("cash_target_sell_candidate", False),
                 "cash_target_trigger_lot_id": lot.get("cash_target_trigger_lot_id", ""),
                 "cash_target_sell_limit_price": lot.get("cash_target_sell_limit_price"),
+                "negative_target_high_cost_sell": lot.get("negative_target_high_cost_sell", False),
                 "cash_snapshot_status": cash_policy["cash_snapshot_status"],
                 "deep_loss_started_on": lot.get("deep_loss_started_on", ""),
                 "deep_loss_last_observed_on": lot.get("deep_loss_last_observed_on", ""),
@@ -1341,7 +1353,7 @@ class UIService:
             "generated_at": datetime.now().isoformat(timespec="seconds"),
             "calculation_basis": "OPEN LOT 현재 기준 평가손익. 날짜별 조회는 해당 날짜에 매수되어 현재 OPEN 상태인 LOT만 보여줍니다.",
             "data_quality_notes": self._portfolio_data_quality_notes(price_snapshots, latest_prices, open_lots) + [
-                "target_price/target_amount는 최신 확인 가용현금과 LOT별 age_decay가 반영된 참고값이며, 저현금 최고원가 LOT의 실제 지정가는 cash_target_sell_limit_price입니다. 현금 미확인 시 목표는 표시하지 않습니다." if cash_policy["cash_target_profit_active"] else "target_price/target_amount는 실제 주문 예정가가 아니라 target_profit_lot_bands와 age_decay가 반영된 참고 목표값입니다.",
+                "target_price/target_amount는 최신 확인 가용현금과 현재 종목 LOT 수에 따른 decay가 반영된 참고값입니다. 저현금 또는 음수 목표 손실매도로 선택한 최고원가 LOT의 실제 지정가는 cash_target_sell_limit_price입니다. 현금 미확인 시 목표는 표시하지 않습니다." if cash_policy["cash_target_profit_active"] else "target_price/target_amount는 실제 주문 예정가가 아니라 target_profit_lot_bands와 age_decay가 반영된 참고 목표값입니다.",
             ],
             "price_source_info": {code: latest_prices.get(code, {}) for code in sorted({str(lot.get("code") or "") for lot in open_lots})},
             "read_only": True,
@@ -2196,19 +2208,30 @@ class UIService:
     def lots(self, filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         rows = self._recent_table("lots", filters) if filters is not None else self._table("lots")
         now = datetime.now()
-        by_code_price = {item["code"]: int(item.get("current_price") or 0) for item in self.positions()}
+        positions = {item["code"]: item for item in self.positions()}
+        by_code_price = {code: int(item.get("current_price") or 0) for code, item in positions.items()}
         cash_policy = self.cash_target_policy()
         cash_active = cash_policy["cash_target_profit_active"]
         cash_known = cash_policy["cash_available_for_target"] is not None
         manager = LotManager(self.config.strategy, {row["lot_id"]: _lot_state_from_row(row) for row in self._table("lots")}) if cash_active else None
-        low_cash_targets: dict[str, tuple[str, str, int]] = {}
+        policy_targets: dict[str, tuple[str, str, int, bool]] = {}
         if manager is not None and cash_policy["low_cash_high_cost_sell"]:
             for code in {lot.code for lot in manager.lots.values() if lot.remaining_quantity > 0}:
                 lowest = manager.lowest_open_buy_lot(code)
                 highest = manager.highest_open_buy_lot(code)
                 if lowest is not None and highest is not None:
                     effective = manager.effective_target_profit_rate(lowest, now, cash_policy["current_base_target_profit_rate"])
-                    low_cash_targets[code] = (lowest.lot_id, highest.lot_id, ceil_price(lowest.buy_price * (1.0 + effective)))
+                    policy_targets[code] = (lowest.lot_id, highest.lot_id, ceil_price(lowest.buy_price * (1.0 + effective)), False)
+        elif manager is not None and cash_known and self.config.strategy.age_decay_mode == "current_open_lot_count":
+            strategy = LotGridStrategy(self.config, manager)
+            snapshot = self._cash_target_snapshot(cash_policy)
+            for code, position in positions.items():
+                price = by_code_price[code]
+                if price <= 0 or not manager.open_lots(code):
+                    continue
+                context = strategy.context(_position_state_from_row(position), price, snapshot)
+                if context.negative_target_high_cost_sell:
+                    policy_targets[code] = (context.sell_trigger_lot_id, context.selected_sell_lot_id, context.sell_limit_price, True)
         for row in rows:
             current_price = by_code_price.get(row["code"], 0)
             row["current_price"] = current_price
@@ -2218,12 +2241,15 @@ class UIService:
             row["stale_lot"] = row["unrealized_pnl_rate"] <= self.config.strategy.stale_lot_loss_rate and float(row.get("age_weeks") or 0) >= self.config.strategy.stale_lot_min_age_weeks
             row["sell_trigger_price"] = int(round(int(row.get("buy_price", 0)) * (1 + float(row.get("effective_target_profit_rate") or 0))))
             if cash_active and _to_int(row.get("remaining_quantity")) > 0 and str(row.get("status") or "") != "CLOSED":
+                row["current_symbol_open_lot_count"] = len(manager.open_lots(row["code"]))
+                row["effective_weekly_age_decay_rate"] = manager.age_decay_rate_for(row["code"], now)
                 row["cash_snapshot_status"] = cash_policy["cash_snapshot_status"]
                 row["cash_snapshot_at"] = cash_policy["cash_snapshot_at"]
                 row["current_base_target_profit_rate"] = cash_policy["current_base_target_profit_rate"]
                 row["cash_target_sell_candidate"] = False
                 row["cash_target_trigger_lot_id"] = ""
                 row["cash_target_sell_limit_price"] = None
+                row["negative_target_high_cost_sell"] = False
                 if cash_known:
                     state = manager.lots[str(row["lot_id"])]
                     manager.update_lot_target_metadata(state, current_price, now, cash_policy["current_base_target_profit_rate"])
@@ -2231,11 +2257,12 @@ class UIService:
                     row["age_weeks"] = state.age_weeks
                     row["target_sell_price"] = ceil_price(state.buy_price * (1.0 + state.effective_target_profit_rate))
                     row["sell_trigger_price"] = row["target_sell_price"]
-                    if row["code"] in low_cash_targets:
-                        trigger_id, sell_id, limit = low_cash_targets[row["code"]]
+                    if row["code"] in policy_targets:
+                        trigger_id, sell_id, limit, negative_target = policy_targets[row["code"]]
                         row["cash_target_trigger_lot_id"] = trigger_id
                         row["cash_target_sell_candidate"] = str(row["lot_id"]) == sell_id
                         if row["cash_target_sell_candidate"]:
+                            row["negative_target_high_cost_sell"] = negative_target
                             row["cash_target_sell_limit_price"] = limit
                             row["sell_trigger_price"] = limit
                     else:
@@ -2967,6 +2994,8 @@ class UIService:
     def runtime_set(self, **updates: Any) -> dict[str, Any]:
         current = asdict(load_runtime_control(self.runtime_path))
         current.update(updates)
+        if "reentry_paused" in updates:
+            current["reentry_resume_on"] = ""
         if updates.get("config_reload_requested"):
             current["config_reload_requested_at"] = datetime.now().isoformat(timespec="seconds")
         current["updated_at"] = datetime.now().isoformat(timespec="seconds")

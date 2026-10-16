@@ -204,9 +204,15 @@ class LotManager:
         bought_at = datetime.fromisoformat(lot.buy_filled_at.replace("Z", "+00:00")).replace(tzinfo=None)
         return max(0.0, (now - bought_at).total_seconds() / (7 * 24 * 60 * 60))
 
+    def age_decay_rate_for(self, code: str, now: datetime | None = None) -> float:
+        """Use the current remaining LOT count once the cash policy is active."""
+        if self.config.age_decay_mode == "current_open_lot_count" and self.config.cash_target_profit_active(now):
+            return len(self.open_lots(code)) * self.config.age_decay_per_open_lot_rate
+        return self.config.age_decay_rate
+
     def effective_target_profit_rate(self, lot: LotState, now: datetime | None = None, current_base_target_profit_rate: float | None = None) -> float:
         base = current_base_target_profit_rate if current_base_target_profit_rate is not None else (lot.base_target_profit_rate or lot.target_profit_pct / 100.0)
-        return base - self.age_weeks(lot, now) * self.config.age_decay_rate
+        return base - self.age_weeks(lot, now) * self.age_decay_rate_for(lot.code, now)
 
     def update_lot_target_metadata(self, lot: LotState, current_price: int, now: datetime | None = None, current_base_target_profit_rate: float | None = None) -> None:
         lot.age_weeks = self.age_weeks(lot, now)
