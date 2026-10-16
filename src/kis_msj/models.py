@@ -56,6 +56,7 @@ class SellReason(str, Enum):
 
 
 class ReentryType(str, Enum):
+    CASH_CAPACITY_REENTRY = "CASH_CAPACITY_REENTRY"
     NONE = "NONE"
     NORMAL_REENTRY = "NORMAL_REENTRY"
     TRAILING_REENTRY = "TRAILING_REENTRY"

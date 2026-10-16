@@ -36,6 +36,7 @@ UI: `http://127.0.0.1:8765`
 
 - [전략과 LOT 계산](docs/strategy_lot_sizing.md)
 - [2026-10-19 예수금 연동 목표·저현금 LOT 매도](docs/cash_target_profit.md)
+- [재진입 대기 순서·30 LOT 현금 기준](docs/cash_capacity_reentry.md)
 - [로컬 UI](docs/local_ui.md)
 - [포트폴리오 대시보드](docs/portfolio_dashboard.md)
 - [주문 취소·체결 정합성](docs/order_cancel_reconciliation.md)

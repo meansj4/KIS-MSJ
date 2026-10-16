@@ -98,6 +98,8 @@ CONFIG_METADATA: tuple[dict[str, Any], ...] = (
     {"section": "Strategy", "key": "strategy.max_open_lots_before_review", "label_ko": "검토 전 최대 OPEN LOT 수", "description_ko": "OPEN LOT이 많아진 종목을 재검토 대상으로 보기 위한 기준입니다.", "type": "number", "unit": "개", "display_format": "integer", "config_format": "integer", "warning_level": "warning", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.pnl_minus_threshold", "label_ko": "MINUS 모드 기준", "description_ko": "포지션 손익률이 이 값 이하이면 MINUS 모드입니다. UI는 %로 표시하지만 config에는 소수로 저장됩니다.", "type": "number", "unit": "%", "display_format": "decimal_percent", "config_format": "decimal_rate", "warning_level": "normal", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.pnl_plus_threshold", "label_ko": "PLUS 모드 기준", "description_ko": "포지션 손익률이 이 값 이상이면 PLUS 모드입니다. UI는 %로 표시하지만 config에는 소수로 저장됩니다.", "type": "number", "unit": "%", "display_format": "decimal_percent", "config_format": "decimal_rate", "warning_level": "normal", "requires_restart": True},
+    {"section": "Strategy", "key": "strategy.reentry_policy", "label_ko": "재진입 정책", "description_ko": "cash_capacity_oldest는 WAIT_REENTRY가 오래된 종목부터 현재 가격대의 새 사이클 1 LOT 금액 × 재진입 현금 배수 이상 현금이 있을 때 1 LOT을 매수합니다. legacy_price는 기존 가격·decay·timeout 정책입니다.", "type": "text", "unit": "policy", "display_format": "text", "config_format": "string", "warning_level": "warning", "requires_restart": True},
+    {"section": "Strategy", "key": "strategy.reentry_cash_lot_multiple", "label_ko": "재진입 현금 여유 LOT 배수", "description_ko": "현금 재진입 정책의 매수 전 자금 기준입니다. 30이면 해당 종목 30 LOT 금액 이상의 현금이 필요하지만 실제 매수는 1 LOT이며, 다음 종목은 줄어든 현금으로 다시 검사합니다.", "type": "number", "unit": "LOT", "display_format": "integer", "config_format": "integer", "warning_level": "warning", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.normal_reentry_drop_rate", "label_ko": "NORMAL_REENTRY 기본 하락률", "description_ko": "normal_exit_anchor_price 대비 최초 -5% 기준이며 WAIT_REENTRY 경과일 decay 후 유효 기준으로 재진입 후보가 됩니다.", "type": "number", "unit": "%", "display_format": "decimal_percent", "config_format": "decimal_rate", "warning_level": "normal", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.trailing_activation_gain", "label_ko": "TRAILING 활성화 상승률", "description_ko": "trailing_exit_anchor_price 대비 이 비율 이상 오른 뒤에만 trailing 재진입을 검토합니다.", "type": "number", "unit": "%", "display_format": "decimal_percent", "config_format": "decimal_rate", "warning_level": "normal", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.trailing_reentry_drop_rate", "label_ko": "TRAILING 기본 고점 대비 하락률", "description_ko": "post_exit_high_price 대비 최초 -10% 기준이며 WAIT_REENTRY 경과일 decay 후 유효 기준으로 trailing 재진입 후보가 됩니다.", "type": "number", "unit": "%", "display_format": "decimal_percent", "config_format": "decimal_rate", "warning_level": "normal", "requires_restart": True},
@@ -356,20 +358,36 @@ class UIService:
     def config_schema(self) -> dict[str, Any]:
         sections: dict[str, list[dict[str, Any]]] = {}
         lot_sizing_metadata = _lot_sizing_config_metadata()
+        cash_reentry = self.config.strategy.cash_capacity_reentry_enabled()
+        legacy_reentry_keys = {
+            "strategy.normal_reentry_drop_rate", "strategy.trailing_activation_gain",
+            "strategy.trailing_reentry_drop_rate", "strategy.min_reentry_wait_minutes",
+            "strategy.max_trailing_reentry_per_day", "strategy.reentry_buy_cooldown_minutes",
+            "strategy.reentry_decay_enabled", "strategy.normal_reentry_decay_days",
+            "strategy.normal_reentry_daily_decay_rate", "strategy.trailing_reentry_decay_days",
+            "strategy.trailing_reentry_daily_decay_rate", "strategy.reentry_decay_cap_rate",
+            "strategy.force_reentry_after_timeout_enabled", "strategy.force_reentry_timeout_days",
+            "strategy.force_reentry_starts_new_cycle",
+        }
+
+        def describe_policy(item: dict[str, Any]) -> None:
+            if item["key"] in DETAILED_CONFIG_DESCRIPTIONS:
+                item["description_ko"] = DETAILED_CONFIG_DESCRIPTIONS[item["key"]]
+            if cash_reentry and item["key"] in legacy_reentry_keys:
+                item["description_ko"] = "현재 현금 재진입 정책에서는 사용하지 않습니다. 기존 가격 재진입 정책 전용: " + item.get("description_ko", "")
+
         for item in CONFIG_METADATA:
             if item["key"] in HIDDEN_CONFIG_KEYS:
                 continue
             enriched = dict(item)
-            if enriched["key"] in DETAILED_CONFIG_DESCRIPTIONS:
-                enriched["description_ko"] = DETAILED_CONFIG_DESCRIPTIONS[enriched["key"]]
+            describe_policy(enriched)
             sections.setdefault(str(enriched["section"]), []).append(enriched)
         metadata = [dict(item) for item in CONFIG_METADATA if item["key"] not in HIDDEN_CONFIG_KEYS]
         for item in lot_sizing_metadata:
             sections.setdefault(str(item["section"]), []).append(dict(item))
             metadata.append(dict(item))
         for item in metadata:
-            if item["key"] in DETAILED_CONFIG_DESCRIPTIONS:
-                item["description_ko"] = DETAILED_CONFIG_DESCRIPTIONS[item["key"]]
+            describe_policy(item)
         return {
             "sections": sections,
             "metadata": metadata,
@@ -389,10 +407,11 @@ class UIService:
             return dict(cached)
         config = self.config.strategy
         active = config.cash_target_profit_active()
+        cash_reentry = config.cash_capacity_reentry_enabled()
         cash = None
         observed_at = ""
         source = "unknown_ui_read_only"
-        if active:
+        if active or cash_reentry:
             for line in reversed(tail_hourly_logs(self.config.log_path, 2000)):
                 match = re.search(r"cash_target_account_snapshot cash_available=(\d+) snapshot_at=(\S+)", line)
                 if match:
@@ -419,10 +438,14 @@ class UIService:
             "cash_snapshot_at": observed_at,
             "cash_snapshot_status": snapshot_status,
             "cash_snapshot_source": source,
-            "current_base_target_profit_rate": (cash / config.cash_target_reference_amount * config.cash_target_reference_rate) if cash is not None else None,
+            "current_base_target_profit_rate": (cash / config.cash_target_reference_amount * config.cash_target_reference_rate) if cash is not None and active else None,
             "cash_target_low_cash_threshold": config.cash_target_low_cash_threshold,
             "low_cash_high_cost_sell": active and cash is not None and cash <= config.cash_target_low_cash_threshold,
             "age_decay_rate": config.age_decay_rate,
+            "reentry_policy": config.reentry_policy,
+            "cash_capacity_reentry_enabled": cash_reentry,
+            "reentry_cash_lot_multiple": config.reentry_cash_lot_multiple,
+            "reentry_paused": load_runtime_control(self.runtime_path).reentry_paused,
         }
         return dict(self._cache_set(("cash_target_policy",), policy))
 
@@ -1874,7 +1897,8 @@ class UIService:
         current_price = int(position.get("current_price") or 0)
         cash_policy = self.cash_target_policy()
         snapshot = self._cash_target_snapshot(cash_policy)
-        cash_known = not cash_policy["cash_target_profit_active"] or snapshot is not None
+        cash_required = cash_policy["cash_target_profit_active"] or config.strategy.cash_capacity_reentry_enabled()
+        cash_known = not cash_required or snapshot is not None
         context = strategy.context(position_state, current_price, snapshot) if current_price and cash_known else None
         return {
             "stock": next((asdict(stock) for stock in config.stocks if stock.code == code), {"code": code}),
@@ -1882,6 +1906,7 @@ class UIService:
             "lots": lots,
             "open_lot_count": len(open_lots),
             "strategy_context": asdict(context) if context else {},
+            "reentry_details": strategy.reentry_details(position_state, current_price, snapshot=snapshot),
             "cash_target_policy": cash_policy,
             "recent_decisions": [item for item in self.parse_decision_logs(300) if item.get("code") == code][-50:],
             "review_status": self.review_status(code),
@@ -2960,7 +2985,8 @@ class UIService:
         strategy = LotGridStrategy(config, lot_manager)
         cash_policy = self.cash_target_policy()
         snapshot = self._cash_target_snapshot(cash_policy)
-        cash_known = not cash_policy["cash_target_profit_active"] or snapshot is not None
+        cash_required = cash_policy["cash_target_profit_active"] or config.strategy.cash_capacity_reentry_enabled()
+        cash_known = not cash_required or snapshot is not None
         positions = [_position_state_from_row(row) for row in self.positions()]
         if code:
             positions = [position for position in positions if position.code == str(code).zfill(6)]
@@ -2985,7 +3011,11 @@ class UIService:
                 "final_block_reason": final_block_reason,
                 "context": asdict(context) if context else {},
             })
-        return {"previews": previews, "cash_target_policy": cash_policy, "dry_run": True, "order_api_called": False}
+        return {
+            "previews": previews, "cash_target_policy": cash_policy,
+            "calculation_basis": "각 종목은 표시된 동일 현금 snapshot으로 개별 검토한 참고 후보입니다. 실제 주문은 재진입 대기 순서와 주문 후 줄어든 현금으로 다시 판단합니다.",
+            "dry_run": True, "order_api_called": False,
+        }
 
     def _table(self, table: str) -> list[dict[str, Any]]:
         db_path = self._db_path()

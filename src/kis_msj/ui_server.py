@@ -184,6 +184,12 @@ const LABELS = {
   low_cash_high_cost_sell:'저현금 고원가 LOT 매도', age_decay_rate:'주간 목표 감소폭',
   cash_target_sell_candidate:'저현금 우선매도 LOT', cash_target_trigger_lot_id:'저현금 목표 기준 LOT',
   cash_target_sell_limit_price:'현재 정책 매도 지정가',
+  reentry_policy:'재진입 정책', cash_capacity_reentry_enabled:'현금 여유 재진입',
+  reentry_cash_lot_multiple:'재진입 현금 여유 LOT 배수', reentry_lot_unit_amount:'재진입 새 사이클 1 LOT 금액',
+  reentry_required_cash:'재진입 필요 현금', reentry_cash_available:'재진입 판단 가용현금',
+  reentry_cash_condition_met:'재진입 현금 조건 충족', wait_reentry_started_at:'재진입 대기 시작시각',
+  days_since_wait_reentry_started:'재진입 대기 경과일', wait_reentry_timestamp_valid:'재진입 대기시각 확인',
+  reentry_mode:'재진입 방식', reentry_type:'재진입 유형',
   deep_loss_started_on:'심각손실 회복대기 시작일', deep_loss_last_observed_on:'최근 종가 관찰일',
   deep_loss_observation_count:'심각손실 관찰횟수', deep_loss_last_close:'최근 관찰 종가', deep_loss_low_price:'심각손실 최저 종가', deep_loss_elapsed_days:'회복대기 경과일', deep_loss_rebound_rate:'현재 요구 반등률', deep_loss_rebound_trigger_price:'반등 매도 기준가', deep_loss_force_sell_on:'강제 정리 예정일',
   stale_lot:'STALE LOT', last_sell_reason:'최근 매도 사유', order_id:'주문 ID',
@@ -223,6 +229,11 @@ const VALUE_LABELS = {
   cash_rotation_recheck_after_sell:'LOT 매도 후 매수 조건 재확인', cash_rotation_no_eligible_donor:'정리 가능한 다른 종목 LOT 없음',
   CASH_SHORTFALL_ROTATION:'매수 자금 확보용 LOT 교체',
   LOW_CASH_HIGH_COST_SELL:'저현금 고원가 LOT 매도', cash_snapshot_unavailable:'가용현금 미확인',
+  cash_capacity_oldest:'오래된 대기 순서 · 현금 여유 재진입', legacy_price:'기존 가격 재진입',
+  CASH_CAPACITY_REENTRY:'현금 여유 재진입', cash_capacity_reentry:'현금 여유 1 LOT 재진입',
+  reentry_cash_capacity_insufficient:'재진입 현금 여유 부족', cash_capacity_reentry_cash_insufficient:'최종 주문 전 재진입 현금 여유 부족',
+  REENTRY_BLOCKED_MISSING_EXIT_TIME:'재진입 대기시각 미확인', cash_capacity_reentry_wait_open_orders:'미체결 주문 정산 대기',
+  cash_capacity_reentry_lot_sizing_unavailable:'최종 지정가의 LOT 가격구간 사용 불가',
   current:'최근 확인', stale:'오래된 확인값', unknown:'미확인',
   PROFIT_TAKE:'본전/수익 매도', CLEANUP_SELL:'손실 정리 매도', AUTO_DECAY_CLEANUP_SELL:'Decay 정리 매도', DEEP_LOSS_RECOVERY_SELL:'심각손실 반등 정리', UNKNOWN:'알 수 없음',
   BUY:'매수', SELL:'매도', REQUESTED:'요청됨', PARTIAL:'부분체결', FILLED:'체결완료',
@@ -699,7 +710,7 @@ async function loadDashboard(status=null) {
     risk_blocked_count: s.position_state_counts.RISK_BLOCKED || 0,
     review_required_count: s.position_state_counts.REVIEW_REQUIRED || 0
   };
-  document.getElementById('content').innerHTML = `<h2>대시보드</h2><h3>핵심 요약</h3>${metrics(top)}${cashTargetPanel(s.cash_target_policy)}${extendedTradingPanel(s.extended_trading)}<h3>Loop performance</h3>${metrics(s.loop_performance || {})}<h3>Analysis data status</h3>${metrics(s.analysis_status || {})}<h3>봇 상태</h3>${metrics(s.bot)}<h3>계좌/리스크</h3>${metrics(s.account_risk)}<h3>보유 상태별 종목 수</h3>${metrics(s.position_state_counts)}<h3>주문 상태</h3>${metrics(s.order_status_counts)}<h3>경고</h3>${table(s.warnings, 'warnings')}<h3>런타임 제어</h3>${metrics(s.runtime_control)}`;
+  document.getElementById('content').innerHTML = `<h2>대시보드</h2><h3>핵심 요약</h3>${metrics(top)}${cashTargetPanel(s.cash_target_policy)}${cashReentryPanel(s.cash_target_policy)}${extendedTradingPanel(s.extended_trading)}<h3>Loop performance</h3>${metrics(s.loop_performance || {})}<h3>Analysis data status</h3>${metrics(s.analysis_status || {})}<h3>봇 상태</h3>${metrics(s.bot)}<h3>계좌/리스크</h3>${metrics(s.account_risk)}<h3>보유 상태별 종목 수</h3>${metrics(s.position_state_counts)}<h3>주문 상태</h3>${metrics(s.order_status_counts)}<h3>경고</h3>${table(s.warnings, 'warnings')}<h3>런타임 제어</h3>${metrics(s.runtime_control)}`;
 }
 function cashTargetPanel(info) {
   if (!info || !info.cash_target_profit_enabled) return '';
@@ -709,6 +720,30 @@ function cashTargetPanel(info) {
   const missing = info.cash_target_profit_active && info.cash_available_for_target === null
     ? '<p class="warn">최근 가용현금을 확인하지 못해 목표가 표시와 판단 미리보기를 보류합니다.</p>' : '';
   return `<section class="manualBox"><h3>예수금 비례 매도 목표</h3><p>${note}</p>${missing}${metrics(info)}</section>`;
+}
+function cashReentryPanel(info, details) {
+  if (!info || !info.cash_capacity_reentry_enabled) return '';
+  const multiple = Number(info.reentry_cash_lot_multiple);
+  const note = `재진입 대기가 오래된 종목부터 검토합니다. 현재 가격대의 새 사이클 1 LOT 금액 × ${esc(multiple)} 이상의 현금이 있을 때 1 LOT을 매수하고, 다음 종목은 줄어든 현금으로 다시 검사합니다. 가격 하락·trailing·재진입 decay·timeout 조건은 사용하지 않습니다.`;
+  const missing = info.cash_available_for_target === null
+    ? '<p class="warn">최근 가용현금을 확인하지 못해 재진입 현금 판단을 보류합니다.</p>' : '';
+  const paused = info.reentry_paused
+    ? '<p class="warn">재진입 일시정지 중입니다. 현금 조건이 충족되어도 실제 주문은 차단됩니다.</p>' : '';
+  const fields = details ? {
+    wait_reentry_started_at:details.wait_reentry_started_at,
+    days_since_wait_reentry_started:details.days_since_wait_reentry_started,
+    wait_reentry_timestamp_valid:details.wait_reentry_timestamp_valid,
+    reentry_lot_unit_amount:details.reentry_lot_unit_amount,
+    reentry_required_cash:details.reentry_required_cash,
+    reentry_cash_available:details.reentry_cash_available,
+    reentry_cash_condition_met:details.reentry_cash_condition_met,
+    skip_reason:details.skip_reason
+  } : {
+    reentry_policy:info.reentry_policy, reentry_cash_lot_multiple:multiple,
+    reentry_cash_available:info.cash_available_for_target,
+    cash_snapshot_at:info.cash_snapshot_at, cash_snapshot_status:info.cash_snapshot_status
+  };
+  return `<section class="manualBox"><h3>현금 여유 재진입</h3><p>${note}</p>${paused}${missing}${metrics(fields)}</section>`;
 }
 function extendedTradingPanel(info) {
   if (!info) return '';
@@ -921,7 +956,8 @@ async function openStockLots(code) {
   const stock = detail.stock || {};
   window.stockLotRows = lots;
   const retireReason = stock.retire_reason ? `<details><summary>중지 예정 사유</summary><p class="muted">${esc(stock.retire_reason)}</p></details>` : '';
-  document.getElementById('stockLotPanel').innerHTML = `<div class="detailPanel"><h3>${esc(stock.name || '')} ${esc(code)} 보유 LOT</h3><p class="muted">종목별 LOT 수익률, 잔여 수량, cleanup/stale 상태를 확인하고 OPEN LOT은 수동 매도 요청 화면으로 보낼 수 있습니다.</p>${retireReason}${table(lots, 'stockLots', {actions:true})}</div>`;
+  const reentryPanel = detail.position?.position_state === 'WAIT_REENTRY' ? cashReentryPanel(detail.cash_target_policy, detail.reentry_details) : '';
+  document.getElementById('stockLotPanel').innerHTML = `<div class="detailPanel"><h3>${esc(stock.name || '')} ${esc(code)} 보유 LOT</h3><p class="muted">종목별 LOT 수익률, 잔여 수량, cleanup/stale 상태를 확인하고 OPEN LOT은 수동 매도 요청 화면으로 보낼 수 있습니다.</p>${reentryPanel}${retireReason}${table(lots, 'stockLots', {actions:true})}</div>`;
 }
 async function openManualBuy(code) {
   await loadManualOrders();
@@ -989,7 +1025,7 @@ async function loadRuntime() {
     <div class="controlCard"><button onclick="runtime('/api/runtime/pause-buy')">매수 일시정지</button><p class="muted">신규 매수, 추가매수, 재진입 매수를 차단합니다.</p></div>
     <div class="controlCard"><button onclick="runtime('/api/runtime/pause-sell')">매도 일시정지</button><p class="muted">자동 매도 요청을 차단합니다.</p></div>
     <div class="controlCard"><button onclick="runtime('/api/runtime/pause-cleanup')">Cleanup 일시정지</button><p class="muted">손실 정리 매도만 별도로 차단합니다.</p></div>
-    <div class="controlCard"><button onclick="runtime('/api/runtime/pause-reentry')">재진입 일시정지</button><p class="muted">NORMAL/TRAILING 재진입 매수를 차단합니다.</p></div>
+    <div class="controlCard"><button onclick="runtime('/api/runtime/pause-reentry')">재진입 일시정지</button><p class="muted">현재 정책의 모든 재진입 매수를 차단합니다.</p></div>
     <div class="controlCard"><button onclick="runtime('/api/runtime/resume')">일시정지 해제</button><p class="muted">runtime pause 플래그를 해제합니다.</p></div>
     <div class="controlCard dangerZone"><button class="dangerBtn" onclick="runtime('/api/runtime/emergency-stop')">Emergency Stop 비상정지</button><p class="bad">즉시 모든 주문 요청을 차단하는 비상 정지입니다.</p></div>
   </div>`;

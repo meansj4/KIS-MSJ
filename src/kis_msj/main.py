@@ -9,7 +9,7 @@ import time
 import copy
 from dataclasses import replace
 from contextlib import nullcontext
-from datetime import datetime, time as day_time, timedelta
+from datetime import datetime, time as day_time, timedelta, timezone
 from pathlib import Path
 from typing import Sequence
 
@@ -44,6 +44,38 @@ DEFAULT_QUOTE_CSV = PROJECT_ROOT / "data" / "kospi_current_quotes.csv"
 
 def _null_stage():
     return nullcontext()
+
+
+def ordered_stocks_for_reentry(stocks, positions):
+    """Evaluate existing positions first, then the oldest confirmed exits."""
+    ordinary = []
+    waiting = []
+    for stock in stocks:
+        position = positions.get(stock.code)
+        exited_position = position is not None and (
+            bool(position.exit_time) or position.last_fill_side == OrderSide.SELL.value
+            or position.position_state in {
+                PositionLifecycle.WAIT_REENTRY.value,
+                PositionLifecycle.COOLDOWN_AFTER_CLEANUP.value,
+            }
+        )
+        if position is None or position.quantity > 0 or not exited_position:
+            ordinary.append(stock)
+            continue
+        # Review clearance and legacy cleanup migration can turn a flat symbol
+        # into WAIT_REENTRY during evaluation. Queue it now using the same
+        # persisted exit fallback, so it cannot jump ahead of older exits.
+        wait_started = position.exit_time
+        if not wait_started and position.last_fill_side == OrderSide.SELL.value:
+            wait_started = position.cleanup_time or position.last_order_time
+        try:
+            exited = datetime.fromisoformat(str(wait_started).replace("Z", "+00:00"))
+            if exited.tzinfo is not None:
+                exited = exited.astimezone(timezone(timedelta(hours=9))).replace(tzinfo=None)
+        except (TypeError, ValueError, OverflowError):
+            exited = datetime.max
+        waiting.append((exited, stock.code, stock))
+    return ordinary + [stock for _, _, stock in sorted(waiting, key=lambda entry: entry[:2])]
 
 
 class AutoTrader:
@@ -183,9 +215,20 @@ class AutoTrader:
                 if open_orders:
                     self.logger.warning("open_orders count=%s buy_orders_blocked=true", len(open_orders))
                     self.risk_manager.data_mismatch_detected = True
+        if self.config.strategy.cash_target_profit_active():
+            # All LOTs share the latest cash base, including symbols already
+            # evaluated before an order changed the account's available cash.
+            for lot in self.lot_manager.lots.values():
+                if lot.remaining_quantity <= 0:
+                    continue
+                position = self.position_manager.positions.get(lot.code)
+                price = position.current_price if position and position.current_price > 0 else lot.buy_price
+                base_rate, _, _ = self.lot_manager.current_target_profit_info(lot.code, cash_available=snapshot.cash_available)
+                self.lot_manager.update_lot_target_metadata(lot, price, current_base_target_profit_rate=base_rate)
         self.store.save_positions(self.position_manager.positions.values())
         self.store.save_lots(self.lot_manager.lots.values())
-        if self.config.strategy.cash_target_profit_active():
+        if (self.config.strategy.cash_target_profit_active()
+                or self.config.strategy.cash_capacity_reentry_enabled()):
             age = max(0.0, time.monotonic() - self._last_account_snapshot_at) if self._last_account_snapshot_at else 0.0
             self.logger.info("cash_target_account_snapshot cash_available=%s snapshot_at=%s",
                              snapshot.cash_available,
@@ -288,6 +331,8 @@ class AutoTrader:
             with profile.stage("deep_loss_price_cache") if profile else _null_stage():
                 self.refresh_completed_session_price_cache()
             stocks = list(self.config.stocks)
+            if self.config.strategy.cash_capacity_reentry_enabled():
+                stocks = ordered_stocks_for_reentry(stocks, self.position_manager.positions)
             rotation_window = in_trade_window(self.config) or (
                 self.config.extended_hours.mode == "live" and extended_window(self.config))
             if cash_rotation_funding_enabled(self) and rotation_window:
@@ -516,7 +561,11 @@ class AutoTrader:
                 if order_request is None:
                     self.store.update_manual_order_request(request_id, status="BLOCKED", block_reason="quantity_below_one")
                     continue
-                result, fill = self.order_manager.submit_and_confirm(order_request)
+                try:
+                    result, fill = self.order_manager.submit_and_confirm(order_request)
+                finally:
+                    if self.config.strategy.cash_target_profit_active() or self.config.strategy.cash_capacity_reentry_enabled():
+                        self.invalidate_account_snapshot_cache("manual_order_submitted")
                 self.store.update_manual_order_request(request_id, status="SUBMITTED", linked_order_id=result.order_id)
                 self.logger.info(
                     "manual_order_request_submitted_to_order_manager request_id=%s code=%s side=%s order_id=%s status=%s",
@@ -825,7 +874,8 @@ class AutoTrader:
                            profile: LoopProfile | None = None, *, route: Route | None = None, shadow: bool = False,
                            scan_quote: Quote | None = None) -> None:
         self._decision_route, self._decision_shadow = route, shadow
-        if (self.config.risk.cash_shortfall_rotation_enabled or self.config.strategy.cash_target_profit_active()) and self.config.order.live_trading and not shadow:
+        if (self.config.risk.cash_shortfall_rotation_enabled or self.config.strategy.cash_target_profit_active()
+                or self.config.strategy.cash_capacity_reentry_enabled()) and self.config.order.live_trading and not shadow:
             # A previous symbol's fill invalidated the loop's cash. Fetch again
             # before evaluating another real order; do not reuse the old object.
             if self._last_account_snapshot is None:
@@ -911,6 +961,12 @@ class AutoTrader:
                 if current_price <= 0:
                     final_block_reason = "final_quote_missing"
                 else:
+                    if (not shadow and self.config.order.live_trading
+                            and action.reentry_type == ReentryType.CASH_CAPACITY_REENTRY.value):
+                        # The quote sampling can take time. A reentry needs
+                        # confirmed current cash rather than the loop snapshot.
+                        self.invalidate_account_snapshot_cache("cash_capacity_reentry_final_check")
+                        snapshot = self.startup_sync()
                     with profile.stage("lot_manager") if profile else _null_stage():
                         position = self.position_manager.refresh_from_lots(position.code, current_price)
                     with profile.stage("strategy_decision") if profile else _null_stage():
@@ -971,6 +1027,13 @@ class AutoTrader:
             self.logger.info("trade_blocked code=%s reason=quantity_below_one", position.code)
             return
         if request.side is OrderSide.BUY:
+            if action.reentry_type == ReentryType.CASH_CAPACITY_REENTRY.value:
+                required_cash = max(action.amount, request.quantity * request.limit_price) * self.config.strategy.reentry_cash_lot_multiple
+                if snapshot.cash_available < required_cash:
+                    position.skip_reason = "cash_capacity_reentry_cash_insufficient"
+                    self.store.save_position(position)
+                    self.log_pre_request_block(position, position.skip_reason)
+                    return
             if self.config.risk.cash_shortfall_rotation_enabled:
                 if handle_shortfall(self, position, action, request, snapshot, shadow=shadow):
                     return
@@ -987,9 +1050,12 @@ class AutoTrader:
                              request.code, request.side.value, request.quantity, request.limit_price, request.lot_id,
                              request.venue, request.session, request.quote_market, request.reason)
             return
-        result, fill = self.order_manager.submit_and_confirm(request)
-        if self.config.risk.cash_shortfall_rotation_enabled or self.config.strategy.cash_target_profit_active():
-            self.invalidate_account_snapshot_cache("auto_order_submitted")
+        try:
+            result, fill = self.order_manager.submit_and_confirm(request)
+        finally:
+            if (self.config.risk.cash_shortfall_rotation_enabled or self.config.strategy.cash_target_profit_active()
+                    or self.config.strategy.cash_capacity_reentry_enabled()):
+                self.invalidate_account_snapshot_cache("auto_order_submitted")
         if fill is None:
             self.logger.info("order_not_filled code=%s order_id=%s status=%s", position.code, result.order_id, result.status.value)
             return
@@ -1191,6 +1257,12 @@ class AutoTrader:
             reentry_condition_met=context.reentry_condition_met,
             reentry_type=context.reentry_type,
             reentry_mode=context.reentry_mode,
+            reentry_policy=context.reentry_policy,
+            reentry_cash_lot_multiple=self.config.strategy.reentry_cash_lot_multiple,
+            reentry_lot_unit_amount=context.reentry_lot_unit_amount,
+            reentry_required_cash=context.reentry_required_cash,
+            reentry_cash_available=context.reentry_cash_available,
+            reentry_cash_condition_met=context.reentry_cash_condition_met,
             wait_reentry_started_at=context.wait_reentry_started_at,
             days_since_wait_reentry_started=context.days_since_wait_reentry_started,
             base_reentry_rate=f"{context.base_reentry_rate:.4f}",
@@ -1344,6 +1416,9 @@ class AutoTrader:
         if request_gap:
             return request_gap
         if action.side is OrderSide.BUY:
+            if (action.reentry_type == ReentryType.CASH_CAPACITY_REENTRY.value
+                    and self.store.open_orders()):
+                return "cash_capacity_reentry_wait_open_orders"
             rotation_block = cash_rotation_buy_block(self, position)
             if rotation_block:
                 return rotation_block

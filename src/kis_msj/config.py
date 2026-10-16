@@ -110,6 +110,8 @@ class StrategyConfig:
     min_reentry_wait_minutes: int = 60
     max_trailing_reentry_per_day: int = 1
     reentry_buy_cooldown_minutes: int = 60
+    reentry_policy: str = "legacy_price"
+    reentry_cash_lot_multiple: int = 30
     reentry_decay_enabled: bool = True
     normal_reentry_decay_days: int = 30
     normal_reentry_daily_decay_rate: float = 0.0016666667
@@ -183,6 +185,10 @@ class StrategyConfig:
     estimated_fee_tax_pct: float = 0.25
 
     def __post_init__(self) -> None:
+        if self.reentry_policy not in {"legacy_price", "cash_capacity_oldest"}:
+            raise ValueError("reentry_policy must be legacy_price or cash_capacity_oldest")
+        if type(self.reentry_cash_lot_multiple) is not int or self.reentry_cash_lot_multiple < 1:
+            raise ValueError("reentry_cash_lot_multiple must be a positive integer")
         if type(self.cash_target_profit_enabled) is not bool:
             raise ValueError("cash_target_profit_enabled must be a boolean")
         if type(self.cash_target_reference_amount) is not int or self.cash_target_reference_amount <= 0:
@@ -206,6 +212,9 @@ class StrategyConfig:
         now = now or datetime.now(korea)
         today = now.astimezone(korea).date() if now.tzinfo else now.date()
         return today >= date.fromisoformat(self.cash_target_start_date)
+
+    def cash_capacity_reentry_enabled(self) -> bool:
+        return self.reentry_policy == "cash_capacity_oldest"
 
 
 @dataclass(frozen=True)

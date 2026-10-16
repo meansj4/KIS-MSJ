@@ -12,7 +12,7 @@ from datetime import datetime, time as day_time, timedelta
 from .config import BotConfig
 from .order_identity import broker_order_id
 from .lot_manager import round_price
-from .models import OrderRequest, OrderResult, OrderSide, OrderStatus, PositionState, TradeFill
+from .models import OrderRequest, OrderResult, OrderSide, OrderStatus, PositionState, ReentryType, TradeFill
 from .storage import StateStore
 from .strategy import StrategyAction
 
@@ -23,7 +23,7 @@ class OrderManager:
         self.client = client
         self.store = store
         self.logger = logger
-        if config.risk.cash_shortfall_rotation_enabled:
+        if config.risk.cash_shortfall_rotation_enabled or config.strategy.cash_capacity_reentry_enabled():
             # A durable ledger cannot prevent duplicate sales if the HTTP layer
             # silently repeats a POST whose broker outcome is unknown.
             self.client.durable_order_submission = True
@@ -86,6 +86,27 @@ class OrderManager:
         )
 
     def submit_and_confirm(self, request: OrderRequest) -> tuple[OrderResult, TradeFill | None]:
+        if (self.config.strategy.cash_capacity_reentry_enabled() and request.side is OrderSide.BUY
+                and request.reentry_type == ReentryType.CASH_CAPACITY_REENTRY.value):
+            from .market_session import SessionUnavailable
+            from .lot_manager import LotManager
+            from .strategy import LotGridStrategy
+            if self.store.open_orders():
+                raise SessionUnavailable("cash_capacity_reentry_wait_open_orders")
+            if self.config.order.live_trading:
+                # Guard the final executable notional even for callers that
+                # bypass the main strategy evaluation path.
+                snapshot = self.client.account_snapshot()
+                strategy = LotGridStrategy(self.config, LotManager(self.config.strategy))
+                sizing = strategy.lot_sizing_for_new_cycle(request.limit_price)
+                unit_amount = int(sizing.get("lot_unit_amount", 0))
+                if self.config.strategy.lot_sizing_mode != "cycle_locked_by_entry_price":
+                    unit_amount = self.config.strategy.initial_buy_amount
+                elif not sizing.get("enabled") or unit_amount <= 0:
+                    raise SessionUnavailable("cash_capacity_reentry_lot_sizing_unavailable")
+                required = max(unit_amount, request.quantity * request.limit_price) * self.config.strategy.reentry_cash_lot_multiple
+                if snapshot.cash_available < required:
+                    raise SessionUnavailable("cash_capacity_reentry_cash_insufficient")
         if request.session:
             from .market_session import SessionUnavailable, Route
             if not self.config.extended_hours.enabled:
@@ -119,7 +140,7 @@ class OrderManager:
                 return result, None
             return result, fill
 
-        if request.session or self.config.risk.cash_shortfall_rotation_enabled:
+        if request.session or self.config.risk.cash_shortfall_rotation_enabled or self.config.strategy.cash_capacity_reentry_enabled():
             from .market_session import SessionUnavailable
             # Durable reservation *before* sending. Ambiguous transport failure
             # stays pending and blocks retransmission, including after restart.
