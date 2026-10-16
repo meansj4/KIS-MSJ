@@ -340,7 +340,10 @@ class LotGridStrategy:
             return None
         lot, sell_reason, expected_cleanup_loss, cleanup_allowed = candidate[:4]
         quantity = lot.remaining_quantity
-        if sell_reason == SellReason.PROFIT_TAKE.value and exposure > self.config.strategy.auto_buy_limit:
+        partial_threshold = self.config.strategy.profit_partial_sell_exposure_threshold
+        if partial_threshold is None:
+            partial_threshold = self.config.strategy.auto_buy_limit
+        if sell_reason == SellReason.PROFIT_TAKE.value and exposure > partial_threshold:
             quantity = max(1, int(lot.remaining_quantity * self.config.strategy.high_exposure_partial_sell_pct / 100.0))
         if quantity < 1:
             return None

@@ -185,9 +185,14 @@ class StrategyConfig:
         SellBand(300_001, 500_000, 2.5),
     )
     high_exposure_partial_sell_pct: float = 50.0
+    profit_partial_sell_exposure_threshold: int | None = None
     estimated_fee_tax_pct: float = 0.25
 
     def __post_init__(self) -> None:
+        if (self.profit_partial_sell_exposure_threshold is not None
+                and (type(self.profit_partial_sell_exposure_threshold) is not int
+                     or self.profit_partial_sell_exposure_threshold < 0)):
+            raise ValueError("profit_partial_sell_exposure_threshold must be a nonnegative integer or None")
         if self.reentry_policy not in {"legacy_price", "cash_capacity_oldest"}:
             raise ValueError("reentry_policy must be legacy_price or cash_capacity_oldest")
         if type(self.reentry_cash_lot_multiple) is not int or self.reentry_cash_lot_multiple < 1:
