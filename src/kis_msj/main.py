@@ -34,7 +34,8 @@ from .market_session import SessionMarketData, SessionUnavailable, RoutedQuotes,
 from .shadow_state import ShadowStateStore
 from .cash_rotation import (decide_with_cash_signal, handle_shortfall,
                             buy_block_reason as cash_rotation_buy_block, abandon_invalid_target,
-                            process_rotation, target_record, remove_target)
+                            process_rotation, target_record, remove_target,
+                            funding_enabled as cash_rotation_funding_enabled)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -184,6 +185,11 @@ class AutoTrader:
                     self.risk_manager.data_mismatch_detected = True
         self.store.save_positions(self.position_manager.positions.values())
         self.store.save_lots(self.lot_manager.lots.values())
+        if self.config.strategy.cash_target_profit_active():
+            age = max(0.0, time.monotonic() - self._last_account_snapshot_at) if self._last_account_snapshot_at else 0.0
+            self.logger.info("cash_target_account_snapshot cash_available=%s snapshot_at=%s",
+                             snapshot.cash_available,
+                             (datetime.now() - timedelta(seconds=age)).isoformat(timespec="seconds"))
         return snapshot
 
     def invalidate_account_snapshot_cache(self, reason: str) -> None:
@@ -284,7 +290,7 @@ class AutoTrader:
             stocks = list(self.config.stocks)
             rotation_window = in_trade_window(self.config) or (
                 self.config.extended_hours.mode == "live" and extended_window(self.config))
-            if self.config.risk.cash_shortfall_rotation_enabled and rotation_window:
+            if cash_rotation_funding_enabled(self) and rotation_window:
                 plan = self.store.load_cash_rotation_plan()
                 if plan and plan.get("targets") and time.monotonic()-self._cash_rotation_last_full_scan_at < 300:
                     process_rotation(self, snapshot)
@@ -356,7 +362,7 @@ class AutoTrader:
                 if interrupt:
                     status = interrupt
                     return interrupt
-            if self.config.risk.cash_shortfall_rotation_enabled and self._cash_rotation_scanning:
+            if cash_rotation_funding_enabled(self) and self._cash_rotation_scanning:
                 self._cash_rotation_scanning = False
                 self._cash_rotation_last_full_scan_at = time.monotonic()
                 funding_snapshot = self._last_account_snapshot or snapshot
@@ -819,7 +825,7 @@ class AutoTrader:
                            profile: LoopProfile | None = None, *, route: Route | None = None, shadow: bool = False,
                            scan_quote: Quote | None = None) -> None:
         self._decision_route, self._decision_shadow = route, shadow
-        if self.config.risk.cash_shortfall_rotation_enabled and self.config.order.live_trading and not shadow:
+        if (self.config.risk.cash_shortfall_rotation_enabled or self.config.strategy.cash_target_profit_active()) and self.config.order.live_trading and not shadow:
             # A previous symbol's fill invalidated the loop's cash. Fetch again
             # before evaluating another real order; do not reuse the old object.
             if self._last_account_snapshot is None:
@@ -982,7 +988,7 @@ class AutoTrader:
                              request.venue, request.session, request.quote_market, request.reason)
             return
         result, fill = self.order_manager.submit_and_confirm(request)
-        if self.config.risk.cash_shortfall_rotation_enabled:
+        if self.config.risk.cash_shortfall_rotation_enabled or self.config.strategy.cash_target_profit_active():
             self.invalidate_account_snapshot_cache("auto_order_submitted")
         if fill is None:
             self.logger.info("order_not_filled code=%s order_id=%s status=%s", position.code, result.order_id, result.status.value)
@@ -1145,6 +1151,12 @@ class AutoTrader:
             current_open_lot_count=context.current_open_lot_count,
             original_lot_base_target_profit_rate=f"{context.original_lot_base_target_profit_rate:.4f}",
             current_base_target_profit_rate=f"{context.current_base_target_profit_rate:.4f}",
+            cash_target_profit_active=context.cash_target_profit_active,
+            cash_available_for_target=context.cash_available_for_target,
+            low_cash_high_cost_sell=context.low_cash_high_cost_sell,
+            sell_trigger_lot_id=context.sell_trigger_lot_id,
+            sell_trigger_price=context.sell_trigger_price,
+            sell_limit_price=context.sell_limit_price,
             target_profit_source=context.target_profit_source,
             target_profit_lot_band=context.target_profit_lot_band,
             active_target_profit_lot_band=context.target_profit_lot_band,
@@ -1169,7 +1181,7 @@ class AutoTrader:
             lot_profit_targets=lot_summary or "NONE",
             avg_profit_pct=f"{avg_profit_pct:.2f}",
             buy_risk="OK" if account_risk.allowed and symbol_risk.allowed else "|".join(account_risk.reasons + symbol_risk.reasons),
-            sellable_lot_count=len(self.lot_manager.sellable_lots(position.code, current_price, position.cumulative_invested_amount)),
+            sellable_lot_count=context.profit_take_lot_count,
             needs_review=position.needs_review,
             realized_pnl=position.realized_profit_loss,
             unrealized_pnl=position.unrealized_profit_loss,
@@ -1401,6 +1413,7 @@ class AutoTrader:
             SellReason.CLEANUP_SELL.value,
             SellReason.AUTO_DECAY_CLEANUP_SELL.value,
             SellReason.DEEP_LOSS_RECOVERY_SELL.value,
+            SellReason.LOW_CASH_HIGH_COST_SELL.value,
         }
         if action.side is OrderSide.SELL and action.sell_reason in cleanup_reasons and self.store.has_any_open_order(position.code):
             position.skip_reason = "open_order_exists_for_cleanup"

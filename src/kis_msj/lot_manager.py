@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import math
 from statistics import median
 
 from .config import StrategyConfig
@@ -64,8 +65,13 @@ class LotManager:
                 return band.target_profit_pct
         return self.config.exposure_sell_bands[-1].target_profit_pct
 
-    def current_target_profit_info(self, code: str, exposure: int | None = None) -> tuple[float, str, str]:
+    def current_target_profit_info(self, code: str, exposure: int | None = None, cash_available: int | None = None) -> tuple[float, str, str]:
         """Return the active base target rate as a decimal plus source metadata."""
+        if self.config.cash_target_profit_active():
+            if cash_available is None:
+                raise ValueError("cash target requires an actual account cash snapshot")
+            rate = max(0, cash_available) / self.config.cash_target_reference_amount * self.config.cash_target_reference_rate
+            return rate, "", "cash_available_linear"
         if self.config.lot_sizing_mode == "cycle_locked_by_entry_price":
             open_lot_count = len(self.open_lots(code))
             for band in self.config.target_profit_lot_bands:
@@ -107,9 +113,9 @@ class LotManager:
             ),
         )
 
-    def cleanup_candidate_lots(self, code: str, current_price: int) -> list[LotState]:
+    def cleanup_candidate_lots(self, code: str, current_price: int, current_base_target_profit_rate: float | None = None) -> list[LotState]:
         lots = []
-        base_rate = self.current_target_profit_info(code)[0]
+        base_rate = current_base_target_profit_rate if current_base_target_profit_rate is not None else self.current_target_profit_info(code)[0]
         for lot in self.open_lots(code):
             self.update_lot_target_metadata(lot, current_price, current_base_target_profit_rate=base_rate)
             realized_rate = lot.profit_pct_at(current_price) / 100.0
@@ -122,9 +128,9 @@ class LotManager:
                 lots.append(lot)
         return sorted(lots, key=lambda lot: (-lot.age_weeks, lot.profit_pct_at(current_price)))
 
-    def stale_lots(self, code: str, current_price: int) -> list[LotState]:
+    def stale_lots(self, code: str, current_price: int, current_base_target_profit_rate: float | None = None) -> list[LotState]:
         lots = []
-        base_rate = self.current_target_profit_info(code)[0]
+        base_rate = current_base_target_profit_rate if current_base_target_profit_rate is not None else self.current_target_profit_info(code)[0]
         for lot in self.open_lots(code):
             self.update_lot_target_metadata(lot, current_price, current_base_target_profit_rate=base_rate)
             realized_rate = lot.profit_pct_at(current_price) / 100.0
@@ -227,3 +233,11 @@ def round_price(price: float) -> int:
     else:
         unit = 1_000
     return max(unit, round(value / unit) * unit)
+
+
+def ceil_price(price: float) -> int:
+    """Round a SELL target up using the same tick ladder as round_price."""
+    value = max(1.0, price)
+    unit = (1 if value < 1_000 else 5 if value < 5_000 else 10 if value < 10_000 else
+            50 if value < 50_000 else 100 if value < 100_000 else 500 if value < 500_000 else 1_000)
+    return max(unit, int(math.ceil((value - 1e-9) / unit)) * unit)

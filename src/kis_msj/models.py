@@ -44,6 +44,7 @@ class PositionLifecycle(str, Enum):
 
 
 class SellReason(str, Enum):
+    LOW_CASH_HIGH_COST_SELL = "LOW_CASH_HIGH_COST_SELL"
     CASH_SHORTFALL_ROTATION = "CASH_SHORTFALL_ROTATION"
     PROFIT_TAKE = "PROFIT_TAKE"
     CLEANUP_SELL = "CLEANUP_SELL"

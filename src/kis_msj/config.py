@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import hashlib
+import math
 from dataclasses import asdict, dataclass, field
-from datetime import date, time
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -119,6 +120,11 @@ class StrategyConfig:
     force_reentry_timeout_days: int = 30
     force_reentry_starts_new_cycle: bool = True
     age_decay_rate: float = 0.005
+    cash_target_profit_enabled: bool = False
+    cash_target_reference_amount: int = 200_000_000
+    cash_target_reference_rate: float = 0.50
+    cash_target_low_cash_threshold: int = 5_000_000
+    cash_target_start_date: str = ""
     cleanup_enabled: bool = False
     cleanup_min_age_weeks: int = 12
     cleanup_min_target_rate: float = -0.04
@@ -175,6 +181,31 @@ class StrategyConfig:
     )
     high_exposure_partial_sell_pct: float = 50.0
     estimated_fee_tax_pct: float = 0.25
+
+    def __post_init__(self) -> None:
+        if type(self.cash_target_profit_enabled) is not bool:
+            raise ValueError("cash_target_profit_enabled must be a boolean")
+        if type(self.cash_target_reference_amount) is not int or self.cash_target_reference_amount <= 0:
+            raise ValueError("cash_target_reference_amount must be a positive integer")
+        if (type(self.cash_target_reference_rate) not in (int, float)
+                or not math.isfinite(self.cash_target_reference_rate) or self.cash_target_reference_rate < 0):
+            raise ValueError("cash_target_reference_rate must be a finite nonnegative rate")
+        if type(self.cash_target_low_cash_threshold) is not int or self.cash_target_low_cash_threshold < 0:
+            raise ValueError("cash_target_low_cash_threshold must be a nonnegative integer")
+        if not isinstance(self.cash_target_start_date, str):
+            raise ValueError("cash_target_start_date must be an ISO date or empty")
+        if self.cash_target_start_date:
+            date.fromisoformat(self.cash_target_start_date)
+
+    def cash_target_profit_active(self, now: datetime | None = None) -> bool:
+        if not self.cash_target_profit_enabled:
+            return False
+        if not self.cash_target_start_date:
+            return True
+        korea = timezone(timedelta(hours=9))
+        now = now or datetime.now(korea)
+        today = now.astimezone(korea).date() if now.tzinfo else now.date()
+        return today >= date.fromisoformat(self.cash_target_start_date)
 
 
 @dataclass(frozen=True)
