@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import socket
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -122,6 +123,7 @@ INDEX_HTML = r"""<!doctype html>
   <label>간격(초) <input id="autoRefreshSeconds" type="number" min="3" value="10" style="width:70px" onchange="setupAutoRefresh()"></label>
   <span class="muted" id="lastRefreshAt">-</span>
 </div>
+<div id="connectionError" role="status" class="warn" style="padding: 8px 18px" hidden></div>
 <main>
   <div class="tabs">
     <button onclick="loadPortfolioDashboard()">운용 현황 Portfolio/Risk</button>
@@ -139,12 +141,81 @@ INDEX_HTML = r"""<!doctype html>
   <section id="content">Loading...</section>
 </main>
 <script>
-async function api(path, options={}) {
-  const res = await fetch(path, {headers: {'content-type': 'application/json'}, ...options});
-  const data = await res.json();
-  if (!res.ok) throw new Error(JSON.stringify(data));
-  return data;
+const readRequests = new Map();
+let viewGeneration = 0;
+function staleViewError() {
+  const error = new Error('화면이 변경되어 이전 조회 결과를 표시하지 않습니다.');
+  error.name = 'StaleViewError';
+  return error;
 }
+function showConnectionError(error) {
+  if (error?.name === 'StaleViewError') return;
+  const target = document.getElementById('connectionError');
+  if (target) {
+    target.textContent = error?.message || String(error);
+    target.hidden = false;
+  }
+}
+function clearConnectionError() {
+  const target = document.getElementById('connectionError');
+  if (target) { target.textContent = ''; target.hidden = true; }
+}
+async function api(path, options={}) {
+  const {viewIndependent=false, ...requestOptions} = options;
+  const method = String(requestOptions.method || 'GET').toUpperCase();
+  const generation = viewGeneration;
+  const request = {headers: {'content-type': 'application/json'}, ...requestOptions};
+  // Mutation requests are sent once. A client timeout must never suggest that
+  // an order/control action was not applied and may safely be sent again.
+  if (method !== 'GET') {
+    const res = await fetch(path, request);
+    const data = await res.json();
+    if (!res.ok) throw new Error(JSON.stringify(data));
+    return data;
+  }
+  let pending = readRequests.get(path);
+  if (!pending) {
+    const controller = new AbortController();
+    const timeoutMs = path.includes('/history-chart') ? 60000 : 20000;
+    let timer;
+    const work = (async () => {
+      const res = await fetch(path, {...request, signal:controller.signal});
+      const data = await res.json();
+      if (!res.ok) {
+        if (res.status === 503) throw new Error('다른 화면 데이터를 계산 중입니다. 잠시 후 다시 갱신합니다.');
+        throw new Error(data.message || data.error || '화면 데이터를 불러오지 못했습니다.');
+      }
+      return data;
+    })();
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error('화면 데이터 응답이 지연되어 조회를 중단했습니다. 다음 자동 갱신이나 새로고침으로 다시 확인합니다.'));
+        controller.abort();
+      }, timeoutMs);
+    });
+    pending = Promise.race([work, timeout]);
+    readRequests.set(path, pending);
+    const cleanup = () => {
+      clearTimeout(timer);
+      if (readRequests.get(path) === pending) readRequests.delete(path);
+    };
+    // Both branches clean up; this observer intentionally never rethrows.
+    pending.then(cleanup, cleanup);
+  }
+  try {
+    const data = await pending;
+    if (!viewIndependent && generation !== viewGeneration) throw staleViewError();
+    return data;
+  } catch (error) {
+    if (!viewIndependent && generation !== viewGeneration) throw staleViewError();
+    showConnectionError(error);
+    throw error;
+  }
+}
+window.addEventListener('unhandledrejection', event => {
+  showConnectionError(event.reason);
+  event.preventDefault();
+});
 function esc(v) { return String(v ?? '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 let autoRefreshTimer = null;
 let refreshInFlight = false;
@@ -157,11 +228,16 @@ function setupAutoRefresh() {
 async function manualRefresh() {
   if (refreshInFlight) return;
   refreshInFlight = true;
+  const generation = viewGeneration;
   try {
     const status = await refreshBanner();
+    if (generation !== viewGeneration) return;
     await reloadCurrent(status);
     const target = document.getElementById('lastRefreshAt');
     if (target) target.textContent = '마지막 갱신: ' + new Date().toLocaleTimeString();
+    clearConnectionError();
+  } catch (error) {
+    showConnectionError(error);
   } finally {
     refreshInFlight = false;
   }
@@ -657,6 +733,12 @@ function sortValue(v) {
   return {empty:false, value:s.toLowerCase()};
 }
 let currentView = 'dashboard';
+function selectView(view) {
+  if (currentView !== view) {
+    currentView = view;
+    viewGeneration += 1;
+  }
+}
 async function reloadCurrent(status=null) {
   if (currentView === 'portfolioDashboard') return loadPortfolioDashboard();
   if (currentView === 'stocks') return loadStocks();
@@ -699,13 +781,13 @@ function renderResult(targetId, value) {
   el.innerHTML = renderReadableObject(value, {raw:true});
 }
 async function refreshBanner() {
-  const s = await api('/api/status');
+  const s = await api('/api/status', {viewIndependent:true});
   const msgs = s.risk_banner.messages || [];
   document.getElementById('banner').innerHTML = msgs.length ? `<div class="danger">${msgs.map(esc).join('<br>')}</div>` : '';
   return s;
 }
 async function loadDashboard(status=null) {
-  currentView = 'dashboard';
+  selectView('dashboard');
   const s = status || await api('/api/status');
   const top = {
     live_trading: s.risk_banner.live_trading,
@@ -771,7 +853,7 @@ function extendedTradingPanel(info) {
   return `<section class="manualBox"><h3>확장 거래시간 · 세션/거래소</h3>${warning}${metrics(info)}</section>`;
 }
 async function loadPortfolioDashboard() {
-  currentView = 'portfolioDashboard';
+  selectView('portfolioDashboard');
   const d = await api('/api/portfolio-dashboard');
   const summary = d.overall_summary || {};
   document.getElementById('content').innerHTML = `
@@ -955,7 +1037,7 @@ function renderPortfolioDetailPanel(state) {
   panel.innerHTML = `<div class="detailPanel"><h3>${esc(title)}</h3><p class="muted">${esc(result.calculation_basis || '')}</p><p><button onclick="loadPortfolioDetail('${kind}','${esc(date)}',${offset})">상세 닫기</button></p>${table(result.rows || [], tableId)}<p class="muted">total=${esc(result.total_count || 0)} / limit=100 / offset=${offset}</p><p>${offset > 0 ? `<button onclick="loadPortfolioDetail('${kind}','${esc(date)}',${Math.max(0, offset-100)})">이전</button>` : ''} ${(offset + 100) < Number(result.total_count || 0) ? `<button onclick="loadPortfolioDetail('${kind}','${esc(date)}',${offset+100})">다음</button>` : ''}</p>${renderReadableObject(result.data_quality_notes || [])}</div>`;
 }
 async function loadStocks() {
-  currentView = 'stocks';
+  selectView('stocks');
   const rows = await api('/api/stocks');
   if (!sortState.stocks) sortState.stocks = {key:'position_state', dir:'asc'};
   document.getElementById('content').innerHTML = '<h2>종목</h2><input id="stockFilter" placeholder="종목코드/종목명/상태 검색" oninput="renderStockTable()" value="'+esc(window.stockFilterValue || '')+'"><div class="manualBox"><strong>종목별 LOT 확인 / 수동 요청</strong><p class="muted">LOT 보기로 종목별 보유 LOT과 LOT별 수익률을 확인할 수 있습니다. 수동 매수/매도 버튼은 manual_order_requests 큐에 요청만 만들며 UI가 KIS 주문 API를 직접 호출하지 않습니다.</p></div><div id="stockTable"></div><div id="stockLotPanel"></div>';
@@ -1007,7 +1089,7 @@ async function marketSellAll(code, name, lotCount) {
   await loadStocks();
 }
 async function loadLots() {
-  currentView = 'lots';
+  selectView('lots');
   if (!sortState.lots) sortState.lots = {key:'buy_filled_at', dir:'desc'};
   const result = await api('/api/history/lots?' + historyQuery('lots', 'buy_filled_at'));
   const rows = result.rows || [];
@@ -1015,7 +1097,7 @@ async function loadLots() {
   document.getElementById('content').innerHTML = '<h2>LOT</h2>'+cashTargetPanel(result.cash_target_policy)+'<p><button onclick="exportHistory(\'lots\')">전체 LOT CSV 내보내기</button></p><p class="muted">전체 DB를 서버에서 정렬·페이지 조회합니다. CSV에는 현재 정렬 기준으로 전체 기록이 포함됩니다.</p>'+historyPager('lots', result)+'<div class="manualBox"><strong>LOT별 수동 매도 요청</strong><p class="muted">OPEN LOT 행의 수동 매도 버튼으로 LOT ID와 잔여 수량을 자동 입력할 수 있습니다. CLOSED LOT, open SELL order, RISK_BLOCKED, SYNC_REQUIRED, runtime sell pause 상태에서는 요청 생성도 차단됩니다.</p></div>' + table(rows, 'lots', {actions:true}) + historyPager('lots', result);
 }
 async function loadOrders() {
-  currentView = 'orders';
+  selectView('orders');
   if (!sortState.orders) sortState.orders = {key:'requested_at', dir:'desc'};
   if (!sortState.fills) sortState.fills = {key:'filled_at', dir:'desc'};
   const [ordersResult, fillsResult] = await Promise.all([
@@ -1027,10 +1109,10 @@ async function loadOrders() {
   window.fillRows = f;
   document.getElementById('content').innerHTML = '<p class="muted">전체 DB를 서버에서 정렬·페이지 조회합니다. CSV에는 현재 정렬 기준으로 전체 기록이 포함됩니다.</p><h2>주문</h2><p><button onclick="exportHistory(\'orders\')">전체 주문 CSV 내보내기</button></p>'+historyPager('orders', ordersResult)+table(o, 'orders')+historyPager('orders', ordersResult)+'<h2>체결</h2><p><button onclick="exportHistory(\'fills\')">전체 체결 CSV 내보내기</button></p>'+historyPager('fills', fillsResult)+table(f, 'fills')+historyPager('fills', fillsResult);
 }
-async function loadLogs() { currentView = 'logs'; const l=await api('/api/logs/tail?limit=300'); document.getElementById('content').innerHTML = '<h2>로그</h2><div class="manualBox"><strong>주요 차단 사유</strong><p>open_order_exists_for_cleanup: 미체결 주문이 있어 cleanup 매도 차단<br>risk_blocked_buy_sell_blocked: 위험 차단으로 매수/매도 모두 차단<br>sync_required: DB/KIS 동기화 필요</p></div><pre>'+esc(l.lines.join('\n'))+'</pre>'; }
-async function loadExecution() { currentView = 'execution'; const e=await api('/api/execution-mapping/status'); document.getElementById('content').innerHTML = '<h2>체결 필드 검증</h2>'+metrics(e)+'<pre>'+esc(e.raw_log_line || '')+'</pre>'; }
+async function loadLogs() { selectView('logs'); const l=await api('/api/logs/tail?limit=300'); document.getElementById('content').innerHTML = '<h2>로그</h2><div class="manualBox"><strong>주요 차단 사유</strong><p>open_order_exists_for_cleanup: 미체결 주문이 있어 cleanup 매도 차단<br>risk_blocked_buy_sell_blocked: 위험 차단으로 매수/매도 모두 차단<br>sync_required: DB/KIS 동기화 필요</p></div><pre>'+esc(l.lines.join('\n'))+'</pre>'; }
+async function loadExecution() { selectView('execution'); const e=await api('/api/execution-mapping/status'); document.getElementById('content').innerHTML = '<h2>체결 필드 검증</h2>'+metrics(e)+'<pre>'+esc(e.raw_log_line || '')+'</pre>'; }
 async function loadRuntime() {
-  currentView = 'runtime';
+  selectView('runtime');
   const r=await api('/api/runtime');
   document.getElementById('content').innerHTML = `<h2>런타임 제어</h2>${metrics(r)}
   <div class="manualBox"><strong>봇 루프 제어</strong><p class="muted">봇 프로세스가 이미 실행 중일 때 적용됩니다. UI가 새 프로세스를 띄우거나 KIS 주문 API를 직접 호출하지 않습니다.</p>
@@ -1052,7 +1134,7 @@ async function loadRuntime() {
 async function runtime(path) { await api(path, {method:'POST'}); await loadRuntime(); }
 async function runtimePost(path, reason) { await api(path, {method:'POST', body:JSON.stringify({reason})}); await loadRuntime(); }
 async function loadManualOrders() {
-  currentView = 'manual';
+  selectView('manual');
   const cfg = await api('/api/config');
   const requests = await api('/api/manual-order-requests');
   window.manualRequestRows = requests || [];
@@ -1103,7 +1185,7 @@ async function manualRequestCancel(requestId) {
   await loadManualOrders();
 }
 async function loadNewSeason() {
-  currentView = 'newSeason';
+  selectView('newSeason');
   const s = await api('/api/new-season/status');
   const msg = s.guidance || {};
   const blockedGuide = s.block_reason_ko || (s.reset_block_reasons_ko || [])[0] || msg.reason || '';
@@ -1333,7 +1415,7 @@ async function prepareNewSeasonNext() {
   alert(s.guidance?.next_action || '현재 단계에서 자동으로 진행할 수 있는 작업이 없습니다. 화면의 차단 이유를 확인하세요.');
 }
 async function loadReviewRequired() {
-  currentView = 'reviewRequired';
+  selectView('reviewRequired');
   const r = await api('/api/review-required');
   const rows = r.items || [];
   window.reviewRequiredRows = rows;
@@ -1386,7 +1468,7 @@ async function createManual(side) {
   renderResult('manualResult', r);
 }
 async function loadConfig() {
-  currentView = 'config';
+  selectView('config');
   configOriginal = await api('/api/config');
   configDraft = JSON.parse(JSON.stringify(configOriginal));
   configSchema = await api('/api/config/schema');
@@ -1836,6 +1918,21 @@ class UIHandler(BaseHTTPRequestHandler):
         return
 
 
+class LocalThreadingHTTPServer(ThreadingHTTPServer):
+    """Allow exactly one Windows UI listener on a local address and port.
+
+    HTTPServer enables SO_REUSEADDR by default. On Windows that permits a
+    second UI process to bind the same port and leaves requests split between
+    old and new processes. Exclusive binding makes duplicate startup fail.
+    """
+
+    def server_bind(self) -> None:
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.allow_reuse_address = False
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
 def build_server(config_path: Path, host: str = "127.0.0.1", port: int = 8765, runtime_path: Path | None = None) -> ThreadingHTTPServer:
     service = UIService(config_path, runtime_path or DEFAULT_RUNTIME_CONTROL_PATH)
 
@@ -1843,7 +1940,7 @@ def build_server(config_path: Path, host: str = "127.0.0.1", port: int = 8765, r
         pass
 
     BoundHandler.service = service
-    return ThreadingHTTPServer((host, port), BoundHandler)
+    return LocalThreadingHTTPServer((host, port), BoundHandler)
 
 
 def main() -> int:

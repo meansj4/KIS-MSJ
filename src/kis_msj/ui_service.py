@@ -15,10 +15,11 @@ import threading
 import time
 import uuid
 from collections import defaultdict
+from contextlib import closing
 from dataclasses import asdict
 from datetime import datetime, time as day_time, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .config import DEFAULT_CONFIG_PATH, BotConfig, config_hash, load_config
 from .kis_client import KisClient
@@ -38,6 +39,8 @@ MANUAL_CANCEL_CONFIRM_TEXT = "수동요청 차단 확인"
 MANUAL_PENDING_STATUSES = {"REQUESTED", "PROCESSING", "ACCEPTED", "SUBMITTED", "PENDING", "OPEN", "NEW", "CREATED", "RETRYING"}
 ORDER_PENDING_STATUSES = {"REQUESTED", "PARTIAL", "CANCEL_REJECTED", "SUBMITTED", "ACCEPTED", "PENDING", "OPEN", "NEW"}
 UI_CACHE_TTL_SECONDS = 1.0
+UI_CACHE_MAX_ENTRIES = 128
+UI_CACHE_MAX_AGE_SECONDS = 300.0
 UI_HISTORY_DEFAULT_LIMIT = 500
 UI_HISTORY_MAX_LIMIT = 2000
 UI_HISTORY_TABLES = {
@@ -340,6 +343,8 @@ class UIService:
         self.runtime_path = Path(runtime_path)
         self._cache_lock = threading.Lock()
         self._cache: dict[tuple[Any, ...], tuple[float, Any]] = {}
+        self._cache_inflight: dict[tuple[Any, ...], tuple[threading.RLock, int]] = {}
+        self._cache_generation = 0
 
     @property
     def config(self) -> BotConfig:
@@ -689,9 +694,12 @@ class UIService:
     def _status_metrics(self, positions: list[dict[str, Any]]) -> dict[str, Any]:
         today = datetime.now().date().isoformat()
         key = ("status_metrics", str(self._db_path()), today, self._db_mtime())
-        cached = self._cache_get(key)
-        if cached is not None:
-            return json.loads(json.dumps(cached, ensure_ascii=False))
+        metrics = self._cached_load(key, lambda: self._load_status_metrics(positions))
+        return json.loads(json.dumps(metrics, ensure_ascii=False))
+
+
+    def _load_status_metrics(self, positions: list[dict[str, Any]]) -> dict[str, Any]:
+        today = datetime.now().date().isoformat()
         metrics: dict[str, Any] = {
             "open_lot_count": 0,
             "closed_lot_count": 0,
@@ -723,7 +731,7 @@ class UIService:
         }
         if not self._db_path().exists():
             return metrics
-        with sqlite3.connect(self._db_path()) as connection:
+        with closing(sqlite3.connect(self._db_path().resolve().as_uri() + "?mode=ro", uri=True)) as connection:
             connection.row_factory = sqlite3.Row
             lots = self._fetch_one(
                 connection,
@@ -807,8 +815,7 @@ class UIService:
             metrics["latest_market_data_collection_run_id"] = latest_run.get("run_id", "")
             metrics["latest_market_data_collection_mode"] = latest_run.get("mode", "")
             metrics["latest_market_data_collection_errors"] = _to_int(latest_run.get("error_count"))
-        self._cache_set(key, metrics)
-        return json.loads(json.dumps(metrics, ensure_ascii=False))
+        return metrics
 
     def collect_market_data(self, *, execute: bool = False, symbols_from_config: bool = True, snapshot: bool = True, daily: bool = True) -> dict[str, Any]:
         from scripts.collect_market_data import collect_market_data
@@ -1115,9 +1122,11 @@ class UIService:
         """Read-only portfolio and risk usage dashboard built from local DB rows."""
         config = self.config
         positions = self.positions()
-        lots = self.lots()
-        orders = self.orders()
-        fills = self.fills()
+        # Summaries need persisted economics, not full history-tab enrichment
+        # or fresh strategy previews for every historical LOT.
+        lots = self._table("lots")
+        orders = self._table("orders")
+        fills = self._table("fills")
         positions_by_code = {str(row.get("code") or ""): row for row in positions}
         # positions.current_price is refreshed by the trading loop and is enough
         # for the summary. Avoid scanning the much larger snapshot history on
@@ -1126,6 +1135,11 @@ class UIService:
         latest_prices = self._latest_prices(price_snapshots, positions_by_code)
         price_snapshot_count = self._price_snapshot_count()
         open_lots = [lot for lot in lots if _to_int(lot.get("remaining_quantity")) > 0 and str(lot.get("status") or "") != "CLOSED"]
+        for lot in open_lots:
+            price = _to_int(positions_by_code.get(str(lot.get("code") or ""), {}).get("current_price"))
+            cost = _to_int(lot.get("buy_price"))
+            rate = (price - cost) / cost if price and cost else 0.0
+            lot["stale_lot"] = rate <= config.strategy.stale_lot_loss_rate and float(lot.get("age_weeks") or 0) >= config.strategy.stale_lot_min_age_weeks
         buy_fills = [fill for fill in fills if str(fill.get("side") or "") == OrderSide.BUY.value]
         sell_fills = [fill for fill in fills if str(fill.get("side") or "") == OrderSide.SELL.value]
         lot_by_id = {str(lot.get("lot_id") or ""): lot for lot in lots}
@@ -1455,18 +1469,21 @@ class UIService:
             self._table_version("fills"),
             self._table_version("daily_prices"),
         )
-        cached = self._cache_get(cache_key, ttl_seconds=300.0)
-        if cached is not None:
-            return dict(cached)
-        lots = self.lots()
-        fills = self.fills()
+        return dict(self._cached_load(cache_key, lambda: self._build_portfolio_history_chart(db_path), ttl_seconds=300.0))
+
+
+    def _build_portfolio_history_chart(self, db_path: Path) -> dict[str, Any]:
+        # A history chart needs persisted costs and quantities, not thousands of
+        # live per-LOT strategy previews or per-fill display enrichments.
+        lots = self._table("lots")
+        fills = self._table("fills")
         buy_dates = [_date_key(lot.get("buy_filled_at")) for lot in lots]
         first_date = min((day for day in buy_dates if day), default="")
         if not first_date:
             return {"rows": [], "generated_at": datetime.now().isoformat(timespec="seconds")}
 
         daily_prices: dict[tuple[str, str], tuple[int, str]] = {}
-        with sqlite3.connect(db_path) as connection:
+        with closing(sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
             connection.row_factory = sqlite3.Row
             try:
                 for row in connection.execute(
@@ -1474,21 +1491,9 @@ class UIService:
                     (first_date,),
                 ):
                     daily_prices[(str(row["date"]), str(row["code"]))] = (_to_int(row["close"]), "daily_close")
-                snapshot_rows = connection.execute(
-                    """
-                    SELECT ps.code, latest.date, ps.current_price
-                    FROM price_snapshots AS ps
-                    JOIN (
-                        SELECT code, substr(sampled_at, 1, 10) AS date, MAX(id) AS id
-                        FROM price_snapshots INDEXED BY idx_price_snapshots_date_code_id
-                        GROUP BY substr(sampled_at, 1, 10), code
-                    ) AS latest ON latest.id = ps.id
-                    ORDER BY latest.date, ps.code
-                    """
-                ).fetchall()
             except sqlite3.Error:
-                snapshot_rows = []
-        snapshot_dates: set[str] = set()
+                pass
+        snapshot_dates, snapshot_rows = self._daily_snapshot_prices(first_date, {str(lot.get("code") or "") for lot in lots})
         for row in snapshot_rows:
             day = str(row["date"] or "")
             code = str(row["code"] or "")
@@ -1579,8 +1584,51 @@ class UIService:
             "price_basis": "daily_prices.close 우선, 없으면 해당 날짜 마지막 price_snapshots.current_price, 그래도 없으면 직전 저장가격",
             "read_only": True,
         }
-        self._cache_set(cache_key, result)
         return dict(result)
+
+
+    def _daily_snapshot_prices(self, first_date: str, codes: set[str]) -> tuple[set[str], list[dict[str, Any]]]:
+        """Read the last indexed row per day/code without scanning tick history."""
+        db_path = self._db_path()
+        selected = tuple(sorted(code for code in codes if code))
+        if not selected:
+            return set(), []
+        # Completed-date observations are stable for a short cache interval;
+        # recent dates also include WAL state so live chart refresh stays fresh.
+        rows: list[dict[str, Any]] = []
+        days: set[str] = set()
+        with closing(sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
+            connection.row_factory = sqlite3.Row
+            try:
+                cursor = first_date
+                while True:
+                    found = connection.execute(
+                        "SELECT substr(sampled_at,1,10) FROM price_snapshots INDEXED BY idx_price_snapshots_date_code_id "
+                        "WHERE substr(sampled_at,1,10) >= ? ORDER BY substr(sampled_at,1,10), code, id DESC LIMIT 1",
+                        (cursor,),
+                    ).fetchone()
+                    if found is None:
+                        break
+                    day = str(found[0]);days.add(day)
+                    cursor = (datetime.fromisoformat(day) + timedelta(days=1)).date().isoformat()
+                placeholders = ",".join("(?)" for _ in selected)
+                sql = (
+                    f"WITH selected(code) AS (VALUES {placeholders}) "
+                    "SELECT ps.code, ps.current_price FROM selected AS s "
+                    "JOIN price_snapshots AS ps ON ps.id = ("
+                    "SELECT id FROM price_snapshots INDEXED BY idx_price_snapshots_date_code_id "
+                    "WHERE substr(sampled_at,1,10) = ? AND code = s.code ORDER BY id DESC LIMIT 1)"
+                )
+                for day in sorted(days):
+                    recent = day >= (datetime.now() - timedelta(days=1)).date().isoformat()
+                    key = ("daily_snapshot_prices", str(db_path), day, selected, self._db_mtime() if recent else "completed")
+                    def load(day: str = day) -> list[dict[str, Any]]:
+                        return [dict(code=row["code"], date=day, current_price=row["current_price"])
+                                for row in connection.execute(sql, (*selected, day)).fetchall()]
+                    rows.extend(self._cached_load(key, load, ttl_seconds=1.0 if recent else 300.0))
+            except (sqlite3.Error, ValueError):
+                return set(), []
+        return days, rows
 
     def _daily_realized(self, sell_fills: list[dict[str, Any]], lot_by_id: dict[str, dict[str, Any]]) -> dict[str, dict[str, int]]:
         daily: dict[str, dict[str, int]] = defaultdict(lambda: {"realized_pnl": 0, "sold_cost": 0})
@@ -2214,7 +2262,12 @@ class UIService:
         cash_policy = self.cash_target_policy()
         cash_active = cash_policy["cash_target_profit_active"]
         cash_known = cash_policy["cash_available_for_target"] is not None
-        manager = LotManager(self.config.strategy, {row["lot_id"]: _lot_state_from_row(row) for row in self._table("lots")}) if cash_active else None
+        # Sell-policy previews inspect OPEN LOTs, not closed history.
+        manager = LotManager(self.config.strategy, {
+            row["lot_id"]: _lot_state_from_row(row)
+            for row in self._table("lots")
+            if _to_int(row.get("remaining_quantity")) > 0 and str(row.get("status") or "") != "CLOSED"
+        }) if cash_active else None
         policy_targets: dict[str, tuple[str, str, int, bool]] = {}
         if manager is not None and cash_policy["low_cash_high_cost_sell"]:
             for code in {lot.code for lot in manager.lots.values() if lot.remaining_quantity > 0}:
@@ -2846,16 +2899,13 @@ class UIService:
 
     def parse_log_events(self, limit: int = 300) -> list[str]:
         log_path = Path(self.config.log_path)
-        try:
-            log_mtime = log_path.stat().st_mtime
-        except OSError:
-            log_mtime = 0.0
-        key = ("logs", str(log_path), int(limit), log_mtime)
-        cached = self._cache_get(key, ttl_seconds=300.0)
-        if cached is not None:
-            return list(cached)
-        lines = [_mask_sensitive(line.rstrip()) for line in tail_hourly_logs(self.config.log_path, limit)]
-        self._cache_set(key, lines)
+        # The configured legacy file may not exist: live logs rotate hourly.
+        # Its mtime therefore cannot invalidate the actual hourly-log cache.
+        key = ("logs", str(log_path), int(limit))
+        lines = self._cached_load(
+            key,
+            lambda: [_mask_sensitive(line.rstrip()) for line in tail_hourly_logs(log_path, limit)],
+        )
         return list(lines)
 
     def parse_decision_logs(self, limit: int = 500) -> list[dict[str, Any]]:
@@ -3052,17 +3102,15 @@ class UIService:
         if not db_path.exists():
             return []
         key = ("table", str(db_path), table, self._table_version(table))
-        cached = self._cache_get(key, ttl_seconds=300.0)
-        if cached is not None:
-            return [dict(row) for row in cached]
-        with sqlite3.connect(db_path) as connection:
-            connection.row_factory = sqlite3.Row
-            try:
-                rows = connection.execute(f"SELECT * FROM {table}").fetchall()
-            except sqlite3.Error:
-                return []
-        normalized = [_normalize_row(dict(row)) for row in rows]
-        self._cache_set(key, normalized)
+        def load() -> list[dict[str, Any]]:
+            with closing(sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
+                connection.row_factory = sqlite3.Row
+                try:
+                    rows = connection.execute(f"SELECT * FROM {table}").fetchall()
+                except sqlite3.Error:
+                    return []
+            return [_normalize_row(dict(row)) for row in rows]
+        normalized = self._cached_load(key, load, ttl_seconds=300.0)
         return [dict(row) for row in normalized]
 
     def _recent_table(self, table: str, filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -3086,20 +3134,18 @@ class UIService:
         direction = "ASC" if str(raw_dir).lower() == "asc" else "DESC"
         sort_column = sort if sort in spec["columns"] else str(spec["default_sort"])
         key = ("recent_table", str(db_path), table, limit, offset, sort_column, direction, self._table_version(table))
-        cached = self._cache_get(key, ttl_seconds=300.0)
-        if cached is not None:
-            return [dict(row) for row in cached]
-        with sqlite3.connect(db_path) as connection:
-            connection.row_factory = sqlite3.Row
-            try:
-                rows = connection.execute(
-                    f'SELECT * FROM {table} ORDER BY "{sort_column}" {direction}, rowid DESC LIMIT ? OFFSET ?',
-                    (limit, offset),
-                ).fetchall()
-            except sqlite3.Error:
-                return []
-        normalized = [_normalize_row(dict(row)) for row in rows]
-        self._cache_set(key, normalized)
+        def load() -> list[dict[str, Any]]:
+            with closing(sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
+                connection.row_factory = sqlite3.Row
+                try:
+                    rows = connection.execute(
+                        f'SELECT * FROM {table} ORDER BY "{sort_column}" {direction}, rowid DESC LIMIT ? OFFSET ?',
+                        (limit, offset),
+                    ).fetchall()
+                except sqlite3.Error:
+                    return []
+            return [_normalize_row(dict(row)) for row in rows]
+        normalized = self._cached_load(key, load, ttl_seconds=300.0)
         return [dict(row) for row in normalized]
 
     def _latest_price_snapshot_rows(self, codes: set[str] | None = None) -> list[dict[str, Any]]:
@@ -3109,34 +3155,20 @@ class UIService:
         normalized_codes = tuple(sorted({str(code).zfill(6) for code in (codes or set()) if str(code or "").strip()}))
         db_mtime = self._db_mtime()
         key = ("latest_price_snapshots", str(db_path), normalized_codes, db_mtime)
-        cached = self._cache_get(key)
-        if cached is not None:
-            return [dict(row) for row in cached]
-        where = ""
-        params: tuple[Any, ...] = ()
-        if normalized_codes:
-            placeholders = ",".join("?" for _ in normalized_codes)
-            where = f"WHERE code IN ({placeholders})"
-            params = normalized_codes
-        sql = f"""
-            SELECT ps.*
-            FROM price_snapshots ps
-            JOIN (
-                SELECT code, MAX(id) AS id
-                FROM price_snapshots
-                {where}
-                GROUP BY code
-            ) latest ON latest.id = ps.id
-            ORDER BY ps.id DESC
-        """
-        with sqlite3.connect(db_path) as connection:
-            connection.row_factory = sqlite3.Row
-            try:
-                rows = connection.execute(sql, params).fetchall()
-            except sqlite3.Error:
-                return []
-        normalized = [_normalize_row(dict(row)) for row in rows]
-        self._cache_set(key, normalized)
+        def load() -> list[dict[str, Any]]:
+            with closing(sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
+                connection.row_factory = sqlite3.Row
+                try:
+                    selected_codes = normalized_codes or tuple(row[0] for row in connection.execute("SELECT DISTINCT code FROM price_snapshots"))
+                    rows = []
+                    for code in selected_codes:
+                        row = connection.execute("SELECT * FROM price_snapshots WHERE code = ? ORDER BY id DESC LIMIT 1", (code,)).fetchone()
+                        if row is not None:
+                            rows.append(row)
+                except sqlite3.Error:
+                    return []
+            return [_normalize_row(dict(row)) for row in sorted(rows, key=lambda row: row["id"], reverse=True)]
+        normalized = self._cached_load(key, load)
         return [dict(row) for row in normalized]
 
     def _price_snapshot_count(self) -> int:
@@ -3252,14 +3284,62 @@ class UIService:
                 return None
             return value
 
-    def _cache_set(self, key: tuple[Any, ...], value: Any) -> Any:
+    @staticmethod
+    def _cache_family(key: tuple[Any, ...]) -> tuple[Any, ...]:
+        """A changing DB version replaces its value instead of retaining history."""
+        if key and key[0] in {"table", "recent_table", "latest_price_snapshots", "price_snapshot_count", "status_metrics", "daily_snapshot_prices"}:
+            return key[:-1]
+        if key and key[0] == "portfolio_history_chart":
+            return key[:2]
+        return key
+
+
+    def _cache_set(self, key: tuple[Any, ...], value: Any, *, generation: int | None = None) -> Any:
+        now = time.monotonic()
+        family = self._cache_family(key)
         with self._cache_lock:
-            self._cache[key] = (time.monotonic(), value)
+            if generation is not None and generation != self._cache_generation:
+                return value
+            obsolete = [old for old, (created, _) in self._cache.items()
+                        if now - created > UI_CACHE_MAX_AGE_SECONDS or self._cache_family(old) == family]
+            for old in obsolete:
+                self._cache.pop(old, None)
+            self._cache[key] = (now, value)
+            while len(self._cache) > UI_CACHE_MAX_ENTRIES:
+                self._cache.pop(next(iter(self._cache)))
         return value
+
+
+    def _cached_load(self, key: tuple[Any, ...], loader: Callable[[], Any], ttl_seconds: float = UI_CACHE_TTL_SECONDS) -> Any:
+        """Coalesce matching work without holding the global lock during I/O."""
+        cached = self._cache_get(key, ttl_seconds)
+        if cached is not None:
+            return cached
+        family = self._cache_family(key)
+        with self._cache_lock:
+            lock, users = self._cache_inflight.get(family, (threading.RLock(), 0))
+            self._cache_inflight[family] = (lock, users + 1)
+        try:
+            with lock:
+                cached = self._cache_get(key, ttl_seconds)
+                if cached is not None:
+                    return cached
+                with self._cache_lock:
+                    generation = self._cache_generation
+                value = loader()
+                return self._cache_set(key, value, generation=generation)
+        finally:
+            with self._cache_lock:
+                current_lock, users = self._cache_inflight[family]
+                if users <= 1:
+                    self._cache_inflight.pop(family, None)
+                else:
+                    self._cache_inflight[family] = (current_lock, users - 1)
 
     def _cache_clear(self) -> None:
         with self._cache_lock:
             self._cache.clear()
+            self._cache_generation += 1
 
     def _has_open_order(self, code: str, side: str, lot_id: str = "") -> bool:
         for order in self.orders():

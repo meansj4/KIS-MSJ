@@ -850,6 +850,8 @@ def test_stock_market_sell_all_creates_one_market_request_per_open_lot(tmp_path)
     assert {row["order_type"] for row in requests} == {"MARKET"}
 
 
+# Paper order tests must not inherit the operator's live runtime pause file.
+@patch("kis_msj.main.load_runtime_control", new=lambda: RuntimeControl())
 def test_bot_core_builds_market_order_from_manual_request_type(tmp_path):
     db_path = tmp_path / "state.sqlite3"
     config = BotConfig(
@@ -893,6 +895,7 @@ def test_bot_core_builds_market_order_from_manual_request_type(tmp_path):
     assert trader.store.manual_order_requests()[0]["status"] == "FILLED"
 
 
+@patch("kis_msj.main.load_runtime_control", new=lambda: RuntimeControl())
 def test_market_sell_all_batch_does_not_block_second_lot_as_recent_order(tmp_path):
     db_path = tmp_path / "state.sqlite3"
     config = BotConfig(
@@ -960,6 +963,7 @@ class _PriceSampler:
         return True, ""
 
 
+@patch("kis_msj.main.load_runtime_control", new=lambda: RuntimeControl())
 def test_bot_core_consumes_manual_request_through_order_manager_paper_path(tmp_path):
     db_path = tmp_path / "state.sqlite3"
     log_path = tmp_path / "bot.log"
