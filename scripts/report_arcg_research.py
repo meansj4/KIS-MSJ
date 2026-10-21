@@ -216,6 +216,21 @@ def render(out: Path):
     delta_cagr = (number(chosen, "cagr_pct", 0) - number(baseline, "cagr_pct", 0))
     delta_mdd = (number(chosen, "max_drawdown_pct", 0) - number(baseline, "max_drawdown_pct", 0))
     caveat = "\n\n" + LIMITATION + "\n"
+    benchmark_table = table(["모델", "전체 NAV 누적수익 %", "로컬 지수 가격수익 %", "가격 benchmark 대비 차이 pp", "평균 현금비율 %"], [
+        (m, number(test[m], "total_return_pct"), number(test[m], "benchmark_price_return_pct"),
+         number(test[m], "excess_return_vs_price_benchmark_pp"), number(test[m], "average_cash_ratio_pct")) for m in MODELS])
+    benchmark_context = (
+        f"로컬 KOSPI 지수 가격자료의 같은 기간 가격수익은 {fmt(number(baseline, 'benchmark_price_return_pct'))}%다. "
+        f"A의 전체 모의 NAV 누적수익은 {fmt(number(baseline, 'total_return_pct'))}%, "
+        f"검증선택 {selected_model}은 {fmt(number(chosen, 'total_return_pct'))}%로 지수 가격수익을 크게 밑돌았다. "
+        f"평균 현금비율은 A {fmt(number(baseline, 'average_cash_ratio_pct'))}%, "
+        f"{selected_model} {fmt(number(chosen, 'average_cash_ratio_pct'))}%다. "
+        f"사이클 전체예산의 논리적 준비금, 그 예산의 {fmt(float(params.get('initial_fraction', 0)) * 100)}%만 사용하는 "
+        "초기분할, 상태에 따른 추가매수 차단이 대부분의 자금을 현금으로 남기는 가능한 메커니즘이다. "
+        "이는 낮은 계좌 CAGR과 일치하는 설명이지만 각각의 인과기여를 분리 검증한 결론은 아니다. "
+        "이 비교는 현금비중이 다른 전략과 비용·배당 없는 100% 지수 가격노출을 비교한다. "
+        "지수는 배당재투자·매수/매도비용·추적오차 없는 가격수익 자료이므로 실제 투자 가능한 총수익 benchmark와 같지 않다."
+    )
     annual = read_csv(out / "annual_returns.csv")
     annual_map = {(r.get("model"), r.get("period")): number(r, "return_pct") for r in annual}
     annual_rows = []
@@ -227,6 +242,27 @@ def render(out: Path):
     stress_table = table(["모델", "슬리피지 bps", "CAGR %", "MDD %", "최종 NAV 원", "총 실행비용 원"], [
         (r.get("model"), number(r, "slippage_bps"), number(r, "cagr_pct"), number(r, "max_drawdown_pct"), number(r, "final_equity"), number(r, "total_execution_cost")) for r in stress
     ]) if stress else "별도 비용 스트레스 실행결과가 제공되지 않았다."
+    capital_stress = read_json(out / "capital_stress_results.json", {})
+    capital_rows = capital_stress.get("rows", [])
+    capital_count = capital_stress.get("completed_experiments", 0)
+    capital_table = table(["초기자금 원", "모델", "CAGR %", "MDD %", "최소 현금 원", "현금부족 차단", "전체 매수차단", "평균 현금 %"], [
+        (number(r, "capital", number(r, "initial_equity")), r.get("model"), number(r, "cagr_pct"), number(r, "max_drawdown_pct"),
+         number(r, "minimum_cash"), number(r, "cash_shortfall_blocks"), number(r, "all_buy_blocks"), number(r, "average_cash_ratio_pct"))
+        for r in sorted(capital_rows, key=lambda r: (number(r, "capital", 0), r.get("model", "")))
+    ]) if capital_rows else "별도 저자금 사후 스트레스 결과가 아직 제공되지 않았다."
+    small_a = next((r for r in capital_rows if number(r, "capital") == 5_000_000 and r.get("model") == "A"), None)
+    small_chosen = next((r for r in capital_rows if number(r, "capital") == 5_000_000 and r.get("model") == selected_model), None)
+    capital_tradeoff = ""
+    if small_a and small_chosen:
+        capital_tradeoff = (
+            f"500만원 진단에서 직접 현금부족은 A {fmt(number(small_a, 'cash_shortfall_blocks'), 0)}회 → "
+            f"선택모델 {fmt(number(small_chosen, 'cash_shortfall_blocks'), 0)}회였다. 하지만 최소 현금비율은 "
+            f"{fmt(number(small_a, 'minimum_cash_ratio_pct'))}% → {fmt(number(small_chosen, 'minimum_cash_ratio_pct'))}%로 높아졌고 "
+            f"CAGR은 {fmt(number(small_a, 'cagr_pct'))}% → {fmt(number(small_chosen, 'cagr_pct'))}%로 낮아졌다. "
+            f"선택모델의 전체 매수차단 {fmt(number(small_chosen, 'all_buy_blocks'), 0)}회는 준비금·예산 등 조기거절을 포함하므로 "
+            "직접 현금부족 횟수와 같지 않다. 이 진단은 부족방지와 높은 유휴현금·놓친 참여기회의 교환관계를 보여준다. "
+            "수익차이를 모두 개별 거절신호의 효과로 인과추정한 것은 아니다."
+        )
 
     spec = f"""# ARCG 최종 연구 명세
 
@@ -286,6 +322,7 @@ A는 현재 로컬 LotGridStrategy/LotManager/PositionManager/RiskManager를 직
 ('src/kis_msj/arcg_adapter.py','최신 실행증거를 검사하는 기존 OrderRequest 사전검토 bridge; 제출 기능 없음'),
 ('src/kis_msj/arcg_backtest.py','읽기전용 시세 로더, 기존 A 호출, A~F 동일 일봉체결/비용/원장 평가'),
 ('scripts/run_arcg_research.py','시간순 후보탐색, 검증선택 고정, 최종테스트 및 CSV/JSON 내보내기'),
+('scripts/run_arcg_capital_stress.py','기본 실험 후 추가한 소액자금 사후진단; 모델 선택이나 튜닝에 사용하지 않음'),
 ('scripts/report_arcg_research.py','저장된 실제 결과의 한국어 문서와 PNG 생성'),
 ('scripts/arcg_pytest_isolation.py','테스트 기본 runtime 중립화와 외부 네트워크 차단'),
 ('tests/test_arcg_core.py, test_arcg_backtest.py, test_arcg_adapter.py, test_arcg_research_runner.py','새 전략·체결·경계·preview·선택점수 검증; 실제 파일 목록은 패키지 manifest 참조'),
@@ -300,7 +337,7 @@ A는 현재 로컬 LotGridStrategy/LotManager/PositionManager/RiskManager를 직
 
 {tests_table}
 
-비격리 baseline은 운영 pause를 읽어 47 passed 뒤 실패했다. 테스트용 하네스는 해당 파일을 수정하지 않고 테스트 프로세스의 기본 호출만 중립화한다. 명시적 임시 경로와 각 테스트의 pause monkeypatch는 유지한다. 격리 전체 기존 suite는 936 passed/2 failed였으며 남은 실패는 기존 dry-run SQLite 헤더 변경과 과거 커밋 원문 동일성 assertion이다. 새 ARCG 구현으로 인한 회귀로 단정하거나 전체 통과라고 표시하지 않는다. 실제 최종 로그가 추가되면 위 표가 이를 함께 보여준다.
+비격리 baseline은 운영 pause를 읽어 47 passed 뒤 실패했다. 테스트용 하네스는 해당 파일을 수정하지 않고 테스트 프로세스의 기본 호출만 중립화한다. 명시적 임시 경로와 각 테스트의 pause monkeypatch는 유지한다. 격리 기존 suite 단독 결과는 936 passed/2 failed, 신규 ARCG 테스트 포함 최종 전체 결과는 1015 passed/2 failed다. 남은 실패는 같은 기존 dry-run SQLite 헤더 변경과 과거 커밋 원문 동일성 assertion이다. 새 ARCG 구현으로 인한 회귀로 단정하거나 전체 통과라고 표시하지 않는다. 개별 실행 경과와 최종 결과는 위 로그표에 함께 제공한다.
 
 잔여 작업은 실거래 adapter 연결, 실제 계좌 불일치/재시작 reconciliation, 부분체결 및 거래소별 가격·세션 제약의 end-to-end 검증, 데이터 보정과 당시 종목군 확보다. 연구실험 완료와 실거래 적용 준비 완료는 별개의 상태다.
 
@@ -329,6 +366,8 @@ A는 현재 로컬 LotGridStrategy/LotManager/PositionManager/RiskManager를 직
 시간구간: {json.dumps(config.get('splits', {}), ensure_ascii=False)}. 후보 {len(config.get('candidates', []))}개를 train/validation에서 평가한 뒤 validation 기준으로 고르고 `selection_before_test.json`에 고정했다. 마지막 test 구간은 탐색 루프에서 사용하지 않는다. 기존 로컬 연구에서 이미 본 과거 자료이므로 완전히 미사용인 전향적 holdout으로 보장할 수 없다. 여러 시점을 이동하는 walk-forward 재학습 검증은 이번 단일 시간분할과 다르며 미완료다.
 
 선택식은 비율단위 CAGR - 0.5×abs(MDD) - 0.000001×현금부족차단 횟수다. CSV의 CAGR/MDD는 퍼센트 수치이므로 선택식에서 100으로 나눈다. train은 진단용이며 test 성과로 재선택하지 않는다. 다수 후보의 1요인 비교는 전체 조합 최적화도 주변 모든 조합 안정성 보장도 아니다.
+
+04 CSV의 최종 test 6행은 선택을 고정한 뒤 이미 수행한 A~F 결과를 추적용으로 추가한 것이다. 후보별로 test를 반복 검색한 것이 아니며 이 행들은 선택점수 계산에서 제외한다.
 
 ## 선택 후보의 설정과 실제 시도값
 
@@ -360,9 +399,13 @@ average/legacy_average/last_buy/cycle_low 기준과 안정화 즉시/대기 조�
     reasons = table(["모델", "실제 체결 주요 이유(횟수)"], [(m, ", ".join(f"{k}: {v}" for k, v in Counter(r.get("reason", r.get("trade_reason", "미제공")) for r in trades if r.get("model") == m).most_common(5))) for m in MODELS])
     risk_report = f"""# 위험·데이터 무결성 분석
 {caveat}
-## 실제 계좌 NAV 기준 결과
+## 모의계좌 NAV 기준 결과
 
 {comparison}
+
+{benchmark_table}
+
+{benchmark_context}
 
 {table(['모델','직전 peak','최악 drawdown 일자','peak 회복','MDD %','최장 underwater 달력일','최소 현금 원','종목 최대원가 원','가격격리 사건','낡은 보유시세 사건'], worst_rows)}
 
@@ -370,7 +413,15 @@ average/legacy_average/last_buy/cycle_low 기준과 안정화 즉시/대기 조�
 
 ## 현금과 기회비용
 
-현금부족차단은 실제 원장 cash 한도에서 줄이거나 못 산 횟수다. 논리적 예산/안전현금으로 더 일찍 막힌 신호는 `all_buy_blocks`와 diagnostics의 이유별 집계에 따로 나타날 수 있다. 따라서 cash_shortfall_blocks 감소만으로 매수기회 손실이 없었다고 결론내리지 않는다. 평균현금 상승, 총수익·benchmark 격차, 거래 수와 NAV를 함께 읽는다. 현금 0 이상이라는 회계 검증은 급락 손실이나 실제 브로커 유동성 보장과 다르다.
+현금부족차단은 모의 원장 cash 한도에서 줄이거나 못 산 횟수다. 논리적 예산/안전현금으로 더 일찍 막힌 신호는 `all_buy_blocks`와 diagnostics의 이유별 집계에 따로 나타날 수 있다. 따라서 cash_shortfall_blocks 감소만으로 매수기회 손실이 없었다고 결론내리지 않는다. 평균현금 상승, 총수익·benchmark 격차, 거래 수와 NAV를 함께 읽는다. 현금 0 이상이라는 회계 검증은 급락 손실이나 실제 브로커 유동성 보장과 다르다.
+
+기본 초기자금 1억원 실험에서 직접 현금부족 차단이 관측되지 않았으므로 그 실험만으로 현금고갈 방지 효과를 입증할 수 없다. 이를 확인한 뒤 초기자금 500만원/2,000만원으로 A와 검증선택 모델을 비교하는 사후진단을 별도 추가했다. 사전에 선언한 검증검색이나 새 holdout이 아니며 결과를 보고 모델·파라미터를 다시 선택하지 않는다.
+
+{capital_table}
+
+{capital_tradeoff}
+
+추가 사후진단 완료 수는 {capital_count}건이다. 기본 실험 {results.get('completed_experiments', '미제공')}건과 별도 집계하며 capital_stress_results.json이 목적·로그·고정 선택해시를 보존한다. 저자금 진단에서 직접 부족차단이 줄어도 준비금으로 미리 거절한 전체 매수기회·수익·위험과 함께 해석해야 하며 일반적인 현금관리 우월성을 확정하지 않는다.
 
 ## 선택 후 비용 스트레스
 
@@ -412,13 +463,17 @@ average/legacy_average/last_buy/cycle_low 기준과 안정화 즉시/대기 조�
 {caveat}
 ## 연구 설계와 원자료
 
-원자료/해시/필터는 data_manifest.json, 재현설정은 backtest_config.json, 전체 실험의 성공·실패는 experiment_log.json에 남긴다. 완료 실험 수 {results.get('completed_experiments', '미제공')}, 실험별 소요시간 합계 {fmt(results.get('runtime_seconds'))}초(병렬 전체 wall time과 다름). 초기자금·비용·기간은 모든 A~F에 공통이고 날짜별 종가까지의 정보만 신호에 쓴다. A는 최신 로컬 기존 결정·LOT·포지션·위험 클래스를 호출하고 현재 현금정책의 시행일만 과거 전기간에 적용한다. 실제 과거 운영계좌나 거래소별 주문루프의 완전재현은 아니다.
+원자료/해시/필터는 data_manifest.json, 재현설정은 backtest_config.json, 기본 실험의 성공·실패는 experiment_log.json에 남긴다. 기본 완료 실험 수 {results.get('completed_experiments', '미제공')}건과 추가 저자금 사후진단 {capital_count}건을 구분한다. 기본 실험별 소요시간 합계 {fmt(results.get('runtime_seconds'))}초(병렬 전체 wall time과 다름). 초기자금·비용·기간은 기본 A~F 비교에 공통이고 날짜별 종가까지의 정보만 신호에 쓴다. A는 최신 로컬 기존 결정·LOT·포지션·위험 클래스를 호출하고 현재 현금정책의 시행일만 과거 전기간에 적용한다. 실제 과거 운영계좌나 거래소별 주문루프의 완전재현은 아니다.
 
 ## 동일 조건 최종 test 결과
 
 {comparison}
 
 MDD는 음수이며 0에 가까워질수록 낙폭이 작다. CAGR과 MDD는 퍼센트, 차이는 퍼센트포인트(pp)다. 순자산은 현금+보유평가액이며 실현손익만 큰 전략을 우수하다고 선택하지 않았다. benchmark는 비용·배당 없는 지수 가격수익으로 총수익 benchmark와 다르다.
+
+{benchmark_table}
+
+{benchmark_context}
 
 ## 요청한 12개 검토 질문
 
@@ -451,6 +506,12 @@ CAGR 하락 또는 MDD 악화가 관측된 단계는 {', '.join(weak_steps) if w
 ### 7. 현금부족이 개선됐는가
 
 선택 모델 현금부족 차단은 {fmt(number(chosen,'cash_shortfall_blocks'))}회, A는 {fmt(number(baseline,'cash_shortfall_blocks'))}회다. 최소 현금비율은 각각 {fmt(number(chosen,'minimum_cash_ratio_pct'))}%, {fmt(number(baseline,'minimum_cash_ratio_pct'))}%다. 조기 예산차단이 별도 이유로 집계되므로 이 횟수만으로 실제 자금관리 우월성을 결론내리지 않는다. 최대 동시매수 요구금액·모든 buy blocks·평균현금·투자원가를 CSV에서 함께 비교한다.
+
+기본 1억원 실험에서 직접 현금부족이 없었던 점 때문에 저자금 사후진단을 추가했다. 이는 기본 결과를 본 뒤 설계한 진단이며 새 검증검색으로 가장하지 않는다. A와 이미 고정된 선택모델만 500만원/2,000만원에 재실행했고 결과로 선택을 바꾸지 않았다.
+
+{capital_table}
+
+{capital_tradeoff}
 
 ### 8. 놓친 매수기회가 늘었는가
 
@@ -500,6 +561,7 @@ CAGR 하락 또는 MDD 악화가 관측된 단계는 {', '.join(weak_steps) if w
 cd analysis_output/source
 python -m pytest -p scripts.arcg_pytest_isolation tests -q --basetemp ../tmp/arcg_package_tests
 python -m scripts.run_arcg_research --database ../data/research_daily.sqlite3 --index ../data/kospi_index.csv --output .. --jobs 3
+python -m scripts.run_arcg_capital_stress --output ..
 python -m scripts.report_arcg_research --output ..
 ```
 
@@ -512,6 +574,8 @@ source에는 전체 실행 src와 신규 ARCG 관련 테스트/연구 스크립�
 압축을 별도 환경에 풀었으면 연구 source 디렉터리 구조를 유지하고 현재 환경의 Python 실행경로를 사용한다. 의존성/환경은 environment.json이 있으면 이를 확인한다. core/replay는 표준 라이브러리 중심이고 신규 테스트는 pytest, 그림 생성은 matplotlib가 필요하다. seed는 {config.get('seed', '미제공')}; 종목·날짜 정렬로 결정적 실행을 사용한다. 원장·cache·임시경로는 운영 DB와 분리한다.
 
 후보탐색은 train/validation에서만 수행하고 선택을 저장한 뒤 test를 실행한다. 결과를 본 뒤 후보·기간을 바꾼 실행은 별도 실험으로 표시해야 한다. 기존에 본 역사자료인 한 prospective holdout이라고 주장하지 않는다. 백테스트는 수분 이상 걸릴 수 있고 실제 환경 성능에 따라 달라진다.
+
+run_arcg_capital_stress는 기본 1억원 실험에서 직접 현금부족이 없었던 것을 본 뒤 추가한 사후진단이다. 500만원/2,000만원에 A와 이미 선택한 모델만 실행하고 선택해시를 검증한다. 기본 실험의 파라미터 검색·holdout 성과와 분리해 집계하며 모델이나 파라미터 재선택에 쓰지 않는다.
 
 테스트 하네스의 기본 runtime 중립화는 테스트에만 적용한다. 운영 runtime_control.json을 수정하지 않는다. 위 전체 suite의 원래 남은 실패는 보고서/로그에 명시되어 있다. 사용자 기준선 소스에는 기존 미커밋 수정이 있고 신규 ARCG 커밋은 이를 포함하지 않으므로 신규 커밋만 clean checkout에 적용해도 완전한 재현이 되지 않는다. 연구 패키지의 전체 sanitized source snapshot과 설정이 정확한 재현물이다. 기존 수정이 정식 통합되기 전까지 이 의존성을 유지한다.
 

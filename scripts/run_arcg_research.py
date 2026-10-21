@@ -228,6 +228,11 @@ def run(args) -> None:
             rows.append(dict(result.summary, model=model, split=split,
                              selected_before_test=model == chosen_model))
     write_csv(out / "03_backtest_comparison.csv", rows)
+    for model, result in results.items():
+        optimization.append(dict(result.summary, candidate=selected["candidate"], model=model, split="test",
+                                 parameters=overrides, status="completed", start=splits["test"][0],
+                                 end=splits["test"][1], selection_score="not_used_for_selection"))
+    write_csv(out / "04_optimization_results.csv", optimization)
     for filename, attribute in (("05_equity_curve.csv", "equity"), ("06_trade_history.csv", "trades"),
                                 ("annual_returns.csv", "annual"), ("monthly_returns.csv", "monthly")):
         records = [dict(row, model=model, split="test") for model,result in results.items() for row in getattr(result,attribute)]

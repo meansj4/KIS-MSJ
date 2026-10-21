@@ -27,7 +27,7 @@ def package(output: Path):
     new_code = sorted((ROOT / "src/kis_msj").glob("arcg*.py"))
     new_tests = sorted((ROOT / "tests").glob("test_arcg*.py"))
     scripts = [ROOT / "scripts" / name for name in (
-        "run_arcg_research.py", "report_arcg_research.py", "package_arcg_research.py", "arcg_pytest_isolation.py")]
+        "run_arcg_research.py", "run_arcg_capital_stress.py", "report_arcg_research.py", "package_arcg_research.py", "arcg_pytest_isolation.py")]
     for path in safe_sources + new_tests + scripts + [ROOT / "pyproject.toml"]:
         destination = source / path.relative_to(ROOT)
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -61,7 +61,7 @@ def package(output: Path):
         raise RuntimeError("Missing required artifacts: " + ", ".join(missing))
     files = sorted(p for p in output.rglob("*") if p.is_file() and p.suffix.lower() != ".zip"
                    and p.name not in {"package_manifest.json", "legacy_settings.sanitized.json"}
-                   and "__pycache__" not in p.parts)
+                   and not {"__pycache__", ".pytest_cache", ".venv"}.intersection(p.parts))
     manifest = {p.relative_to(output).as_posix(): {"sha256": sha(p), "bytes": p.stat().st_size} for p in files}
     manifest_path = output / "package_manifest.json"
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2)+"\n", encoding="utf-8")

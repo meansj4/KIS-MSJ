@@ -116,6 +116,8 @@ main의 최종 가드는 SYNC_REQUIRED/paused, 위험종목, 검토필요, 은�
 
 남은 실패는 (1) `test_collect_market_data_dry_run_does_not_mutate_db`: 기존 수집기의 dry-run에서 SQLite 헤더 바이트가 바뀜, (2) `test_unchanged_position_risk_and_operating_config_match_baseline`: 기존 미커밋 position_manager 변경 때문에 과거 Git `8dbf925`와 원문 동일성 검사가 실패함이다. 관련 소스나 assertion을 수정해 결과를 숨기지 않았다. 패키지용 UTF-8 로그는 `test_logs/full_isolated_tests.log`; 최초 비격리 실패는 `test_logs/unisolated_baseline_failure.log`; 중간 하네스 실행은 `test_logs/full_isolated_initial_tests.log`에 각각 보존했다. 이 실행 당시 수집된 938개 기존 테스트 결과이며 이후 신규 ARCG 테스트는 별도 실행 로그로 확인한다.
 
+신규 ARCG 테스트를 포함한 최종 전체 재실행은 **1015 passed, 같은 기존 문제 2 failed, 2 warnings, 100.56초**다. 로그는 `test_logs/full_with_arcg_final.log`이며 최초 baseline 936 통과와 신규 79개 통과를 합친 결과다. 기존 실패를 제외하거나 assertion을 완화하지 않았다.
+
 `scripts/research_strategy_tuning.py`, `cash_policy_tuning_model.py`, `week_target_policy_model_20261021.py` 등은 기존 규칙을 별도 구현한 오프라인 모델이다. 특히 week_target 모델은 다음 동일종목/동일세션 관측에서 체결, 매수 미체결 보류금, bucket 끝 시각 노출, 엄격한 지정가 및 지연 민감도 기능이 있다. 하지만 실제 전략 함수를 그대로 부르는 것은 아니며 자체 문서도 호가/거래량/부분체결/배당/기업행위/브로커 지연/가격샘플/일부 위험 가드 부재를 인정한다. 이미 reports에 있는 성과 숫자를 이번 실행 결과로 재사용해서는 안 된다.
 
 ## 10. A 기준선의 순수 API와 재현 조건
