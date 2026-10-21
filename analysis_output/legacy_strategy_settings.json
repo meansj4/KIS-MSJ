@@ -1,0 +1,1811 @@
+{
+  "strategy": {
+    "initial_buy_amount": 30000,
+    "auto_buy_limit": 300000,
+    "absolute_max_investment": 500000,
+    "review_loss_pct": -30,
+    "max_open_lots_before_review": 12,
+    "pnl_minus_threshold": -0.01,
+    "pnl_plus_threshold": 0.01,
+    "reentry_drop_rate": 0.04,
+    "normal_reentry_drop_rate": 0.04,
+    "trailing_activation_gain": 0.05,
+    "trailing_reentry_drop_rate": 0.1,
+    "min_reentry_wait_minutes": 60,
+    "max_trailing_reentry_per_day": 1,
+    "reentry_buy_cooldown_minutes": 60,
+    "reentry_policy": "cash_capacity_oldest",
+    "reentry_cash_lot_multiple": 60,
+    "reentry_start_date": "",
+    "reentry_decay_enabled": true,
+    "normal_reentry_decay_days": 30,
+    "normal_reentry_daily_decay_rate": 0.0016666667,
+    "trailing_reentry_decay_days": 30,
+    "trailing_reentry_daily_decay_rate": 0.0033333333,
+    "reentry_decay_cap_rate": 0.0,
+    "force_reentry_after_timeout_enabled": true,
+    "force_reentry_timeout_days": 30,
+    "force_reentry_starts_new_cycle": true,
+    "age_decay_rate": 0.005,
+    "age_decay_mode": "current_open_lot_count",
+    "age_decay_per_open_lot_rate": 0.0005,
+    "cash_target_profit_enabled": true,
+    "cash_target_reference_amount": 200000000,
+    "cash_target_reference_rate": 0.007200000000000001,
+    "cash_target_low_cash_threshold": 12000000,
+    "cash_target_low_cash_lot_policy": "highest_cost",
+    "cash_target_start_date": "",
+    "cash_buy_drop_enabled": false,
+    "cash_buy_drop_reference_amount": 200000000,
+    "cash_buy_drop_rate_at_zero": 0.4,
+    "cleanup_enabled": false,
+    "cleanup_min_age_weeks": 12,
+    "cleanup_min_target_rate": -0.04,
+    "cleanup_profit_offset_ratio": 0.3,
+    "deep_loss_recovery_enabled": true,
+    "deep_loss_threshold_rate": -0.4,
+    "deep_loss_initial_rebound_rate": 0.15,
+    "deep_loss_max_recovery_days": 60,
+    "stale_lot_loss_rate": -0.15,
+    "stale_lot_min_age_weeks": 8,
+    "stale_lot_price_gap_rate": -0.1,
+    "review_symbol_loss_rate": -0.3,
+    "lot_sizing_mode": "cycle_locked_by_entry_price",
+    "price_lot_bands": [
+      {
+        "min_price": 0,
+        "max_price": 300,
+        "lot_unit_amount": 750,
+        "max_symbol_amount": 9000,
+        "enabled": true,
+        "max_lots": 0,
+        "note": ""
+      },
+      {
+        "min_price": 301,
+        "max_price": 1000,
+        "lot_unit_amount": 2250,
+        "max_symbol_amount": 27000,
+        "enabled": true,
+        "max_lots": 0,
+        "note": ""
+      },
+      {
+        "min_price": 1001,
+        "max_price": 3000,
+        "lot_unit_amount": 7500,
+        "max_symbol_amount": 90000,
+        "enabled": true,
+        "max_lots": 0,
+        "note": ""
+      },
+      {
+        "min_price": 3001,
+        "max_price": 10000,
+        "lot_unit_amount": 22500,
+        "max_symbol_amount": 270000,
+        "enabled": true,
+        "max_lots": 0,
+        "note": ""
+      },
+      {
+        "min_price": 10001,
+        "max_price": 30000,
+        "lot_unit_amount": 75000,
+        "max_symbol_amount": 900000,
+        "enabled": true,
+        "max_lots": 0,
+        "note": ""
+      },
+      {
+        "min_price": 30001,
+        "max_price": 100000,
+        "lot_unit_amount": 225000,
+        "max_symbol_amount": 2700000,
+        "enabled": true,
+        "max_lots": 0,
+        "note": ""
+      },
+      {
+        "min_price": 100001,
+        "max_price": 300000,
+        "lot_unit_amount": 750000,
+        "max_symbol_amount": 9000000,
+        "enabled": true,
+        "max_lots": 0,
+        "note": ""
+      },
+      {
+        "min_price": 300001,
+        "max_price": 1000000,
+        "lot_unit_amount": 2250000,
+        "max_symbol_amount": 27000000,
+        "enabled": true,
+        "max_lots": 0,
+        "note": ""
+      },
+      {
+        "min_price": 1000001,
+        "max_price": 3000000,
+        "lot_unit_amount": 7500000,
+        "max_symbol_amount": 90000000,
+        "enabled": true,
+        "max_lots": 0,
+        "note": ""
+      }
+    ],
+    "add_buy_lot_bands": [
+      {
+        "min_lots": 1,
+        "max_lots": 2,
+        "drop_rate": 0.08800000000000001,
+        "add_lot_count": 1
+      },
+      {
+        "min_lots": 3,
+        "max_lots": 4,
+        "drop_rate": 0.08800000000000001,
+        "add_lot_count": 1
+      },
+      {
+        "min_lots": 5,
+        "max_lots": 6,
+        "drop_rate": 0.08800000000000001,
+        "add_lot_count": 1
+      },
+      {
+        "min_lots": 7,
+        "max_lots": 8,
+        "drop_rate": 0.08800000000000001,
+        "add_lot_count": 1
+      },
+      {
+        "min_lots": 9,
+        "max_lots": 10,
+        "drop_rate": 0.08800000000000001,
+        "add_lot_count": 1
+      },
+      {
+        "min_lots": 11,
+        "max_lots": 12,
+        "drop_rate": 0.08800000000000001,
+        "add_lot_count": 1
+      }
+    ],
+    "target_profit_lot_bands": [
+      {
+        "min_lots": 1,
+        "max_lots": 2,
+        "target_profit_rate": 0.03
+      },
+      {
+        "min_lots": 3,
+        "max_lots": 4,
+        "target_profit_rate": 0.025
+      },
+      {
+        "min_lots": 5,
+        "max_lots": 6,
+        "target_profit_rate": 0.02
+      },
+      {
+        "min_lots": 7,
+        "max_lots": 8,
+        "target_profit_rate": 0.015
+      },
+      {
+        "min_lots": 9,
+        "max_lots": 10,
+        "target_profit_rate": 0.01
+      },
+      {
+        "min_lots": 11,
+        "max_lots": 12,
+        "target_profit_rate": 0.005
+      }
+    ],
+    "max_lots_per_symbol_default": 12,
+    "exposure_buy_bands": [
+      {
+        "min_exposure": 1,
+        "max_exposure": 60000,
+        "drop_pct": 4.0,
+        "amount": 30000
+      },
+      {
+        "min_exposure": 60001,
+        "max_exposure": 120000,
+        "drop_pct": 5.0,
+        "amount": 30000
+      },
+      {
+        "min_exposure": 120001,
+        "max_exposure": 200000,
+        "drop_pct": 6.0,
+        "amount": 40000
+      },
+      {
+        "min_exposure": 200001,
+        "max_exposure": 300000,
+        "drop_pct": 8.0,
+        "amount": 50000
+      }
+    ],
+    "exposure_sell_bands": [
+      {
+        "min_exposure": 1,
+        "max_exposure": 60000,
+        "target_profit_pct": 6.0
+      },
+      {
+        "min_exposure": 60001,
+        "max_exposure": 120000,
+        "target_profit_pct": 5.0
+      },
+      {
+        "min_exposure": 120001,
+        "max_exposure": 200000,
+        "target_profit_pct": 4.0
+      },
+      {
+        "min_exposure": 200001,
+        "max_exposure": 300000,
+        "target_profit_pct": 3.0
+      },
+      {
+        "min_exposure": 300001,
+        "max_exposure": 500000,
+        "target_profit_pct": 2.5
+      }
+    ],
+    "high_exposure_partial_sell_pct": 50,
+    "profit_partial_sell_exposure_threshold": 600000,
+    "estimated_fee_tax_pct": 0.21
+  },
+  "risk": {
+    "market_risk_mode": false,
+    "daily_account_loss_limit_pct": -1.5,
+    "total_account_loss_limit_pct": -20,
+    "max_review_positions": 60,
+    "min_cash_available": 30000,
+    "max_consecutive_api_errors": 5,
+    "max_price_sample_volatility_pct": 1,
+    "block_on_lot_mismatch": true,
+    "max_active_symbols": 300,
+    "max_total_open_lots": 3000,
+    "max_total_invested_amount": 200000000,
+    "max_new_buy_per_day": 300,
+    "max_new_buy_amount_per_day": 30000000,
+    "max_total_initial_buy_amount_per_day": 30000000,
+    "profile": "aggressive_1m_rebalance_transition_safe",
+    "cash_shortfall_rotation_enabled": true,
+    "cash_shortfall_rotation_buy_cooldown_minutes": 60
+  },
+  "order": {
+    "live_trading": false,
+    "emergency_market_order": false,
+    "buy_limit_markup_pct": 0.3,
+    "sell_limit_markdown_pct": 0.5,
+    "price_sample_count": 5,
+    "price_sample_interval_seconds": 0.5,
+    "limit_order_timeout_seconds": 30,
+    "order_cooldown_seconds": 600,
+    "min_order_request_interval_seconds": 10,
+    "cancel_unfilled_on_start": false,
+    "execution_query_buffer_minutes": 60,
+    "include_previous_day_for_open_orders": true,
+    "cancel_rejected_retry_interval_seconds": 3600,
+    "cancel_rejected_max_retries": 3,
+    "enable_execution_raw_log": false,
+    "reconcile_recent_executions_on_startup": true,
+    "startup_execution_lookup_days": 1,
+    "account_snapshot_min_interval_seconds": 30,
+    "account_snapshot_rate_limit_cooldown_seconds": 30,
+    "kis_min_request_interval_seconds": 0.25,
+    "kis_balance_page_interval_seconds": 1.5
+  },
+  "market_hours": {
+    "open_time": "09:00",
+    "close_time": "15:30",
+    "block_after_open_minutes": 2,
+    "block_before_close_minutes": 2
+  },
+  "stocks": [
+    {
+      "code": "175330",
+      "name": "JB금융지주",
+      "sector": "금융"
+    },
+    {
+      "code": "024110",
+      "name": "기업은행",
+      "sector": "금융"
+    },
+    {
+      "code": "138930",
+      "name": "BNK금융지주",
+      "sector": "지방금융"
+    },
+    {
+      "code": "032640",
+      "name": "LG유플러스",
+      "sector": "통신"
+    },
+    {
+      "code": "192400",
+      "name": "쿠쿠홀딩스",
+      "sector": "소비재/지주"
+    },
+    {
+      "code": "030190",
+      "name": "NICE평가정보",
+      "sector": "데이터/신용평가"
+    },
+    {
+      "code": "035250",
+      "name": "강원랜드",
+      "sector": "카지노/레저"
+    },
+    {
+      "code": "114090",
+      "name": "GKL",
+      "sector": "카지노/레저"
+    },
+    {
+      "code": "300720",
+      "name": "한일시멘트",
+      "sector": "건설소재"
+    },
+    {
+      "code": "007070",
+      "name": "GS리테일",
+      "sector": "편의점/유통"
+    },
+    {
+      "code": "284740",
+      "name": "쿠쿠홈시스",
+      "sector": "렌탈/가전"
+    },
+    {
+      "code": "034310",
+      "name": "NICE",
+      "sector": "지주/데이터"
+    },
+    {
+      "code": "453340",
+      "name": "현대그린푸드",
+      "sector": "식자재/급식"
+    },
+    {
+      "code": "020000",
+      "name": "한섬",
+      "sector": "패션"
+    },
+    {
+      "code": "093050",
+      "name": "LF",
+      "sector": "패션"
+    },
+    {
+      "code": "026960",
+      "name": "동서",
+      "sector": "음식료/소비재"
+    },
+    {
+      "code": "105630",
+      "name": "한세실업",
+      "sector": "의류 OEM"
+    },
+    {
+      "code": "248070",
+      "name": "솔루엠",
+      "sector": "전자부품"
+    },
+    {
+      "code": "178920",
+      "name": "PI첨단소재",
+      "sector": "IT소재"
+    },
+    {
+      "code": "475560",
+      "name": "더본코리아",
+      "sector": "외식/소비재"
+    },
+    {
+      "code": "033270",
+      "name": "유나이티드제약",
+      "sector": "제약"
+    },
+    {
+      "code": "003850",
+      "name": "보령",
+      "sector": "제약"
+    },
+    {
+      "code": "003220",
+      "name": "대원제약",
+      "sector": "제약"
+    },
+    {
+      "code": "005500",
+      "name": "삼진제약",
+      "sector": "제약"
+    },
+    {
+      "code": "009290",
+      "name": "광동제약",
+      "sector": "제약/음료"
+    },
+    {
+      "code": "016580",
+      "name": "환인제약",
+      "sector": "제약"
+    },
+    {
+      "code": "004310",
+      "name": "현대약품",
+      "sector": "제약/음료"
+    },
+    {
+      "code": "102460",
+      "name": "이연제약",
+      "sector": "제약"
+    },
+    {
+      "code": "234080",
+      "name": "JW생명과학",
+      "sector": "제약"
+    },
+    {
+      "code": "214390",
+      "name": "경보제약",
+      "sector": "원료의약품"
+    },
+    {
+      "code": "088980",
+      "name": "맥쿼리인프라",
+      "sector": "인프라/배당"
+    },
+    {
+      "code": "395400",
+      "name": "SK리츠",
+      "sector": "리츠"
+    },
+    {
+      "code": "365550",
+      "name": "ESR켄달스퀘어리츠",
+      "sector": "리츠/물류"
+    },
+    {
+      "code": "330590",
+      "name": "롯데리츠",
+      "sector": "리츠"
+    },
+    {
+      "code": "293940",
+      "name": "신한알파리츠",
+      "sector": "리츠/오피스"
+    },
+    {
+      "code": "357120",
+      "name": "코람코라이프인프라리츠",
+      "sector": "리츠/인프라"
+    },
+    {
+      "code": "415640",
+      "name": "KB발해인프라",
+      "sector": "인프라/배당"
+    },
+    {
+      "code": "088260",
+      "name": "이리츠코크렙",
+      "sector": "리츠"
+    },
+    {
+      "code": "432320",
+      "name": "KB스타리츠",
+      "sector": "리츠"
+    },
+    {
+      "code": "400760",
+      "name": "NH올원리츠",
+      "sector": "리츠"
+    },
+    {
+      "code": "267290",
+      "name": "경동도시가스",
+      "sector": "도시가스"
+    },
+    {
+      "code": "034590",
+      "name": "인천도시가스",
+      "sector": "도시가스"
+    },
+    {
+      "code": "117580",
+      "name": "대성에너지",
+      "sector": "도시가스/에너지"
+    },
+    {
+      "code": "003690",
+      "name": "코리안리",
+      "sector": "보험/재보험"
+    },
+    {
+      "code": "088350",
+      "name": "한화생명",
+      "sector": "보험"
+    },
+    {
+      "code": "001500",
+      "name": "현대차증권",
+      "sector": "증권"
+    },
+    {
+      "code": "003470",
+      "name": "유안타증권",
+      "sector": "증권"
+    },
+    {
+      "code": "030610",
+      "name": "교보증권",
+      "sector": "증권"
+    },
+    {
+      "code": "085620",
+      "name": "미래에셋생명",
+      "sector": "보험"
+    },
+    {
+      "code": "011760",
+      "name": "현대코퍼레이션",
+      "sector": "상사"
+    },
+    {
+      "code": "044450",
+      "name": "KSS해운",
+      "sector": "해운"
+    },
+    {
+      "code": "028670",
+      "name": "팬오션",
+      "sector": "해운"
+    },
+    {
+      "code": "003490",
+      "name": "대한항공",
+      "sector": "항공"
+    },
+    {
+      "code": "002320",
+      "name": "한진",
+      "sector": "물류"
+    },
+    {
+      "code": "004360",
+      "name": "세방",
+      "sector": "물류"
+    },
+    {
+      "code": "009070",
+      "name": "KCTC",
+      "sector": "물류/항만"
+    },
+    {
+      "code": "079430",
+      "name": "현대리바트",
+      "sector": "가구/인테리어"
+    },
+    {
+      "code": "001680",
+      "name": "대상",
+      "sector": "식품"
+    },
+    {
+      "code": "017810",
+      "name": "풀무원",
+      "sector": "식품/건강식"
+    },
+    {
+      "code": "003960",
+      "name": "사조대림",
+      "sector": "식품/수산"
+    },
+    {
+      "code": "006090",
+      "name": "사조오양",
+      "sector": "식품/수산"
+    },
+    {
+      "code": "101530",
+      "name": "해태제과식품",
+      "sector": "제과"
+    },
+    {
+      "code": "264900",
+      "name": "크라운제과",
+      "sector": "제과"
+    },
+    {
+      "code": "005740",
+      "name": "크라운해태홀딩스",
+      "sector": "지주/식품"
+    },
+    {
+      "code": "272550",
+      "name": "삼양패키징",
+      "sector": "포장재"
+    },
+    {
+      "code": "122900",
+      "name": "아이마켓코리아",
+      "sector": "B2B 유통"
+    },
+    {
+      "code": "030000",
+      "name": "제일기획",
+      "sector": "광고"
+    },
+    {
+      "code": "214320",
+      "name": "이노션",
+      "sector": "광고/마케팅"
+    },
+    {
+      "code": "035000",
+      "name": "HS애드",
+      "sector": "광고"
+    },
+    {
+      "code": "031430",
+      "name": "신세계인터내셔날",
+      "sector": "패션/브랜드"
+    },
+    {
+      "code": "002790",
+      "name": "아모레퍼시픽홀딩스",
+      "sector": "화장품 지주"
+    },
+    {
+      "code": "007700",
+      "name": "F&F홀딩스",
+      "sector": "지주/브랜드"
+    },
+    {
+      "code": "084690",
+      "name": "대상홀딩스",
+      "sector": "식품 지주"
+    },
+    {
+      "code": "001800",
+      "name": "오리온홀딩스",
+      "sector": "식품 지주"
+    },
+    {
+      "code": "005440",
+      "name": "현대지에프홀딩스",
+      "sector": "지주"
+    },
+    {
+      "code": "004990",
+      "name": "롯데지주",
+      "sector": "지주/소비"
+    },
+    {
+      "code": "383800",
+      "name": "LX홀딩스",
+      "sector": "지주"
+    },
+    {
+      "code": "001230",
+      "name": "동국홀딩스",
+      "sector": "철강/지주"
+    },
+    {
+      "code": "001940",
+      "name": "KISCO홀딩스",
+      "sector": "지주/철강"
+    },
+    {
+      "code": "000240",
+      "name": "한국앤컴퍼니",
+      "sector": "지주/타이어"
+    },
+    {
+      "code": "002350",
+      "name": "넥센타이어",
+      "sector": "타이어"
+    },
+    {
+      "code": "005720",
+      "name": "넥센",
+      "sector": "지주/타이어"
+    },
+    {
+      "code": "073240",
+      "name": "금호타이어",
+      "sector": "타이어"
+    },
+    {
+      "code": "010690",
+      "name": "화신",
+      "sector": "자동차부품"
+    },
+    {
+      "code": "200880",
+      "name": "서연이화",
+      "sector": "자동차부품"
+    },
+    {
+      "code": "021820",
+      "name": "세원정공",
+      "sector": "자동차부품"
+    },
+    {
+      "code": "023810",
+      "name": "인팩",
+      "sector": "자동차부품"
+    },
+    {
+      "code": "092200",
+      "name": "디아이씨",
+      "sector": "자동차부품"
+    },
+    {
+      "code": "000430",
+      "name": "대원강업",
+      "sector": "자동차부품"
+    },
+    {
+      "code": "041650",
+      "name": "상신브레이크",
+      "sector": "자동차부품"
+    },
+    {
+      "code": "123700",
+      "name": "SJM",
+      "sector": "자동차부품"
+    },
+    {
+      "code": "025530",
+      "name": "SJM홀딩스",
+      "sector": "지주/자동차부품"
+    },
+    {
+      "code": "163560",
+      "name": "동일고무벨트",
+      "sector": "산업재/고무"
+    },
+    {
+      "code": "004840",
+      "name": "DRB동일",
+      "sector": "산업재/고무"
+    },
+    {
+      "code": "004560",
+      "name": "현대비앤지스틸",
+      "sector": "철강"
+    },
+    {
+      "code": "002710",
+      "name": "TCC스틸",
+      "sector": "철강/2차전지소재"
+    },
+    {
+      "code": "058430",
+      "name": "포스코스틸리온",
+      "sector": "철강"
+    },
+    {
+      "code": "084010",
+      "name": "대한제강",
+      "sector": "철강"
+    },
+    {
+      "code": "104700",
+      "name": "한국철강",
+      "sector": "철강"
+    },
+    {
+      "code": "460860",
+      "name": "동국제강",
+      "sector": "철강"
+    },
+    {
+      "code": "460850",
+      "name": "동국씨엠",
+      "sector": "철강/컬러강판"
+    },
+    {
+      "code": "075580",
+      "name": "세진중공업",
+      "sector": "조선기자재"
+    },
+    {
+      "code": "092790",
+      "name": "넥스틸",
+      "sector": "강관/에너지 인프라"
+    },
+    {
+      "code": "005010",
+      "name": "휴스틸",
+      "sector": "강관"
+    },
+    {
+      "code": "008260",
+      "name": "NI스틸",
+      "sector": "철강재"
+    },
+    {
+      "code": "008420",
+      "name": "문배철강",
+      "sector": "철강 유통"
+    },
+    {
+      "code": "026940",
+      "name": "부국철강",
+      "sector": "철강 유통"
+    },
+    {
+      "code": "210540",
+      "name": "디와이파워",
+      "sector": "건설기계부품"
+    },
+    {
+      "code": "005680",
+      "name": "삼영전자",
+      "sector": "전자부품"
+    },
+    {
+      "code": "035510",
+      "name": "신세계 I&C",
+      "sector": "IT서비스"
+    },
+    {
+      "code": "286940",
+      "name": "롯데이노베이트",
+      "sector": "IT서비스"
+    },
+    {
+      "code": "078000",
+      "name": "텔코웨어",
+      "sector": "통신 SW"
+    },
+    {
+      "code": "192650",
+      "name": "드림텍",
+      "sector": "전자부품"
+    },
+    {
+      "code": "097520",
+      "name": "엠씨넥스",
+      "sector": "전자부품/카메라"
+    },
+    {
+      "code": "077500",
+      "name": "유니퀘스트",
+      "sector": "반도체 유통/설계"
+    },
+    {
+      "code": "004710",
+      "name": "한솔테크닉스",
+      "sector": "전자부품"
+    },
+    {
+      "code": "094280",
+      "name": "효성ITX",
+      "sector": "IT서비스/컨택센터"
+    },
+    {
+      "code": "100090",
+      "name": "SK오션플랜트",
+      "sector": "해상풍력/플랜트"
+    },
+    {
+      "code": "053690",
+      "name": "한미글로벌",
+      "sector": "PM/건설관리"
+    },
+    {
+      "code": "012630",
+      "name": "HDC",
+      "sector": "지주/복합"
+    },
+    {
+      "code": "013580",
+      "name": "계룡건설",
+      "sector": "건설/EPC/기계"
+    },
+    {
+      "code": "004090",
+      "name": "한국석유",
+      "sector": "유틸/에너지"
+    },
+    {
+      "code": "417310",
+      "name": "코람코더원리츠",
+      "sector": "리츠/인프라"
+    },
+    {
+      "code": "047040",
+      "name": "대우건설",
+      "sector": "건설/EPC/기계"
+    },
+    {
+      "code": "294870",
+      "name": "HDC현대산업개발",
+      "sector": "건설/EPC/기계"
+    },
+    {
+      "code": "027410",
+      "name": "BGF",
+      "sector": "지주/복합"
+    },
+    {
+      "code": "011200",
+      "name": "HMM",
+      "sector": "산업재/운송"
+    },
+    {
+      "code": "404990",
+      "name": "신한서부티엔디리츠",
+      "sector": "리츠/인프라"
+    },
+    {
+      "code": "334890",
+      "name": "이지스밸류리츠",
+      "sector": "리츠/인프라"
+    },
+    {
+      "code": "377190",
+      "name": "디앤디플랫폼리츠",
+      "sector": "리츠/인프라"
+    },
+    {
+      "code": "064960",
+      "name": "SNT모티브",
+      "sector": "자동차/부품/타이어"
+    },
+    {
+      "code": "316140",
+      "name": "우리금융지주",
+      "sector": "금융/보험/증권"
+    },
+    {
+      "code": "005880",
+      "name": "대한해운",
+      "sector": "산업재/운송"
+    },
+    {
+      "code": "003300",
+      "name": "한일홀딩스",
+      "sector": "지주/복합"
+    },
+    {
+      "code": "000320",
+      "name": "노루홀딩스",
+      "sector": "지주/복합"
+    },
+    {
+      "code": "001060",
+      "name": "JW중외제약",
+      "sector": "제약/헬스케어"
+    },
+    {
+      "code": "017900",
+      "name": "광전자",
+      "sector": "IT/전자"
+    },
+    {
+      "code": "024720",
+      "name": "콜마홀딩스",
+      "sector": "지주/복합"
+    },
+    {
+      "code": "249420",
+      "name": "일동제약",
+      "sector": "제약/헬스케어"
+    },
+    {
+      "code": "000080",
+      "name": "하이트진로",
+      "sector": "음식료/필수소비"
+    },
+    {
+      "code": "003280",
+      "name": "흥아해운",
+      "sector": "산업재/운송"
+    },
+    {
+      "code": "025860",
+      "name": "남해화학",
+      "sector": "철강/소재"
+    },
+    {
+      "code": "006360",
+      "name": "GS건설",
+      "sector": "건설/EPC/기계"
+    },
+    {
+      "code": "003540",
+      "name": "대신증권",
+      "sector": "금융/보험/증권"
+    },
+    {
+      "code": "008930",
+      "name": "한미사이언스",
+      "sector": "제약/헬스케어"
+    },
+    {
+      "code": "319400",
+      "name": "현대무벡스",
+      "sector": "산업재/운송"
+    },
+    {
+      "code": "030200",
+      "name": "KT",
+      "sector": "통신/데이터"
+    },
+    {
+      "code": "015760",
+      "name": "한국전력",
+      "sector": "유틸/에너지"
+    },
+    {
+      "code": "036460",
+      "name": "한국가스공사",
+      "sector": "유틸/에너지"
+    },
+    {
+      "code": "071320",
+      "name": "지역난방공사",
+      "sector": "유틸/에너지"
+    },
+    {
+      "code": "078930",
+      "name": "GS",
+      "sector": "지주/복합"
+    },
+    {
+      "code": "375500",
+      "name": "DL이앤씨",
+      "sector": "건설/EPC/기계"
+    },
+    {
+      "code": "028050",
+      "name": "삼성E&A",
+      "sector": "건설/EPC/기계"
+    },
+    {
+      "code": "241560",
+      "name": "두산밥캣",
+      "sector": "건설/EPC/기계"
+    },
+    {
+      "code": "161390",
+      "name": "한국타이어앤테크놀로지",
+      "sector": "자동차/부품/타이어"
+    },
+    {
+      "code": "004000",
+      "name": "롯데정밀화학",
+      "sector": "철강/소재"
+    },
+    {
+      "code": "001450",
+      "name": "현대해상",
+      "sector": "금융/보험/증권"
+    },
+    {
+      "code": "005810",
+      "name": "풍산홀딩스",
+      "sector": "지주/복합"
+    },
+    {
+      "code": "006040",
+      "name": "동원산업",
+      "sector": "음식료/필수소비"
+    },
+    {
+      "code": "057050",
+      "name": "현대홈쇼핑",
+      "sector": "소비/서비스"
+    },
+    {
+      "code": "031210",
+      "name": "서울보증보험",
+      "sector": "금융/보험/증권"
+    },
+    {
+      "code": "060980",
+      "name": "HL홀딩스",
+      "sector": "지주/복합"
+    },
+    {
+      "code": "011210",
+      "name": "현대위아",
+      "sector": "자동차/부품/타이어"
+    },
+    {
+      "code": "090460",
+      "name": "비에이치",
+      "sector": "IT/전자"
+    },
+    {
+      "code": "033240",
+      "name": "자화전자",
+      "sector": "IT/전자"
+    },
+    {
+      "code": "001120",
+      "name": "LX인터내셔널",
+      "sector": "산업재/운송"
+    },
+    {
+      "code": "126720",
+      "name": "수산인더스트리",
+      "sector": "유틸/에너지"
+    },
+    {
+      "code": "014820",
+      "name": "동원시스템즈",
+      "sector": "음식료/필수소비"
+    },
+    {
+      "code": "008490",
+      "name": "서흥",
+      "sector": "제약/헬스케어"
+    },
+    {
+      "code": "003090",
+      "name": "대웅",
+      "sector": "제약/헬스케어"
+    },
+    {
+      "code": "000640",
+      "name": "동아쏘시오홀딩스",
+      "sector": "제약/헬스케어"
+    },
+    {
+      "code": "185750",
+      "name": "종근당",
+      "sector": "제약/헬스케어"
+    },
+    {
+      "code": "069260",
+      "name": "TKG휴켐스",
+      "sector": "철강/소재"
+    },
+    {
+      "code": "007690",
+      "name": "국도화학",
+      "sector": "철강/소재"
+    },
+    {
+      "code": "023590",
+      "name": "다우기술",
+      "sector": "통신/데이터"
+    },
+    {
+      "code": "139130",
+      "name": "iM금융지주",
+      "sector": "금융/보험/증권"
+    },
+    {
+      "code": "001750",
+      "name": "한양증권",
+      "sector": "금융/보험/증권"
+    },
+    {
+      "code": "016610",
+      "name": "DB증권",
+      "sector": "금융/보험/증권"
+    },
+    {
+      "code": "005850",
+      "name": "에스엘",
+      "sector": "자동차/부품/타이어"
+    },
+    {
+      "code": "007340",
+      "name": "DN오토모티브",
+      "sector": "자동차/부품/타이어"
+    },
+    {
+      "code": "005940",
+      "name": "NH투자증권",
+      "sector": "금융/보험/증권"
+    },
+    {
+      "code": "015360",
+      "name": "INVENI",
+      "sector": "지주/복합"
+    },
+    {
+      "code": "002810",
+      "name": "삼영무역",
+      "sector": "소비/서비스"
+    },
+    {
+      "code": "034230",
+      "name": "파라다이스",
+      "sector": "소비/서비스"
+    },
+    {
+      "code": "194370",
+      "name": "제이에스코퍼레이션",
+      "sector": "소비/서비스"
+    },
+    {
+      "code": "018250",
+      "name": "애경산업",
+      "sector": "소비/서비스"
+    },
+    {
+      "code": "036530",
+      "name": "SNT홀딩스",
+      "sector": "지주/복합"
+    },
+    {
+      "code": "016590",
+      "name": "신대양제지",
+      "sector": "소비/서비스"
+    },
+    {
+      "code": "017390",
+      "name": "서울가스",
+      "sector": "유틸/에너지"
+    },
+    {
+      "code": "317450",
+      "name": "명인제약",
+      "sector": "제약/헬스케어"
+    },
+    {
+      "code": "035150",
+      "name": "백산",
+      "sector": "소비/서비스"
+    },
+    {
+      "code": "120110",
+      "name": "코오롱인더",
+      "sector": "철강/소재"
+    },
+    {
+      "code": "100840",
+      "name": "SNT에너지",
+      "sector": "유틸/에너지"
+    },
+    {
+      "code": "439260",
+      "name": "대한조선",
+      "sector": "산업재/운송"
+    },
+    {
+      "code": "192080",
+      "name": "더블유게임즈",
+      "sector": "IT/전자"
+    },
+    {
+      "code": "111770",
+      "name": "영원무역",
+      "sector": "소비/서비스"
+    },
+    {
+      "code": "014830",
+      "name": "유니드",
+      "sector": "철강/소재"
+    },
+    {
+      "code": "001270",
+      "name": "부국증권",
+      "sector": "금융/보험/증권"
+    },
+    {
+      "code": "029460",
+      "name": "케이씨",
+      "sector": "반도체/장비"
+    },
+    {
+      "code": "251270",
+      "name": "넷마블",
+      "sector": "IT/전자"
+    },
+    {
+      "code": "037710",
+      "name": "광주신세계",
+      "sector": "소비/서비스"
+    },
+    {
+      "code": "006120",
+      "name": "SK디스커버리",
+      "sector": "지주/복합"
+    },
+    {
+      "code": "029780",
+      "name": "삼성카드",
+      "sector": "금융/보험/증권"
+    },
+    {
+      "code": "005180",
+      "name": "빙그레",
+      "sector": "소비/서비스"
+    },
+    {
+      "code": "025540",
+      "name": "한국단자",
+      "sector": "자동차/부품/타이어"
+    },
+    {
+      "code": "089860",
+      "name": "롯데렌탈",
+      "sector": "소비/서비스"
+    },
+    {
+      "code": "029530",
+      "name": "신도리코",
+      "sector": "소비/서비스"
+    },
+    {
+      "code": "004490",
+      "name": "세방전지",
+      "sector": "자동차/배터리"
+    },
+    {
+      "code": "108320",
+      "name": "LX세미콘",
+      "sector": "IT/전자"
+    },
+    {
+      "code": "009900",
+      "name": "명신산업",
+      "sector": "자동차/부품/타이어"
+    },
+    {
+      "code": "004980",
+      "name": "성신양회",
+      "sector": "철강/소재"
+    },
+    {
+      "code": "226320",
+      "name": "잇츠한불",
+      "sector": "화장품/소비재"
+    },
+    {
+      "code": "383220",
+      "name": "F&F",
+      "sector": "소비/서비스"
+    },
+    {
+      "code": "323410",
+      "name": "카카오뱅크",
+      "sector": "IT/전자"
+    },
+    {
+      "code": "009450",
+      "name": "경동나비엔",
+      "sector": "자동차/부품/타이어"
+    },
+    {
+      "code": "006800",
+      "name": "미래에셋증권",
+      "sector": "금융/보험/증권"
+    },
+    {
+      "code": "081660",
+      "name": "미스토홀딩스",
+      "sector": "지주/복합"
+    },
+    {
+      "code": "047050",
+      "name": "포스코인터내셔널",
+      "sector": "산업재/운송"
+    },
+    {
+      "code": "183190",
+      "name": "아세아시멘트",
+      "sector": "철강/소재"
+    },
+    {
+      "code": "012750",
+      "name": "에스원",
+      "sector": "보안/서비스"
+    },
+    {
+      "code": "026890",
+      "name": "스틱인베스트먼트",
+      "sector": "산업재/운송"
+    },
+    {
+      "code": "281820",
+      "name": "케이씨텍",
+      "sector": "IT/전자"
+    },
+    {
+      "code": "051600",
+      "name": "한전KPS",
+      "sector": "유틸/에너지"
+    },
+    {
+      "code": "103140",
+      "name": "풍산",
+      "sector": "철강/소재"
+    },
+    {
+      "code": "003570",
+      "name": "SNT다이내믹스",
+      "sector": "방산/기계"
+    },
+    {
+      "code": "009240",
+      "name": "한샘",
+      "sector": "소비/서비스"
+    },
+    {
+      "code": "285130",
+      "name": "SK케미칼",
+      "sector": "유틸/에너지"
+    },
+    {
+      "code": "204320",
+      "name": "HL만도",
+      "sector": "자동차/부품/타이어"
+    },
+    {
+      "code": "181710",
+      "name": "NHN",
+      "sector": "IT/전자"
+    },
+    {
+      "code": "001430",
+      "name": "세아베스틸지주",
+      "sector": "철강/소재"
+    },
+    {
+      "code": "145720",
+      "name": "덴티움",
+      "sector": "헬스케어/치과"
+    },
+    {
+      "code": "005930",
+      "name": "삼성전자",
+      "sector": ""
+    },
+    {
+      "code": "018260",
+      "name": "삼성에스디에스",
+      "sector": ""
+    },
+    {
+      "code": "014680",
+      "name": "한솔케미칼",
+      "sector": ""
+    },
+    {
+      "code": "031980",
+      "name": "피에스케이홀딩스",
+      "sector": ""
+    },
+    {
+      "code": "000990",
+      "name": "DB하이텍",
+      "sector": ""
+    },
+    {
+      "code": "036830",
+      "name": "솔브레인홀딩스",
+      "sector": ""
+    },
+    {
+      "code": "053610",
+      "name": "프로텍",
+      "sector": ""
+    },
+    {
+      "code": "035420",
+      "name": "NAVER",
+      "sector": ""
+    },
+    {
+      "code": "259960",
+      "name": "크래프톤",
+      "sector": ""
+    },
+    {
+      "code": "036570",
+      "name": "엔씨소프트",
+      "sector": ""
+    },
+    {
+      "code": "064400",
+      "name": "LG씨엔에스",
+      "sector": ""
+    },
+    {
+      "code": "035900",
+      "name": "JYP Ent.",
+      "sector": ""
+    },
+    {
+      "code": "462870",
+      "name": "시프트업",
+      "sector": ""
+    },
+    {
+      "code": "060250",
+      "name": "NHN KCP",
+      "sector": ""
+    },
+    {
+      "code": "000270",
+      "name": "기아",
+      "sector": ""
+    },
+    {
+      "code": "086280",
+      "name": "현대글로비스",
+      "sector": ""
+    },
+    {
+      "code": "005385",
+      "name": "현대차우",
+      "sector": ""
+    },
+    {
+      "code": "267250",
+      "name": "HD현대",
+      "sector": ""
+    },
+    {
+      "code": "064350",
+      "name": "현대로템",
+      "sector": ""
+    },
+    {
+      "code": "443060",
+      "name": "HD현대마린솔루션",
+      "sector": ""
+    },
+    {
+      "code": "322000",
+      "name": "HD현대에너지솔루션",
+      "sector": ""
+    },
+    {
+      "code": "267270",
+      "name": "HD건설기계",
+      "sector": ""
+    },
+    {
+      "code": "000720",
+      "name": "현대건설",
+      "sector": ""
+    },
+    {
+      "code": "082740",
+      "name": "한화엔진",
+      "sector": ""
+    },
+    {
+      "code": "017800",
+      "name": "현대엘리베이터",
+      "sector": ""
+    },
+    {
+      "code": "083650",
+      "name": "비에이치아이",
+      "sector": ""
+    },
+    {
+      "code": "033100",
+      "name": "제룡전기",
+      "sector": ""
+    },
+    {
+      "code": "069620",
+      "name": "대웅제약",
+      "sector": ""
+    },
+    {
+      "code": "145020",
+      "name": "휴젤",
+      "sector": ""
+    },
+    {
+      "code": "237690",
+      "name": "에스티팜",
+      "sector": ""
+    },
+    {
+      "code": "326030",
+      "name": "SK바이오팜",
+      "sector": ""
+    },
+    {
+      "code": "192820",
+      "name": "코스맥스",
+      "sector": ""
+    },
+    {
+      "code": "161890",
+      "name": "한국콜마",
+      "sector": ""
+    },
+    {
+      "code": "282330",
+      "name": "BGF리테일",
+      "sector": ""
+    },
+    {
+      "code": "009970",
+      "name": "영원무역홀딩스",
+      "sector": ""
+    },
+    {
+      "code": "069960",
+      "name": "현대백화점",
+      "sector": ""
+    },
+    {
+      "code": "021240",
+      "name": "코웨이",
+      "sector": ""
+    },
+    {
+      "code": "033780",
+      "name": "KT&G",
+      "sector": ""
+    },
+    {
+      "code": "271560",
+      "name": "오리온",
+      "sector": ""
+    },
+    {
+      "code": "280360",
+      "name": "롯데웰푸드",
+      "sector": ""
+    },
+    {
+      "code": "105560",
+      "name": "KB금융",
+      "sector": ""
+    },
+    {
+      "code": "086790",
+      "name": "하나금융지주",
+      "sector": ""
+    },
+    {
+      "code": "071050",
+      "name": "한국금융지주",
+      "sector": ""
+    },
+    {
+      "code": "005830",
+      "name": "DB손해보험",
+      "sector": ""
+    },
+    {
+      "code": "018670",
+      "name": "SK가스",
+      "sector": ""
+    },
+    {
+      "code": "002840",
+      "name": "미원상사",
+      "sector": ""
+    },
+    {
+      "code": "004800",
+      "name": "효성",
+      "sector": ""
+    },
+    {
+      "code": "004690",
+      "name": "삼천리",
+      "sector": ""
+    },
+    {
+      "code": "011780",
+      "name": "금호석유",
+      "sector": ""
+    },
+    {
+      "code": "137400",
+      "name": "피엔티",
+      "sector": ""
+    },
+    {
+      "code": "017670",
+      "name": "SK텔레콤",
+      "sector": ""
+    },
+    {
+      "code": "001040",
+      "name": "CJ",
+      "sector": ""
+    },
+    {
+      "code": "003550",
+      "name": "LG",
+      "sector": ""
+    },
+    {
+      "code": "097950",
+      "name": "CJ제일제당",
+      "sector": ""
+    },
+    {
+      "code": "005300",
+      "name": "롯데칠성",
+      "sector": ""
+    },
+    {
+      "code": "145990",
+      "name": "삼양사",
+      "sector": ""
+    },
+    {
+      "code": "023530",
+      "name": "롯데쇼핑",
+      "sector": ""
+    },
+    {
+      "code": "306200",
+      "name": "세아제강",
+      "sector": ""
+    },
+    {
+      "code": "004020",
+      "name": "현대제철",
+      "sector": ""
+    },
+    {
+      "code": "344820",
+      "name": "KCC글라스",
+      "sector": ""
+    },
+    {
+      "code": "108670",
+      "name": "LX하우시스",
+      "sector": ""
+    },
+    {
+      "code": "010950",
+      "name": "S-Oil",
+      "sector": ""
+    },
+    {
+      "code": "017940",
+      "name": "E1",
+      "sector": ""
+    },
+    {
+      "code": "005290",
+      "name": "동진쎄미켐",
+      "sector": ""
+    },
+    {
+      "code": "090430",
+      "name": "아모레퍼시픽",
+      "sector": ""
+    },
+    {
+      "code": "000100",
+      "name": "유한양행",
+      "sector": ""
+    },
+    {
+      "code": "138040",
+      "name": "메리츠금융지주",
+      "sector": ""
+    },
+    {
+      "code": "039130",
+      "name": "하나투어",
+      "sector": ""
+    }
+  ],
+  "research_sector_assumption": "Current 2026 static sector labels projected to acquired historical universe; not point-in-time sectors. Enabled flags do not select rows."
+}
