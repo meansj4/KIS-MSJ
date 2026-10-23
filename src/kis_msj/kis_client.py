@@ -6,12 +6,14 @@ import calendar
 import csv
 import json
 import logging
+import math
 import os
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import date, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +27,7 @@ ORDER_CANCEL_PATH = "/uapi/domestic-stock/v1/trading/order-rvsecncl"
 BALANCE_PATH = "/uapi/domestic-stock/v1/trading/inquire-balance"
 BUYABLE_CASH_PATH = "/uapi/domestic-stock/v1/trading/inquire-psbl-order"
 DAILY_FILL_PATH = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
+ADJUSTED_DAILY_CLOSE_PATH = "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
 OPEN_ORDER_PATH = "/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl"
 HASHKEY_PATH = "/uapi/hashkey"
 
@@ -108,6 +111,45 @@ class KisClient:
     def refresh_access_token(self, reason: str = "token_expired") -> None:
         self.access_token = get_access_token(self.credentials, use_cache=False)
         self.logger.info("kis_access_token_refreshed reason=%s", reason)
+
+    def adjusted_daily_closes(self, code: str, *, end_date: date, count: int = 61) -> list[tuple[date, float]]:
+        """Chronological KRX adjusted closes at or before a completed date.
+
+        Official KIS FHKST03010100: D=daily, FID_ORG_ADJ_PRC=0=adjusted,
+        at most 100 rows/call. Move the end date backward for short batches.
+        https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/inquire_daily_itemchartprice/inquire_daily_itemchartprice.py
+        """
+        if count <= 0:
+            return []
+        closes: dict[date, float] = {}
+        cursor = end_date
+        # Bounded history avoids thousands of calls for a newly listed stock.
+        earliest = end_date - timedelta(days=max(366, count * 4))
+        for _ in range(max(4, (count + 99) // 100 + 2)):
+            response = self._request("GET", ADJUSTED_DAILY_CLOSE_PATH, tr_id="FHKST03010100", params={
+                "FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code,
+                "FID_INPUT_DATE_1": earliest.strftime("%Y%m%d"),
+                "FID_INPUT_DATE_2": cursor.strftime("%Y%m%d"),
+                "FID_PERIOD_DIV_CODE": "D", "FID_ORG_ADJ_PRC": "0",
+            })
+            dates = []
+            for row in response.get("output2") or []:
+                try:
+                    day = datetime.strptime(str(row["stck_bsop_date"]), "%Y%m%d").date()
+                    if not earliest <= day <= cursor:
+                        continue
+                    dates.append(day)
+                    close = float(row["stck_clpr"])
+                    if math.isfinite(close) and close > 0:
+                        closes[day] = close
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    continue
+            if len(closes) >= count or not dates:
+                break
+            cursor = min(dates) - timedelta(days=1)
+            if cursor < earliest:
+                break
+        return sorted(closes.items())[-count:]
 
     def account_snapshot(self) -> AccountSnapshot:
         pages = self._balance_pages()
@@ -361,9 +403,25 @@ class KisClient:
         fills = []
         for row in rows:
             quantity = int(float(_first_value(row, ("tot_ccld_qty", "ccld_qty", "ord_qty")) or 0))
-            price = int(float(_first_value(row, ("avg_prvs", "avg_pric", "ccld_unpr", "ord_unpr")) or 0))
-            if quantity < 1 or price < 1:
+            price = float(_first_value(row, ("avg_prvs", "avg_pric", "ccld_unpr", "ord_unpr")) or 0)
+            if quantity < 1 or not math.isfinite(price) or price <= 0:
                 continue
+            filled_amount = 0
+            raw_amount = _first_value(row, ("tot_ccld_amt",))
+            if raw_amount != "":
+                try:
+                    amount = Decimal(str(raw_amount))
+                    if not amount.is_finite() or amount <= 0 or amount != amount.to_integral_value():
+                        raise ValueError("invalid cumulative execution amount")
+                    filled_amount = int(amount)
+                except (InvalidOperation, ValueError):
+                    getattr(self, "logger", logging.getLogger(__name__)).error(
+                        "kis_execution_amount_invalid order_id=%s", row.get("odno", ""))
+                    continue
+                # KIS's order inquiry reports a cumulative average. The exact
+                # amount preserves sub-won average precision between shares.
+                price = filled_amount / quantity
+            price = int(price) if float(price).is_integer() else price
             order_id = str(_first_value(row, ("odno", "ODNO", "orgn_odno")) or "").strip()
             execution_id = _execution_id(row, order_id)
             side = _execution_side(row)
@@ -379,6 +437,7 @@ class KisClient:
                     execution_id=execution_id,
                     reported_order_venue=str(row.get("excg_id_dvsn_cd") or row.get("excg_id_dvsn_Cd") or ""),
                     timestamp_source="execution" if _first_value(row, ("ccld_dtime", "ccld_tmd")) else "order_time",
+                    filled_amount=filled_amount,
                 )
             )
         return fills
@@ -512,6 +571,10 @@ class MockKisClient:
 
     def quote(self, code: str, *, name: str = "") -> Quote:
         return Quote(code, self._prices.get(code, 50_000), datetime.now(), name)
+
+    def adjusted_daily_closes(self, code: str, *, end_date: date, count: int = 61) -> list[tuple[date, float]]:
+        # Offline snapshots contain no adjusted daily history. Use base gaps.
+        return []
 
     def account_snapshot(self) -> AccountSnapshot:
         return AccountSnapshot(self.cash_available, self.cash_available, 0, 0, ())

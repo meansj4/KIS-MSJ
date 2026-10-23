@@ -256,7 +256,15 @@ const LABELS = {
   cash_target_profit_enabled:'예수금 비례 목표 사용', cash_target_profit_active:'예수금 비례 목표 적용 중',
   cash_target_start_date:'적용 시작일', cash_available_for_target:'목표 계산 가용현금',
   cash_snapshot_at:'현금 확인시각', cash_snapshot_status:'현금 확인 상태', cash_snapshot_source:'현금 출처',
-  current_base_target_profit_rate:'현금 기준 기본 목표수익률', cash_target_low_cash_threshold:'고원가 LOT 매도 현금 기준',
+  current_base_target_profit_rate:'현금 기준 기본 목표수익률', cash_target_low_cash_threshold:'저현금 우선매도 기준',
+  cash_target_low_cash_lot_policy:'저현금 우선매도 LOT', low_cash_oldest_lot_sell:'저현금 최장기 LOT 우선매도',
+  cash_target_sell_reason:'정책 우선매도 사유',
+  cash_buy_drop_enabled:'예수금 비례 매수 사용', cash_buy_drop_reference_amount:'매수 하락률 0% 기준 현금',
+  cash_buy_drop_rate_at_zero:'현금 0원 요구 하락폭', cash_buy_drop_rate:'현재 매수 요구 하락폭',
+  cash_buy_reference_price:'매수 기준 평단', cash_buy_reference_source:'매수 기준 평단 출처',
+  cash_buy_limit_price:'매수 허용 최고 지정가', cash_buy_price_condition_met:'매수 가격 조건 충족',
+  cash_buy_cash_available:'매수 판단 가용현금', cash_buy_skip_reason:'매수 가격 판단 사유',
+  pre_exit_average_price:'최종 청산 직전 보존 평단', pre_exit_average_captured_at:'청산 평단 보존시각',
   low_cash_high_cost_sell:'저현금 고원가 LOT 매도', age_decay_rate:'고정 주간 목표 감소폭',
   age_decay_mode:'매도 decay 방식', age_decay_per_open_lot_rate:'LOT당 주간 목표 감소폭',
   current_symbol_open_lot_count:'현재 종목 OPEN LOT 수', effective_weekly_age_decay_rate:'현재 주간 목표 감소폭',
@@ -309,6 +317,11 @@ const VALUE_LABELS = {
   cash_rotation_recheck_after_sell:'LOT 매도 후 매수 조건 재확인', cash_rotation_no_eligible_donor:'정리 가능한 다른 종목 LOT 없음',
   CASH_SHORTFALL_ROTATION:'매수 자금 확보용 LOT 교체',
   LOW_CASH_HIGH_COST_SELL:'저현금 고원가 LOT 매도', cash_snapshot_unavailable:'가용현금 미확인',
+  LOW_CASH_OLDEST_LOT_SELL:'저현금 최장기 LOT 우선매도',
+  cash_buy_snapshot_unavailable:'매수 판단 현금 미확인', cash_buy_reference_missing:'매수 기준 평단 미확인',
+  cash_buy_price_not_reached:'현금 기준 매수 가격 미도달',
+  remaining_quantity_vwap:'현재 보유 수량 가중 평단', pre_exit_remaining_quantity_vwap:'최종 청산 직전 보존 평단',
+  missing_cash_buy_reference:'기준 평단 미확인', oldest:'가장 오래된 LOT', highest_cost:'최고 매수단가 LOT',
   NEGATIVE_TARGET_HIGH_COST_SELL:'음수 목표 고원가 LOT 매도',
   current_open_lot_count:'현재 종목 LOT 수 비례', fixed:'고정 주간 감소폭',
   cash_capacity_oldest:'오래된 대기 순서 · 현금 여유 재진입', legacy_price:'기존 가격 재진입',
@@ -333,6 +346,14 @@ const VALUE_LABELS = {
   review_required:'수동 검토 필요로 매수 차단'
 };
 Object.assign(LABELS, {
+  adaptive_lot_enabled:'변동성·추세 LOT 전략', volatility_multiplier:'변동성 배수',
+  consecutive_buy_count:'연속 매수 체결 수', consecutive_sell_count:'연속 매도 체결 수',
+  rebuy_restriction_active:'매도 후 재매수 제한', buy_target_price:'최종 매수 목표가',
+  normal_buy_target:'최저 LOT 매수 기준가', reentry_target:'최근 매도가 재매수 기준가',
+  effective_buy_gap_pct:'유효 매수 간격(%)', effective_rebuy_gap_pct:'매도 후 재매수 하락률(%)',
+  reentry_reserve_lots_per_symbol:'종목별 예비 LOT 수', reentry_cash_buffer_ratio:'재매수 안전 현금 비율',
+  reentry_future_lot_reserve:'추가 LOT 예비 현금', reentry_safety_cash_buffer:'안전 예수금',
+  total_asset_for_reserve:'예비 현금 기준 운용자금', buy_condition_met:'매수 가격 조건 충족',
   code:'종목코드', name:'종목명', enabled:'사용 여부',
   trading_halted:'거래정지', administrative_issue:'관리종목 이슈', investment_alert:'투자주의/경고',
   audit_opinion_issue:'감사의견 이슈', delisting_risk:'상장폐지 위험', accounting_issue:'회계 이슈',
@@ -420,6 +441,7 @@ function displayCell(key, value) {
     return value ? '<span class="badge warn">청산 후 중지 예정</span><span class="key">true</span>' : '<span class="badge neutral">-</span><span class="key">false</span>';
   }
   if (key === 'realized_pnl' || key === 'unrealized_pnl') return esc(formatSignedKrw(value));
+  if (['cash_buy_drop_rate','cash_buy_drop_rate_at_zero','reentry_cash_buffer_ratio'].includes(key)) return esc(formatNumber(Number(value) * 100) + '%');
   if (['realized_pnl_rate','unrealized_pnl_rate','deep_loss_rebound_rate','current_base_target_profit_rate','effective_target_profit_rate','base_target_profit_rate','age_decay_rate','age_decay_per_open_lot_rate','effective_weekly_age_decay_rate'].includes(key)) return esc(formatSignedRate(value));
   if (typeof value === 'number') return esc(formatNumber(value));
   const translated = valueLabel(value);
@@ -455,7 +477,7 @@ const historyState = {
   fills: {offset:0, limit:200, total:0}
 };
 const DEFAULT_COLUMNS = {
-  stocks: ['code','name','enabled','retire_after_exit','buy_blocked','position_state','current_price','open_lot_count','lot_unit_amount','max_symbol_amount','max_lots_per_symbol','lot_sizing_bucket','invested_amount','realized_pnl_rate','realized_pnl','unrealized_pnl_rate','unrealized_pnl','profit_loss_pct','risk_block_reasons','skip_reason','final_block_reason'],
+  stocks: ['code','name','enabled','retire_after_exit','buy_blocked','position_state','current_price','open_lot_count','cash_buy_reference_price','cash_buy_drop_rate','cash_buy_limit_price','cash_buy_price_condition_met','cash_buy_skip_reason','lot_unit_amount','max_symbol_amount','max_lots_per_symbol','lot_sizing_bucket','invested_amount','realized_pnl_rate','realized_pnl','unrealized_pnl_rate','unrealized_pnl','profit_loss_pct','risk_block_reasons','skip_reason','final_block_reason'],
   lots: ['lot_id','code','name','status','buy_price','remaining_quantity','current_price','unrealized_pnl','unrealized_pnl_rate','age_weeks','current_symbol_open_lot_count','effective_weekly_age_decay_rate','effective_target_profit_rate','sell_trigger_price','cash_target_sell_candidate','negative_target_high_cost_sell','cash_target_sell_limit_price','cash_target_trigger_lot_id','cash_snapshot_status','deep_loss_started_on','deep_loss_low_price','deep_loss_elapsed_days','deep_loss_rebound_rate','deep_loss_rebound_trigger_price','deep_loss_force_sell_on','cleanup_candidate','stale_lot','last_sell_reason'],
   stockLots: ['lot_id','code','name','status','buy_price','remaining_quantity','current_price','unrealized_pnl','unrealized_pnl_rate','age_weeks','current_symbol_open_lot_count','effective_weekly_age_decay_rate','effective_target_profit_rate','sell_trigger_price','cash_target_sell_candidate','negative_target_high_cost_sell','cash_target_sell_limit_price','cash_target_trigger_lot_id','cash_snapshot_status','deep_loss_started_on','deep_loss_low_price','deep_loss_elapsed_days','deep_loss_rebound_rate','deep_loss_rebound_trigger_price','deep_loss_force_sell_on','cleanup_candidate','stale_lot','last_sell_reason'],
   orders: ['order_id','code','name','side','status','quantity','filled_quantity','remaining_quantity','fill_count','cancel_requested','cancel_confirmed','cancel_rejected','post_cancel_execution_checked','order_sync_warning','limit_price','reason','requested_at','updated_at','lot_id'],
@@ -465,6 +487,10 @@ const DEFAULT_COLUMNS = {
   portfolioRealizedDetail: ['code','name','lot_id','buy_filled_at','sell_filled_at','sell_quantity','buy_price','sell_price','buy_amount','sell_amount','realized_pnl','realized_pnl_rate','fee_tax_estimate','sell_reason','holding_days'],
   portfolioUnrealizedDetail: ['code','name','lot_id','buy_filled_at','remaining_quantity','buy_price','remaining_buy_amount','current_price','current_market_value','unrealized_pnl','unrealized_pnl_rate','target_price','target_amount','target_remaining_amount','target_remaining_rate','deep_loss_low_price','deep_loss_rebound_rate','deep_loss_rebound_trigger_price','deep_loss_force_sell_on','stale_lot','cleanup_candidate','price_snapshot_at']
 };
+for (const name of ['lots', 'stockLots']) {
+  DEFAULT_COLUMNS[name].splice(DEFAULT_COLUMNS[name].indexOf('cash_target_sell_candidate') + 1, 0,
+    'cash_target_sell_reason', 'low_cash_oldest_lot_sell');
+}
 Object.assign(LABELS, {
   broker_order_id:'증권사 주문번호', order_session:'주문 세션', order_venue:'주문 거래소',
   execution_session:'체결 세션', actual_execution_venue:'실제 체결 거래소',
@@ -586,7 +612,15 @@ function stopTableColumnResize() {
 function table(rows, tableId='default', opts={}) {
   if (!rows || !rows.length) return '<p>No data</p>';
   const keys = Object.keys(rows[0]);
-  const visibleKeys = visibleColumns(tableId, keys);
+  let visibleKeys = visibleColumns(tableId, keys);
+  if (rows.some(row => row.adaptive_lot_enabled)) {
+    visibleKeys = visibleKeys.filter(key => !key.startsWith('cash_buy_') && !key.startsWith('cash_target_') && !key.startsWith('low_cash_') && key !== 'negative_target_high_cost_sell');
+    if (!columnPrefs[tableId]) {
+      for (const key of ['buy_target_price','effective_buy_gap_pct','volatility_multiplier','consecutive_buy_count','consecutive_sell_count','rebuy_restriction_active']) {
+        if (keys.includes(key) && !visibleKeys.includes(key)) visibleKeys.push(key);
+      }
+    }
+  }
   const state = sortState[tableId] || opts.defaultSort || null;
   const sorted = state ? sortRows(rows, state.key, state.dir) : [...rows];
   const actionHeader = opts.actions ? `<th class="resizableTh" data-col-key="__actions" style="${tableColumnStyle(tableId, '__actions')}">작업<span class="key">actions</span><span class="colResizeHandle" title="컬럼 폭 조절" onmousedown="startTableColumnResize(event, '${esc(tableId)}', '__actions')"></span></th>` : '';
@@ -799,27 +833,60 @@ async function loadDashboard(status=null) {
     risk_blocked_count: s.position_state_counts.RISK_BLOCKED || 0,
     review_required_count: s.position_state_counts.REVIEW_REQUIRED || 0
   };
-  document.getElementById('content').innerHTML = `<h2>대시보드</h2><h3>핵심 요약</h3>${metrics(top)}${cashTargetPanel(s.cash_target_policy)}${cashReentryPanel(s.cash_target_policy)}${extendedTradingPanel(s.extended_trading)}<h3>Loop performance</h3>${metrics(s.loop_performance || {})}<h3>Analysis data status</h3>${metrics(s.analysis_status || {})}<h3>봇 상태</h3>${metrics(s.bot)}<h3>계좌/리스크</h3>${metrics(s.account_risk)}<h3>보유 상태별 종목 수</h3>${metrics(s.position_state_counts)}<h3>주문 상태</h3>${metrics(s.order_status_counts)}<h3>경고</h3>${table(s.warnings, 'warnings')}<h3>런타임 제어</h3>${metrics(s.runtime_control)}`;
+  document.getElementById('content').innerHTML = `<h2>대시보드</h2><h3>핵심 요약</h3>${metrics(top)}${adaptiveLotPanel(s.cash_target_policy)}${cashTargetPanel(s.cash_target_policy)}${cashBuyPanel(s.cash_target_policy)}${cashReentryPanel(s.cash_target_policy)}${extendedTradingPanel(s.extended_trading)}<h3>Loop performance</h3>${metrics(s.loop_performance || {})}<h3>Analysis data status</h3>${metrics(s.analysis_status || {})}<h3>봇 상태</h3>${metrics(s.bot)}<h3>계좌/리스크</h3>${metrics(s.account_risk)}<h3>보유 상태별 종목 수</h3>${metrics(s.position_state_counts)}<h3>주문 상태</h3>${metrics(s.order_status_counts)}<h3>경고</h3>${table(s.warnings, 'warnings')}<h3>런타임 제어</h3>${metrics(s.runtime_control)}`;
+}
+function adaptiveLotPanel(info, details) {
+  if (!info || !info.adaptive_lot_enabled) return '';
+  const fields = details ? {...details} : {
+    reentry_reserve_lots_per_symbol:info.reentry_reserve_lots_per_symbol,
+    reentry_cash_buffer_ratio:info.reentry_cash_buffer_ratio,
+    cash_available_for_target:info.cash_available_for_target,
+    total_asset_for_reserve:info.total_asset_for_reserve,
+    cash_snapshot_status:info.cash_snapshot_status
+  };
+  return `<section class="manualBox"><h3>변동성·추세 LOT 전략</h3><p>최저 매수가 LOT에서 기본 4% 하락 시 추가매수합니다. 개별 LOT의 기본 매도 목표는 3%이며, 변동성과 연속 체결 배수를 적용한 뒤 현재 LOT 수 × 0.1%p × 보유 주수의 decay를 마지막에 차감합니다. 최근 매도 후 재매수에는 별도 하락 조건과 예비 현금 조건을 함께 적용합니다. 변동성은 장 마감 후 갱신하며 장중에는 같은 값을 사용합니다.</p>${metrics(fields)}</section>`;
 }
 function cashTargetPanel(info) {
   if (!info || !info.cash_target_profit_enabled) return '';
   const decayNote = info.age_decay_mode === 'current_open_lot_count'
     ? '기본 목표에서 각 LOT의 보유기간과 현재 종목 LOT 수에 따른 decay를 차감합니다.'
     : '기본 목표에서 각 LOT의 보유기간에 따른 고정 decay를 차감합니다.';
-  const sellNote = info.age_decay_mode === 'current_open_lot_count'
+  const oldest = info.cash_target_low_cash_lot_policy === 'oldest';
+  const sellNote = oldest
+    ? '저현금 기준 이하에서는 목표 도달 여부와 무관하게 가장 오래된 OPEN LOT을 현재가에 설정된 매도 할인을 적용한 지정가로 우선 정리합니다. 음수 목표의 최고원가 선택보다 이 규칙이 우선합니다.'
+    : info.age_decay_mode === 'current_open_lot_count'
     ? '저현금 또는 음수 목표 손실매도 시 최고 매수단가 LOT을 신호 LOT의 목표가에 지정가 매도합니다.'
     : '저현금 구간에서는 최저 매수단가 LOT의 목표가로 최고 매수단가 LOT을 지정가 매도합니다.';
   const note = info.cash_target_profit_active
     ? `${decayNote} ${sellNote}`
-    : '표시된 시작일부터 예수금 비례 목표와 저현금 고원가 LOT 매도를 적용합니다.';
+    : '표시된 시작일부터 예수금 비례 목표와 선택한 저현금 LOT 매도 정책을 적용합니다.';
   const missing = info.cash_target_profit_active && info.cash_available_for_target === null
     ? '<p class="warn">최근 가용현금을 확인하지 못해 목표가 표시와 판단 미리보기를 보류합니다.</p>' : '';
-  return `<section class="manualBox"><h3>예수금 비례 매도 목표</h3><p>${note}</p>${missing}${metrics(info)}</section>`;
+  const fields = {...info};
+  if (oldest) delete fields.low_cash_high_cost_sell;
+  else delete fields.low_cash_oldest_lot_sell;
+  return `<section class="manualBox"><h3>예수금 비례 매도 목표</h3><p>${note}</p>${missing}${metrics(fields)}</section>`;
+}
+function cashBuyPanel(info, details) {
+  if (!info || !info.cash_buy_drop_enabled) return '';
+  const fields = details ? {...details} : {
+    cash_buy_drop_reference_amount:info.cash_buy_drop_reference_amount,
+    cash_buy_drop_rate_at_zero:info.cash_buy_drop_rate_at_zero,
+    cash_buy_drop_rate:info.cash_buy_drop_rate,
+    cash_available_for_target:info.cash_available_for_target,
+    cash_snapshot_at:info.cash_snapshot_at, cash_snapshot_status:info.cash_snapshot_status
+  };
+  const missing = info.cash_available_for_target === null
+    ? '<p class="warn">최근 가용현금을 확인할 때까지 추가매수·재진입 가격 판단을 보류합니다.</p>' : '';
+  return `<section class="manualBox"><h3>예수금 비례 매수 가격</h3><p>보유 중에는 남은 수량의 가중 평단, 재진입 대기 중에는 최종 청산 직전 보존 평단에서 현재 요구 하락폭을 적용합니다. 예수금이 기준 현금 이상이어도 기준 평단보다 높은 가격에는 매수하지 않습니다. 재진입은 현금 여유 조건도 함께 충족해야 합니다.</p>${missing}${metrics(fields)}</section>`;
 }
 function cashReentryPanel(info, details) {
   if (!info || !info.cash_capacity_reentry_enabled) return '';
   const multiple = Number(info.reentry_cash_lot_multiple);
-  const note = `재진입 대기가 오래된 종목부터 검토합니다. 현재 가격대의 새 사이클 1 LOT 금액 × ${esc(multiple)} 이상의 현금이 있을 때 1 LOT을 매수하고, 다음 종목은 줄어든 현금으로 다시 검사합니다. 가격 하락·trailing·재진입 decay·timeout 조건은 사용하지 않습니다.`;
+  const priceNote = info.cash_buy_drop_enabled
+    ? '최종 청산 직전 보존 평단에서 예수금 비례 하락률을 적용한 가격 조건도 함께 충족해야 합니다.'
+    : '기존 가격 하락·trailing·재진입 decay·timeout 조건은 사용하지 않습니다.';
+  const note = `재진입 대기가 오래된 종목부터 검토합니다. 현재 가격대의 새 사이클 1 LOT 금액 × ${esc(multiple)} 이상의 현금이 있을 때 1 LOT을 매수하고, 다음 종목은 줄어든 현금으로 다시 검사합니다. ${priceNote}`;
   const missing = info.cash_available_for_target === null
     ? '<p class="warn">최근 가용현금을 확인하지 못해 재진입 현금 판단을 보류합니다.</p>' : '';
   const paused = info.reentry_paused
@@ -836,6 +903,13 @@ function cashReentryPanel(info, details) {
     reentry_required_cash:details.reentry_required_cash,
     reentry_cash_available:details.reentry_cash_available,
     reentry_cash_condition_met:details.reentry_cash_condition_met,
+    ...(info.cash_buy_drop_enabled ? {
+      cash_buy_reference_price:details.cash_buy_reference_price,
+      cash_buy_reference_source:details.cash_buy_reference_source,
+      cash_buy_drop_rate:details.cash_buy_drop_rate,
+      cash_buy_limit_price:details.cash_buy_limit_price,
+      cash_buy_price_condition_met:details.cash_buy_price_condition_met
+    } : {}),
     skip_reason:details.skip_reason
   } : {
     reentry_policy:info.reentry_policy, reentry_cash_lot_multiple:multiple,
@@ -1058,7 +1132,7 @@ async function openStockLots(code) {
   window.stockLotRows = lots;
   const retireReason = stock.retire_reason ? `<details><summary>중지 예정 사유</summary><p class="muted">${esc(stock.retire_reason)}</p></details>` : '';
   const reentryPanel = detail.position?.position_state === 'WAIT_REENTRY' ? cashReentryPanel(detail.cash_target_policy, detail.reentry_details) : '';
-  document.getElementById('stockLotPanel').innerHTML = `<div class="detailPanel"><h3>${esc(stock.name || '')} ${esc(code)} 보유 LOT</h3><p class="muted">종목별 LOT 수익률, 잔여 수량, cleanup/stale 상태를 확인하고 OPEN LOT은 수동 매도 요청 화면으로 보낼 수 있습니다.</p>${reentryPanel}${retireReason}${table(lots, 'stockLots', {actions:true})}</div>`;
+  document.getElementById('stockLotPanel').innerHTML = `<div class="detailPanel"><h3>${esc(stock.name || '')} ${esc(code)} 보유 LOT</h3><p class="muted">종목별 LOT 수익률, 잔여 수량, cleanup/stale 상태를 확인하고 OPEN LOT은 수동 매도 요청 화면으로 보낼 수 있습니다.</p>${adaptiveLotPanel(detail.cash_target_policy, detail.adaptive_buy_details)}${cashBuyPanel(detail.cash_target_policy, detail.cash_buy_details)}${reentryPanel}${retireReason}${table(lots, 'stockLots', {actions:true})}</div>`;
 }
 async function openManualBuy(code) {
   await loadManualOrders();
@@ -1094,7 +1168,7 @@ async function loadLots() {
   const result = await api('/api/history/lots?' + historyQuery('lots', 'buy_filled_at'));
   const rows = result.rows || [];
   window.lotRows = rows;
-  document.getElementById('content').innerHTML = '<h2>LOT</h2>'+cashTargetPanel(result.cash_target_policy)+'<p><button onclick="exportHistory(\'lots\')">전체 LOT CSV 내보내기</button></p><p class="muted">전체 DB를 서버에서 정렬·페이지 조회합니다. CSV에는 현재 정렬 기준으로 전체 기록이 포함됩니다.</p>'+historyPager('lots', result)+'<div class="manualBox"><strong>LOT별 수동 매도 요청</strong><p class="muted">OPEN LOT 행의 수동 매도 버튼으로 LOT ID와 잔여 수량을 자동 입력할 수 있습니다. CLOSED LOT, open SELL order, RISK_BLOCKED, SYNC_REQUIRED, runtime sell pause 상태에서는 요청 생성도 차단됩니다.</p></div>' + table(rows, 'lots', {actions:true}) + historyPager('lots', result);
+  document.getElementById('content').innerHTML = '<h2>LOT</h2>'+adaptiveLotPanel(result.cash_target_policy)+cashTargetPanel(result.cash_target_policy)+'<p><button onclick="exportHistory(\'lots\')">전체 LOT CSV 내보내기</button></p><p class="muted">전체 DB를 서버에서 정렬·페이지 조회합니다. CSV에는 현재 정렬 기준으로 전체 기록이 포함됩니다.</p>'+historyPager('lots', result)+'<div class="manualBox"><strong>LOT별 수동 매도 요청</strong><p class="muted">OPEN LOT 행의 수동 매도 버튼으로 LOT ID와 잔여 수량을 자동 입력할 수 있습니다. CLOSED LOT, open SELL order, RISK_BLOCKED, SYNC_REQUIRED, runtime sell pause 상태에서는 요청 생성도 차단됩니다.</p></div>' + table(rows, 'lots', {actions:true}) + historyPager('lots', result);
 }
 async function loadOrders() {
   selectView('orders');

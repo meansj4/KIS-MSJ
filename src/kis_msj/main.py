@@ -32,6 +32,7 @@ from .strategy import LotGridStrategy, StrategyAction
 from .upstream_watcher import UpstreamWatcher
 from .market_session import SessionMarketData, SessionUnavailable, RoutedQuotes, Route, candidates, extended_window
 from .shadow_state import ShadowStateStore
+from .volatility import DailyVolatilityCache, completed_close_cutoff, KST
 from .cash_rotation import (decide_with_cash_signal, handle_shortfall,
                             buy_block_reason as cash_rotation_buy_block, abandon_invalid_target,
                             process_rotation, target_record, remove_target,
@@ -100,6 +101,9 @@ class AutoTrader:
         self.position_manager = PositionManager(config.strategy, self.lot_manager, self.store.load_positions())
         self.risk_manager = RiskManager(config)
         self.strategy = LotGridStrategy(config, self.lot_manager)
+        self.strategy.positions = self.position_manager.positions
+        self.volatility_cache = DailyVolatilityCache(Path(config.storage_path).with_suffix(".volatility.json"))
+        self._volatility_cache_cutoff = ""
         self.notifier = LogNotifier(self.logger)
         self.upstream_watcher = UpstreamWatcher(config.upstream_watch, self.notifier)
         self.client = (
@@ -228,11 +232,13 @@ class AutoTrader:
         self.store.save_positions(self.position_manager.positions.values())
         self.store.save_lots(self.lot_manager.lots.values())
         if (self.config.strategy.cash_target_profit_active()
+                or self.config.strategy.adaptive_lot_enabled
                 or self.config.strategy.cash_capacity_reentry_enabled()):
             age = max(0.0, time.monotonic() - self._last_account_snapshot_at) if self._last_account_snapshot_at else 0.0
-            self.logger.info("cash_target_account_snapshot cash_available=%s snapshot_at=%s",
+            self.logger.info("cash_target_account_snapshot cash_available=%s snapshot_at=%s total_asset=%s",
                              snapshot.cash_available,
-                             (datetime.now() - timedelta(seconds=age)).isoformat(timespec="seconds"))
+                             (datetime.now() - timedelta(seconds=age)).isoformat(timespec="seconds"),
+                             snapshot.total_asset)
         return snapshot
 
     def invalidate_account_snapshot_cache(self, reason: str) -> None:
@@ -309,6 +315,8 @@ class AutoTrader:
                     raise
             with profile.stage("risk_summary") if profile else _null_stage():
                 account_risk = self.risk_manager.account_buy_allowed(snapshot, self.position_manager.positions)
+            with profile.stage("daily_volatility") if profile else _null_stage():
+                self.refresh_daily_volatility()
             with profile.stage("manual_request") if profile else _null_stage():
                 self.process_manual_order_requests(snapshot, account_risk)
             if not in_trade_window(self.config) and not extended_window(self.config):
@@ -441,6 +449,25 @@ class AutoTrader:
             return False
         self._last_loop_interval_warning_at = now
         return True
+
+    def refresh_daily_volatility(self) -> None:
+        if not getattr(self.config.strategy, "adaptive_lot_enabled", False):
+            return
+        now = datetime.now(KST)
+        cutoff = completed_close_cutoff(now, self.config.market_hours.close_time).isoformat()
+        if self._volatility_cache_cutoff == cutoff:
+            return
+        for stock in self.config.stocks:
+            if not stock.enabled or stock.manual_only or self.automatic_symbol_is_retired(stock):
+                continue
+            estimate = self.volatility_cache.refresh(stock.code, self.client, now, self.config.market_hours.close_time)
+            self.lot_manager.set_volatility_multiplier(stock.code, estimate.multiplier)
+            self.logger.info(
+                "adaptive_volatility code=%s requested_through=%s as_of=%s closes=%s vol20=%s vol60=%s weighted=%s multiplier=%.6f reason=%s",
+                stock.code, cutoff, estimate.as_of, estimate.close_count, estimate.vol20,
+                estimate.vol60, estimate.weighted_volatility, estimate.multiplier, estimate.reason,
+            )
+        self._volatility_cache_cutoff = cutoff
 
     def refresh_completed_session_price_cache(self) -> None:
         if not self.config.strategy.deep_loss_recovery_enabled:
@@ -874,7 +901,9 @@ class AutoTrader:
                            profile: LoopProfile | None = None, *, route: Route | None = None, shadow: bool = False,
                            scan_quote: Quote | None = None) -> None:
         self._decision_route, self._decision_shadow = route, shadow
+        self.strategy.positions = self.position_manager.positions
         if (self.config.risk.cash_shortfall_rotation_enabled or self.config.strategy.cash_target_profit_active()
+                or self.config.strategy.adaptive_lot_enabled
                 or self.config.strategy.cash_capacity_reentry_enabled()) and self.config.order.live_trading and not shadow:
             # A previous symbol's fill invalidated the loop's cash. Fetch again
             # before evaluating another real order; do not reuse the old object.
@@ -962,10 +991,13 @@ class AutoTrader:
                     final_block_reason = "final_quote_missing"
                 else:
                     if (not shadow and self.config.order.live_trading
-                            and action.reentry_type == ReentryType.CASH_CAPACITY_REENTRY.value):
-                        # The quote sampling can take time. A reentry needs
-                        # confirmed current cash rather than the loop snapshot.
-                        self.invalidate_account_snapshot_cache("cash_capacity_reentry_final_check")
+                            and (action.reentry_type == ReentryType.CASH_CAPACITY_REENTRY.value
+                                 or self.config.strategy.adaptive_lot_enabled
+                                 or self.config.strategy.cash_buy_drop_enabled)):
+                        # Both cash-priced BUY thresholds and SELL targets must
+                        # use confirmed cash after quote sampling. Re-evaluate
+                        # the entire action below, including price and side.
+                        self.invalidate_account_snapshot_cache("cash_policy_final_check")
                         snapshot = self.startup_sync()
                     with profile.stage("lot_manager") if profile else _null_stage():
                         position = self.position_manager.refresh_from_lots(position.code, current_price)
@@ -1034,7 +1066,7 @@ class AutoTrader:
                     self.store.save_position(position)
                     self.log_pre_request_block(position, position.skip_reason)
                     return
-            if self.config.risk.cash_shortfall_rotation_enabled:
+            if self.config.risk.cash_shortfall_rotation_enabled and not self.config.strategy.adaptive_lot_enabled:
                 if handle_shortfall(self, position, action, request, snapshot, shadow=shadow):
                     return
             elif snapshot.cash_available < request.quantity * request.limit_price:
@@ -1054,6 +1086,7 @@ class AutoTrader:
             result, fill = self.order_manager.submit_and_confirm(request)
         finally:
             if (self.config.risk.cash_shortfall_rotation_enabled or self.config.strategy.cash_target_profit_active()
+                    or self.config.strategy.adaptive_lot_enabled
                     or self.config.strategy.cash_capacity_reentry_enabled()):
                 self.invalidate_account_snapshot_cache("auto_order_submitted")
         if fill is None:
@@ -1070,15 +1103,17 @@ class AutoTrader:
     def _apply_fill_with_session_audit(self, fill):
         if not (self.config.extended_hours.enabled or self._session_audit_active):
             return self.position_manager.apply_fill(fill)
-        before = {key: (lot.remaining_quantity, lot.realized_profit_loss, lot.estimated_fee_tax)
+        before = {key: (lot.remaining_quantity, lot.realized_profit_loss, lot.estimated_fee_tax, lot.buy_quantity)
                   for key, lot in self.lot_manager.lots.items()}
         updated = self.position_manager.apply_fill(fill)
         try:
             for key, lot in self.lot_manager.lots.items():
-                if fill.side is OrderSide.BUY and key not in before:
-                    self.store.record_session_lot_application(fill, key, lot.buy_quantity)
+                if fill.side is OrderSide.BUY:
+                    bought = lot.buy_quantity - (before[key][3] if key in before else 0)
+                    if bought > 0:
+                        self.store.record_session_lot_application(fill, key, bought)
                 elif fill.side is OrderSide.SELL and key == fill.lot_id and key in before:
-                    qty, pnl, fee = before[key]
+                    qty, pnl, fee, _ = before[key]
                     self.store.record_session_lot_application(fill, key, qty - lot.remaining_quantity,
                                                              lot.realized_profit_loss - pnl, lot.estimated_fee_tax - fee)
         except Exception:
@@ -1220,7 +1255,24 @@ class AutoTrader:
             cash_target_profit_active=context.cash_target_profit_active,
             cash_available_for_target=context.cash_available_for_target,
             low_cash_high_cost_sell=context.low_cash_high_cost_sell,
+            low_cash_oldest_lot_sell=context.low_cash_oldest_lot_sell,
             negative_target_high_cost_sell=context.negative_target_high_cost_sell,
+            cash_buy_drop_enabled=context.cash_buy_drop_enabled,
+            cash_buy_reference_price=context.cash_buy_reference_price,
+            cash_buy_reference_source=context.cash_buy_reference_source,
+            cash_buy_drop_rate=context.cash_buy_drop_rate,
+            cash_buy_limit_price=context.cash_buy_limit_price,
+            cash_buy_price_condition_met=context.cash_buy_price_condition_met,
+            cash_buy_skip_reason=context.cash_buy_skip_reason,
+            pre_exit_average_price=context.pre_exit_average_price,
+            pre_exit_average_captured_at=context.pre_exit_average_captured_at,
+            reentry_price_condition_met=context.reentry_price_condition_met,
+            adaptive_lot_enabled=self.config.strategy.adaptive_lot_enabled,
+            volatility_multiplier=context.volatility_multiplier,
+            consecutive_buy_count=context.consecutive_buy_count,
+            consecutive_sell_count=context.consecutive_sell_count,
+            rebuy_restriction_active=context.rebuy_restriction_active,
+            adaptive_buy_target_price=context.adaptive_buy_target_price,
             sell_trigger_lot_id=context.sell_trigger_lot_id,
             sell_trigger_price=context.sell_trigger_price,
             sell_limit_price=context.sell_limit_price,
@@ -1494,6 +1546,7 @@ class AutoTrader:
             SellReason.AUTO_DECAY_CLEANUP_SELL.value,
             SellReason.DEEP_LOSS_RECOVERY_SELL.value,
             SellReason.LOW_CASH_HIGH_COST_SELL.value,
+            SellReason.LOW_CASH_OLDEST_LOT_SELL.value,
             SellReason.NEGATIVE_TARGET_HIGH_COST_SELL.value,
         }
         if action.side is OrderSide.SELL and action.sell_reason in cleanup_reasons and self.store.has_any_open_order(position.code):

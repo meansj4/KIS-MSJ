@@ -46,6 +46,7 @@ class PositionLifecycle(str, Enum):
 class SellReason(str, Enum):
     NEGATIVE_TARGET_HIGH_COST_SELL = "NEGATIVE_TARGET_HIGH_COST_SELL"
     LOW_CASH_HIGH_COST_SELL = "LOW_CASH_HIGH_COST_SELL"
+    LOW_CASH_OLDEST_LOT_SELL = "LOW_CASH_OLDEST_LOT_SELL"
     CASH_SHORTFALL_ROTATION = "CASH_SHORTFALL_ROTATION"
     PROFIT_TAKE = "PROFIT_TAKE"
     CLEANUP_SELL = "CLEANUP_SELL"
@@ -134,7 +135,7 @@ class PositionState:
     retire_after_exit: bool = False
     retire_reason: str = ""
     trade_stop_after_exit_at: str = ""
-    last_sell_price: int = 0
+    last_sell_price: int | float = 0
     reentry_anchor_price: int = 0
     exit_anchor_price: int = 0
     cycle_highest_sell_price: int = 0
@@ -151,6 +152,8 @@ class PositionState:
     anchor_confidence: str = ""
     post_exit_high_price: int = 0
     exit_time: str = ""
+    pre_exit_average_price: float = 0.0
+    pre_exit_average_captured_at: str = ""
     cleanup_sell_price: int = 0
     cleanup_time: str = ""
     cleanup_reentry_cooldown_until: str = ""
@@ -172,6 +175,11 @@ class PositionState:
     lot_sizing_bucket: str = ""
     lot_sizing_locked_at: str = ""
     lot_sizing_mode: str = ""
+    consecutive_buy_count: int = 0
+    consecutive_sell_count: int = 0
+    rebuy_restriction_active: bool = False
+    # Applied executions retain order identity across restarts and split fills.
+    actual_fill_events: str = ""
 
 
 @dataclass
@@ -179,7 +187,7 @@ class LotState:
     lot_id: str
     code: str
     buy_filled_at: str
-    buy_price: int
+    buy_price: int | float
     buy_quantity: int
     buy_amount: int
     remaining_quantity: int
@@ -200,9 +208,10 @@ class LotState:
     deep_loss_observation_count: int = 0
     deep_loss_last_close: int = 0
     deep_loss_low_price: int = 0
+    buy_order_key: str = ""
 
     @property
-    def open_amount(self) -> int:
+    def open_amount(self) -> int | float:
         return self.remaining_quantity * self.buy_price
 
     def profit_pct_at(self, price: int) -> float:
@@ -246,7 +255,7 @@ class TradeFill:
     name: str
     side: OrderSide
     quantity: int
-    price: int
+    price: int | float
     order_id: str
     filled_at: datetime
     lot_id: str = ""
@@ -256,3 +265,7 @@ class TradeFill:
     # Order-level inquiry does not necessarily identify the execution venue.
     reported_order_venue: str = ""
     timestamp_source: str = "provided"
+    # Exact KRW notional: cumulative on raw AGG broker rows; incremental after
+    # OrderManager normalization and in persisted/application fills. Zero means
+    # unavailable, so legacy fills use quantity * price.
+    filled_amount: int = 0

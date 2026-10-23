@@ -1,12 +1,19 @@
 import time
 from datetime import datetime, timedelta
 
+import pytest
+
 from kis_msj.config import BotConfig, OrderConfig, RiskConfig, StockConfig, StrategyConfig
 from kis_msj.main import AutoTrader
 from kis_msj import main as trader_main
 from kis_msj.models import AccountSnapshot, BalanceItem, LotState, OrderRequest, OrderResult, OrderSide, OrderStatus, PositionLifecycle, PositionState, Quote, ReentryType, SellReason, TradeFill
 from kis_msj.risk_manager import RiskDecision
 from kis_msj.strategy import StrategyAction
+
+
+@pytest.fixture(autouse=True)
+def isolated_runtime_control(monkeypatch):
+    monkeypatch.setattr(trader_main, "load_runtime_control", lambda: trader_main.RuntimeControl())
 
 
 def trader(tmp_path, risk: RiskConfig | None = None) -> AutoTrader:

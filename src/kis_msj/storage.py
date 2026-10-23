@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import sqlite3
-import shutil
 import json
 from contextlib import nullcontext
 from dataclasses import asdict, replace
 from datetime import datetime
+from collections import defaultdict
+import math
+import re
 from pathlib import Path
 from typing import Iterable
 
@@ -105,6 +107,8 @@ class StateStore:
             _ensure_column(connection, "positions", "anchor_confidence", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(connection, "positions", "post_exit_high_price", "INTEGER NOT NULL DEFAULT 0")
             _ensure_column(connection, "positions", "exit_time", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "positions", "pre_exit_average_price", "REAL NOT NULL DEFAULT 0")
+            _ensure_column(connection, "positions", "pre_exit_average_captured_at", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(connection, "positions", "cleanup_sell_price", "INTEGER NOT NULL DEFAULT 0")
             _ensure_column(connection, "positions", "cleanup_time", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(connection, "positions", "cleanup_reentry_cooldown_until", "TEXT NOT NULL DEFAULT ''")
@@ -126,6 +130,10 @@ class StateStore:
             _ensure_column(connection, "positions", "lot_sizing_bucket", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(connection, "positions", "lot_sizing_locked_at", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(connection, "positions", "lot_sizing_mode", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "positions", "consecutive_buy_count", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "positions", "consecutive_sell_count", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "positions", "rebuy_restriction_active", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "positions", "actual_fill_events", "TEXT NOT NULL DEFAULT ''")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS lots (
@@ -161,6 +169,7 @@ class StateStore:
             _ensure_column(connection, "lots", "deep_loss_observation_count", "INTEGER NOT NULL DEFAULT 0")
             _ensure_column(connection, "lots", "deep_loss_last_close", "INTEGER NOT NULL DEFAULT 0")
             _ensure_column(connection, "lots", "deep_loss_low_price", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "lots", "buy_order_key", "TEXT NOT NULL DEFAULT ''")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS fills (
@@ -174,9 +183,10 @@ class StateStore:
                     filled_at TEXT NOT NULL,
                     lot_id TEXT NOT NULL,
                     execution_id TEXT NOT NULL DEFAULT '',
+                    filled_amount INTEGER NOT NULL DEFAULT 0,
                     sell_reason TEXT NOT NULL DEFAULT 'UNKNOWN',
                     reentry_type TEXT NOT NULL DEFAULT 'NONE',
-                    UNIQUE(order_id, code, side, quantity, price, filled_at, lot_id)
+                    UNIQUE(order_id, code, side, quantity, price, filled_at, lot_id, execution_id)
                 )
                 """
             )
@@ -187,6 +197,8 @@ class StateStore:
             _ensure_column(connection, "fills", "config_version", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(connection, "fills", "run_id", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(connection, "fills", "experiment_name", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(connection, "fills", "filled_amount", "INTEGER NOT NULL DEFAULT 0")
+            self._migrate_fill_execution_identity(connection)
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS orders (
@@ -406,6 +418,58 @@ class StateStore:
                 "ON price_snapshots(substr(sampled_at, 1, 10), code, id DESC)"
             )
 
+    def _migrate_fill_execution_identity(self, connection: sqlite3.Connection) -> None:
+        """Preserve distinct same-second executions and all existing fill IDs.
+
+        The original table's inline UNIQUE constraint omitted execution_id.
+        SQLite requires a table rebuild to replace that constraint. Attribution
+        tables store the unchanged numeric fill ID, without foreign-key deletes.
+        """
+        legacy_columns = ["order_id", "code", "side", "quantity", "price", "filled_at", "lot_id"]
+        legacy = False
+        for index in connection.execute("PRAGMA index_list(fills)"):
+            if not index["unique"]:
+                continue
+            quoted_name = str(index["name"]).replace('"', '""')
+            columns = [row["name"] for row in connection.execute(f'PRAGMA index_info("{quoted_name}")')]
+            legacy = legacy or columns == legacy_columns
+        if not legacy:
+            return
+        if self._db_existed_before_init and not self._migration_backup_done:
+            backup_dir = self.path.parent / "backups"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            _backup_sqlite_database(self.path, backup_dir / f"{self.path.stem}_{stamp}{self.path.suffix}")
+            self._migration_backup_done = True
+        schema = connection.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='fills'").fetchone()[0]
+        constraint = r"UNIQUE\s*\(\s*order_id\s*,\s*code\s*,\s*side\s*,\s*quantity\s*,\s*price\s*,\s*filled_at\s*,\s*lot_id\s*\)"
+        modified, count = re.subn(constraint,
+            "UNIQUE(order_id, code, side, quantity, price, filled_at, lot_id, execution_id)", schema, flags=re.IGNORECASE)
+        if count != 1:
+            raise RuntimeError("Unrecognized legacy fills UNIQUE schema; refusing a lossy migration")
+        modified = re.sub(r'^(CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?)(?:"fills"|`fills`|\[fills\]|fills)(?=\s|\()',
+                          r'\1fills_execution_migration', modified, count=1, flags=re.IGNORECASE)
+        ancillary = [row[0] for row in connection.execute(
+            "SELECT sql FROM sqlite_master WHERE tbl_name='fills' AND type IN ('index','trigger') AND sql IS NOT NULL")]
+        columns = [row["name"] for row in connection.execute("PRAGMA table_info(fills)")]
+        quoted_columns = ",".join('"' + name.replace('"', '""') + '"' for name in columns)
+        sequence = connection.execute("SELECT seq FROM sqlite_sequence WHERE name='fills'").fetchone()
+        connection.execute("SAVEPOINT fill_execution_identity")
+        try:
+            connection.execute(modified)
+            connection.execute(f"INSERT INTO fills_execution_migration ({quoted_columns}) SELECT {quoted_columns} FROM fills")
+            connection.execute("DROP TABLE fills")
+            connection.execute("ALTER TABLE fills_execution_migration RENAME TO fills")
+            for sql in ancillary:
+                connection.execute(sql)
+            if sequence:
+                connection.execute("UPDATE sqlite_sequence SET seq=MAX(seq,?) WHERE name='fills'", (sequence[0],))
+            connection.execute("RELEASE SAVEPOINT fill_execution_identity")
+        except Exception:
+            connection.execute("ROLLBACK TO SAVEPOINT fill_execution_identity")
+            connection.execute("RELEASE SAVEPOINT fill_execution_identity")
+            raise
+
     def _backup_before_migration_if_needed(self, connection: sqlite3.Connection) -> None:
         if self._migration_backup_done or not self._db_existed_before_init:
             return
@@ -431,6 +495,8 @@ class StateStore:
                 "anchor_confidence",
                 "post_exit_high_price",
                 "exit_time",
+                "pre_exit_average_price",
+                "pre_exit_average_captured_at",
                 "cleanup_sell_price",
                 "cleanup_time",
                 "cleanup_reentry_cooldown_until",
@@ -452,9 +518,13 @@ class StateStore:
                 "lot_sizing_bucket",
                 "lot_sizing_locked_at",
                 "lot_sizing_mode",
+                "consecutive_buy_count",
+                "consecutive_sell_count",
+                "rebuy_restriction_active",
+                "actual_fill_events",
             },
-            "lots": {"cleanup_candidate", "age_weeks", "base_target_profit_rate", "effective_target_profit_rate", "last_sell_reason", "deep_loss_started_on", "deep_loss_last_observed_on", "deep_loss_observation_count", "deep_loss_last_close", "deep_loss_low_price"},
-            "fills": {"execution_id", "sell_reason", "reentry_type", "config_hash", "config_version", "run_id", "experiment_name"},
+            "lots": {"cleanup_candidate", "age_weeks", "base_target_profit_rate", "effective_target_profit_rate", "last_sell_reason", "deep_loss_started_on", "deep_loss_last_observed_on", "deep_loss_observation_count", "deep_loss_last_close", "deep_loss_low_price", "buy_order_key"},
+            "fills": {"execution_id", "filled_amount", "sell_reason", "reentry_type", "config_hash", "config_version", "run_id", "experiment_name"},
             "orders": {"requested_at", "sell_reason", "reentry_type", "cleanup_flag", "config_hash", "config_version", "run_id", "experiment_name", "cancel_requested", "cancel_confirmed", "cancel_rejected", "filled_after_cancel_request", "cancel_response_code", "cancel_response_message", "cancel_checked_at", "post_cancel_execution_checked_at", "cancel_retry_count"},
             "manual_order_requests": {"request_id", "source", "requested_by", "requested_at", "code", "side", "current_price", "amount", "quantity", "lot_id", "order_type", "preview_json", "runtime_snapshot_json", "live_trading", "confirm_text_verified", "status", "block_reason", "linked_order_id", "processing_started_at", "processing_claimed_by", "claim_attempt_count", "last_processing_error", "stale_processing_reason", "config_hash", "config_version", "run_id", "experiment_name", "created_at", "updated_at"},
         }
@@ -470,7 +540,7 @@ class StateStore:
         backup_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_path = backup_dir / f"{self.path.stem}_{timestamp}{self.path.suffix}"
-        shutil.copy2(self.path, backup_path)
+        _backup_sqlite_database(self.path, backup_path)
         self._migration_backup_done = True
 
     def load_positions(self) -> dict[str, PositionState]:
@@ -484,6 +554,8 @@ class StateStore:
             data.setdefault("position_state", "NEVER_BOUGHT")
             data.setdefault("last_sell_price", 0)
             data.setdefault("reentry_anchor_price", 0)
+            data.setdefault("pre_exit_average_price", 0.0)
+            data.setdefault("pre_exit_average_captured_at", "")
             data.setdefault("last_reentry_type", "NONE")
             data.setdefault("review_reason", "")
             data.setdefault("review_created_at", "")
@@ -492,15 +564,36 @@ class StateStore:
             data.setdefault("review_acknowledged_by", "")
             data.setdefault("review_note", "")
             data.setdefault("skip_reason", "")
-            for key in ("needs_review", "auto_buy_enabled", "danger_state", "lot_quantity_mismatch", "trading_paused", "retire_after_exit", "anchor_single_fill"):
+            for key in ("needs_review", "auto_buy_enabled", "danger_state", "lot_quantity_mismatch", "trading_paused", "retire_after_exit", "anchor_single_fill", "rebuy_restriction_active"):
                 data[key] = bool(data[key])
             data = _known_model_fields(data, PositionState)
             positions[data["code"]] = PositionState(**data)
+        # On the first upgraded run, rebuild direction history from actual fills.
+        # Orders that never filled never affect streaks or reentry restrictions.
+        missing_history = {code for code, position in positions.items() if not position.actual_fill_events}
+        if missing_history:
+            from .fill_state import record_actual_fill_state
+            with self._connect() as connection:
+                fill_rows = connection.execute("SELECT * FROM fills ORDER BY filled_at, id").fetchall()
+            for row in fill_rows:
+                if row["code"] in missing_history and row["quantity"] > 0 and row["price"] > 0:
+                    record_actual_fill_state(positions[row["code"]], _stored_trade_fill(row), applied=False)
         return positions
 
     def load_lots(self) -> dict[str, LotState]:
         with self._connect() as connection:
             rows = connection.execute("SELECT * FROM lots").fetchall()
+            buy_rows = (connection.execute("SELECT * FROM fills WHERE side='BUY' ORDER BY filled_at, id").fetchall()
+                        if any(not row["buy_order_key"] for row in rows) else [])
+        from .fill_state import fill_order_key
+        order_by_lot = {}
+        order_by_time = {}
+        for row in buy_rows:
+            fill = _stored_trade_fill(row)
+            key = fill_order_key(fill)
+            if fill.lot_id:
+                order_by_lot.setdefault(fill.lot_id, key)
+            order_by_time.setdefault((fill.code, fill.filled_at.isoformat()), key)
         lots = {}
         for row in rows:
             data = dict(row)
@@ -518,6 +611,8 @@ class StateStore:
             data.setdefault("deep_loss_observation_count", 0)
             data.setdefault("deep_loss_last_close", 0)
             data.setdefault("deep_loss_low_price", 0)
+            data["buy_order_key"] = data.get("buy_order_key") or order_by_lot.get(data["lot_id"], "") or order_by_time.get(
+                (data["code"], datetime.fromisoformat(data["buy_filled_at"].replace("Z", "+00:00")).isoformat()), "")
             data = _known_model_fields(data, LotState)
             lots[data["lot_id"]] = LotState(**data)
         return lots
@@ -952,8 +1047,10 @@ class StateStore:
             if not connection.execute("SELECT 1 FROM sqlite_master WHERE name='fill_session_metadata'").fetchone():
                 return
             rows = connection.execute("""SELECT f.id FROM fills f JOIN fill_session_metadata m ON m.fill_id=f.id
-                WHERE f.order_id=? AND f.code=? AND f.side=? AND f.filled_at=? AND f.quantity=? AND f.price=?""",
-                (fill.order_id, fill.code, fill.side.value, fill.filled_at.isoformat(), fill.quantity, fill.price)).fetchall()
+                WHERE f.order_id=? AND f.code=? AND f.side=? AND f.filled_at=? AND f.quantity=? AND f.price=?
+                  AND (?='' OR f.execution_id=?)""",
+                (fill.order_id, fill.code, fill.side.value, fill.filled_at.isoformat(), fill.quantity, fill.price,
+                 fill.execution_id, fill.execution_id)).fetchall()
             if len(rows) != 1:
                 return
             self._ensure_session_metadata(connection)
@@ -961,15 +1058,25 @@ class StateStore:
                 (fill_id, lot_id, applied_quantity, realized_pnl, fee_tax) VALUES (?, ?, ?, ?, ?)""",
                 (rows[0]["id"], lot_id, quantity, pnl, fee_tax))
 
-    def reserve_session_intent(self, result: OrderResult) -> bool:
+    def reserve_session_intent(self, result: OrderResult, *, block_any_side: bool = False, block_pending_buy: bool = False) -> bool:
         request = result.request
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             placeholders = ",".join("?" for _ in OPEN_ORDER_STATUSES)
-            pending = connection.execute(
-                f"SELECT 1 FROM orders WHERE code=? AND side=? AND status IN ({placeholders}) AND (?='' OR lot_id=?)",
-                (request.code, request.side.value, *OPEN_ORDER_STATUSES,
-                 request.lot_id if request.side is OrderSide.SELL else "", request.lot_id)).fetchone()
+            if block_pending_buy and connection.execute(
+                f"SELECT 1 FROM orders WHERE side='BUY' AND status IN ({placeholders}) LIMIT 1",
+                OPEN_ORDER_STATUSES,
+            ).fetchone():
+                return False
+            if block_any_side:
+                pending = connection.execute(
+                    f"SELECT 1 FROM orders WHERE code=? AND status IN ({placeholders}) LIMIT 1",
+                    (request.code, *OPEN_ORDER_STATUSES)).fetchone()
+            else:
+                pending = connection.execute(
+                    f"SELECT 1 FROM orders WHERE code=? AND side=? AND status IN ({placeholders}) AND (?='' OR lot_id=?)",
+                    (request.code, request.side.value, *OPEN_ORDER_STATUSES,
+                     request.lot_id if request.side is OrderSide.SELL else "", request.lot_id)).fetchone()
             if pending:
                 return False
             self.record_order(result, _connection=connection)
@@ -1151,11 +1258,13 @@ class StateStore:
     def record_fill(self, fill: TradeFill) -> bool:
         with self._connect() as connection:
             if fill.execution_id:
+                from .fill_state import fill_order_key
                 existing = connection.execute(
-                    "SELECT 1 FROM fills WHERE execution_id = ? LIMIT 1",
-                    (fill.execution_id,),
-                ).fetchone()
-                if existing is not None:
+                    "SELECT * FROM fills WHERE execution_id=? AND code=? AND side=?",
+                    (fill.execution_id, fill.code, fill.side.value),
+                ).fetchall()
+                order_key = fill_order_key(fill)
+                if any(fill_order_key(_stored_trade_fill(row)) == order_key for row in existing):
                     return False
             else:
                 # Fallback dedupe is intentionally secondary to KIS execution_id.
@@ -1189,8 +1298,8 @@ class StateStore:
                     return False
             cursor = connection.execute(
                 """
-                INSERT OR IGNORE INTO fills (code, name, side, quantity, price, order_id, filled_at, lot_id, execution_id, sell_reason, reentry_type, config_hash, config_version, run_id, experiment_name)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT OR IGNORE INTO fills (code, name, side, quantity, price, order_id, filled_at, lot_id, execution_id, sell_reason, reentry_type, config_hash, config_version, run_id, experiment_name, filled_amount)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     fill.code,
@@ -1208,6 +1317,7 @@ class StateStore:
                     self.active_config_version,
                     self.active_run_id,
                     self.active_experiment_name,
+                    fill.filled_amount,
                 ),
             )
             if cursor.rowcount > 0 and connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='order_session_metadata'").fetchone():
@@ -1404,7 +1514,10 @@ class StateStore:
             ).fetchone()
         return int(row["amount"] or 0)
 
-    def filled_quantity_for_order(self, order_id: str, *, code: str = "", side: OrderSide | None = None, lot_id: str = "") -> int:
+    def filled_quantity_for_order(self, order_id: str, *, code: str = "", side: OrderSide | None = None,
+                                  lot_id: str = "", filled_at: datetime | None = None) -> int:
+        if filled_at is not None:
+            return sum(int(row["quantity"]) for row in self._recorded_order_fills(order_id, code, side, lot_id, filled_at))
         filters = ["order_id = ?"]
         params: list[object] = [order_id]
         if code:
@@ -1422,6 +1535,41 @@ class StateStore:
                 params,
             ).fetchone()
         return int(row["quantity"] or 0)
+
+    def recorded_fill_amount(self, code: str, order_id: str, side: OrderSide,
+                             filled_at: datetime | None = None, lot_id: str = "") -> int:
+        """Sum normalized incremental notionals, with legacy price fallback."""
+        rows = self._recorded_order_fills(order_id, code, side, lot_id, filled_at)
+        return int(round(sum(row["filled_amount"] or row["quantity"] * row["price"] for row in rows)))
+
+    def _recorded_order_fills(self, order_id: str, code: str, side: OrderSide | None,
+                              lot_id: str, filled_at: datetime | None):
+        filters = ["order_id = ?"]
+        params: list[object] = [order_id]
+        if filled_at is not None and order_id.isdigit():
+            filters[0] = "(order_id=? OR ltrim(order_id,'0')=?)"
+            params.append(order_id.lstrip("0") or "0")
+        if code:
+            filters.append("code=?")
+            params.append(str(code).zfill(6))
+        if side is not None:
+            filters.append("side=?")
+            params.append(side.value)
+        if lot_id:
+            filters.append("lot_id=?")
+            params.append(lot_id)
+        with self._connect() as connection:
+            rows = connection.execute(f"SELECT * FROM fills WHERE {' AND '.join(filters)}", params).fetchall()
+        if filled_at is None:
+            return rows
+        from .fill_state import fill_order_key
+        scoped = []
+        for row in rows:
+            recorded = _stored_trade_fill(row)
+            reference = replace(recorded, order_id=order_id, filled_at=filled_at)
+            if fill_order_key(recorded) == fill_order_key(reference):
+                scoped.append(row)
+        return scoped
 
     def has_open_order(self, code: str, side: OrderSide, lot_id: str = "") -> bool:
         placeholders = ", ".join("?" for _ in OPEN_ORDER_STATUSES)
@@ -1640,6 +1788,139 @@ class StateStore:
 
 def _bools(data: dict[str, object]) -> dict[str, object]:
     return {key: int(value) if isinstance(value, bool) else value for key, value in data.items()}
+
+
+def reconstruct_pre_exit_average_backfill(
+    positions: Iterable[dict[str, object]],
+    lots: Iterable[dict[str, object]],
+    fills: Iterable[dict[str, object]],
+    attributions: Iterable[dict[str, object]],
+) -> dict[str, object]:
+    """Prepare conservative legacy WAIT anchors from a frozen ledger, without I/O.
+
+    A currently flat book held only the final SELL allocation immediately before
+    that final fill. Its attributed purchase costs therefore reconstruct exactly
+    the remaining pre-exit VWAP, without resurrecting already-sold cycle LOTs or
+    consulting subsequent market prices. Unknown/contradictory history is skipped.
+    The caller must review and revalidate candidates before writing any live DB.
+    """
+    lot_rows = list(lots)
+    lot_by_id = {str(row["lot_id"]): row for row in lot_rows}
+    open_quantity: dict[str, int] = defaultdict(int)
+    for row in lot_rows:
+        open_quantity[str(row["code"])] += max(0, int(row.get("remaining_quantity") or 0))
+    fills_by_code: dict[str, list[tuple[datetime, int, dict[str, object]]]] = defaultdict(list)
+    invalid_fill_codes: set[str] = set()
+    for fill in fills:
+        code = str(fill.get("code") or "")
+        try:
+            fills_by_code[code].append((_parse_timestamp(str(fill["filled_at"])), int(fill["id"]), fill))
+        except (ValueError, TypeError, KeyError):
+            invalid_fill_codes.add(code)
+    attrs: dict[int, list[dict[str, object]]] = defaultdict(list)
+    for row in attributions:
+        attrs[int(row["fill_id"])].append(row)
+    candidates: list[dict[str, object]] = []
+    skipped: list[dict[str, object]] = []
+    for position in positions:
+        code = str(position["code"])
+        def skip(reason: str) -> None:
+            skipped.append({"code": code, "reason": reason})
+        if str(position.get("position_state") or "") not in {"WAIT_REENTRY", "COOLDOWN_AFTER_CLEANUP"}:
+            continue
+        existing = float(position.get("pre_exit_average_price") or 0)
+        if math.isfinite(existing) and existing > 0:
+            skip("reference_already_present")
+            continue
+        if int(position.get("quantity") or 0) or open_quantity[code]:
+            skip("position_or_lot_book_not_flat")
+            continue
+        if position.get("retire_after_exit"):
+            skip("retired_position")
+            continue
+        history = fills_by_code.get(code, [])
+        if code in invalid_fill_codes or not history:
+            skip("missing_or_invalid_fill_history")
+            continue
+        last_time, _, last = max(history, key=lambda item: (item[0], item[1]))
+        if str(last.get("side")) != "SELL" or str(position.get("last_fill_side")) != "SELL":
+            skip("latest_fill_is_not_a_confirmed_sell")
+            continue
+        exit_value = str(position.get("exit_time") or position.get("cleanup_time") or position.get("last_order_time") or "")
+        try:
+            if _parse_timestamp(exit_value).replace(microsecond=0) != last_time.replace(microsecond=0):
+                skip("exit_time_does_not_match_latest_fill")
+                continue
+        except ValueError:
+            skip("missing_or_invalid_exit_time")
+            continue
+        allocations = attrs.get(int(last["id"]), [])
+        source = "persisted_fill_lot_attribution"
+        if not allocations and str(last.get("lot_id") or ""):
+            allocations = [{"lot_id": str(last["lot_id"]), "applied_quantity": int(last["quantity"])}]
+            source = "legacy_sell_fill_lot_id"
+        if not allocations or sum(int(row.get("applied_quantity") or 0) for row in allocations) != int(last["quantity"]):
+            skip("missing_or_incomplete_final_sell_attribution")
+            continue
+        quantity = cost = 0
+        source_ids: list[str] = []
+        invalid = False
+        for allocation in allocations:
+            lid = str(allocation.get("lot_id") or "")
+            lot = lot_by_id.get(lid)
+            q = int(allocation.get("applied_quantity") or 0)
+            if lot is None or str(lot.get("code")) != code or q <= 0:
+                invalid = True
+                break
+            try:
+                if (int(lot.get("remaining_quantity") or 0) != 0
+                        or int(lot.get("buy_price") or 0) <= 0
+                        or q > int(lot.get("buy_quantity") or 0)
+                        or _parse_timestamp(str(lot["buy_filled_at"])) > last_time):
+                    invalid = True
+                    break
+            except (ValueError, KeyError):
+                invalid = True
+                break
+            quantity += q
+            cost += q * int(lot["buy_price"])
+            source_ids.append(lid)
+        if invalid or quantity <= 0:
+            skip("invalid_final_sell_cost_lot")
+            continue
+        candidates.append({
+            "code": code,
+            "pre_exit_average_price": cost / quantity,
+            "pre_exit_average_captured_at": last_time.isoformat(timespec="seconds"),
+            "quantity_before_final_fill": quantity,
+            "cost_before_final_fill": cost,
+            "source": source,
+            "source_fill_id": int(last["id"]),
+            "source_fill_timestamp": str(last["filled_at"]),
+            "source_order_id": str(last.get("order_id") or ""),
+            "source_lot_ids": source_ids,
+            "expected_exit_time": str(position.get("exit_time") or ""),
+            "expected_last_fill_side": str(position.get("last_fill_side") or ""),
+            "expected_position_state": str(position.get("position_state") or ""),
+        })
+    return {"candidates": candidates, "skipped": skipped, "read_only": True,
+            "basis": "quantity-weighted remaining purchase cost immediately before the latest complete liquidation fill"}
+
+
+def _backup_sqlite_database(source_path: Path, backup_path: Path) -> None:
+    # A file copy omits committed WAL pages. A separate read connection captures
+    # a consistent committed snapshot even if this migration has begun DDL.
+    with sqlite3.connect(source_path) as source, sqlite3.connect(backup_path) as target:
+        source.backup(target)
+
+
+def _stored_trade_fill(row) -> TradeFill:
+    return TradeFill(
+        str(row["code"]), str(row["name"]), OrderSide(row["side"]), int(row["quantity"]),
+        row["price"], str(row["order_id"]), datetime.fromisoformat(str(row["filled_at"]).replace("Z", "+00:00")),
+        str(row["lot_id"]), str(row["execution_id"]), str(row["sell_reason"]), str(row["reentry_type"]),
+        filled_amount=int(row["filled_amount"]),
+    )
 
 
 def _normalize_row(row: dict[str, object]) -> dict[str, object]:

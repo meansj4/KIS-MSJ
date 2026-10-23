@@ -1,15 +1,15 @@
 {
-    "bot_paused":  false,
-    "config_reload_requested":  false,
-    "config_reload_requested_at":  "",
-    "all_orders_paused":  false,
-    "buy_paused":  false,
-    "sell_paused":  false,
-    "cleanup_paused":  false,
-    "reentry_paused":  true,
-    "reentry_resume_on":  "2026-10-19",
-    "reason":  "user_requested_reentry_resume_20261019",
-    "updated_at":  "2026-10-16T16:12:52+09:00",
-    "updated_by":  "codex",
-    "expires_at":  ""
+  "bot_paused": true,
+  "config_reload_requested": false,
+  "config_reload_requested_at": "",
+  "all_orders_paused": true,
+  "buy_paused": true,
+  "sell_paused": true,
+  "cleanup_paused": true,
+  "reentry_paused": true,
+  "reentry_resume_on": "",
+  "reason": "user_requested_stop_all_ui_only",
+  "updated_at": "2026-10-21T21:36:02",
+  "updated_by": "codex",
+  "expires_at": ""
 }

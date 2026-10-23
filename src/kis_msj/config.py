@@ -96,6 +96,9 @@ class TargetProfitLotBand:
 
 @dataclass(frozen=True)
 class StrategyConfig:
+    adaptive_lot_enabled: bool = False
+    reentry_reserve_lots_per_symbol: int = 2
+    reentry_cash_buffer_ratio: float = 0.10
     initial_buy_amount: int = 30_000
     auto_buy_limit: int = 300_000
     absolute_max_investment: int = 500_000
@@ -129,7 +132,11 @@ class StrategyConfig:
     cash_target_reference_amount: int = 200_000_000
     cash_target_reference_rate: float = 0.50
     cash_target_low_cash_threshold: int = 5_000_000
+    cash_target_low_cash_lot_policy: str = "highest_cost"
     cash_target_start_date: str = ""
+    cash_buy_drop_enabled: bool = False
+    cash_buy_drop_reference_amount: int = 200_000_000
+    cash_buy_drop_rate_at_zero: float = 0.40
     cleanup_enabled: bool = False
     cleanup_min_age_weeks: int = 12
     cleanup_min_target_rate: float = -0.04
@@ -189,6 +196,15 @@ class StrategyConfig:
     estimated_fee_tax_pct: float = 0.25
 
     def __post_init__(self) -> None:
+        if type(self.adaptive_lot_enabled) is not bool:
+            raise ValueError("adaptive_lot_enabled must be a boolean")
+        if (type(self.reentry_reserve_lots_per_symbol) is not int
+                or self.reentry_reserve_lots_per_symbol < 0):
+            raise ValueError("reentry_reserve_lots_per_symbol must be a nonnegative integer")
+        if (type(self.reentry_cash_buffer_ratio) not in (int, float)
+                or not math.isfinite(self.reentry_cash_buffer_ratio)
+                or not 0 <= self.reentry_cash_buffer_ratio <= 1):
+            raise ValueError("reentry_cash_buffer_ratio must be between zero and one")
         if (self.profit_partial_sell_exposure_threshold is not None
                 and (type(self.profit_partial_sell_exposure_threshold) is not int
                      or self.profit_partial_sell_exposure_threshold < 0)):
@@ -215,12 +231,24 @@ class StrategyConfig:
             raise ValueError("cash_target_reference_rate must be a finite nonnegative rate")
         if type(self.cash_target_low_cash_threshold) is not int or self.cash_target_low_cash_threshold < 0:
             raise ValueError("cash_target_low_cash_threshold must be a nonnegative integer")
+        if self.cash_target_low_cash_lot_policy not in {"highest_cost", "oldest"}:
+            raise ValueError("cash_target_low_cash_lot_policy must be highest_cost or oldest")
+        if type(self.cash_buy_drop_enabled) is not bool:
+            raise ValueError("cash_buy_drop_enabled must be a boolean")
+        if type(self.cash_buy_drop_reference_amount) is not int or self.cash_buy_drop_reference_amount <= 0:
+            raise ValueError("cash_buy_drop_reference_amount must be a positive integer")
+        if (type(self.cash_buy_drop_rate_at_zero) not in (int, float)
+                or not math.isfinite(self.cash_buy_drop_rate_at_zero)
+                or not 0 <= self.cash_buy_drop_rate_at_zero < 1):
+            raise ValueError("cash_buy_drop_rate_at_zero must be finite and between zero and one")
         if not isinstance(self.cash_target_start_date, str):
             raise ValueError("cash_target_start_date must be an ISO date or empty")
         if self.cash_target_start_date:
             date.fromisoformat(self.cash_target_start_date)
 
     def cash_target_profit_active(self, now: datetime | None = None) -> bool:
+        if self.adaptive_lot_enabled:
+            return False
         if not self.cash_target_profit_enabled:
             return False
         if not self.cash_target_start_date:
@@ -230,8 +258,16 @@ class StrategyConfig:
         today = now.astimezone(korea).date() if now.tzinfo else now.date()
         return today >= date.fromisoformat(self.cash_target_start_date)
 
+    def cash_buy_drop_rate(self, cash_available: int | float) -> float:
+        """Cash decreases the required BUY discount, bounded by zero/max."""
+        if type(cash_available) not in (int, float) or not math.isfinite(cash_available):
+            raise ValueError("cash buy drop requires finite actual available cash")
+        fraction = max(0.0, cash_available) / self.cash_buy_drop_reference_amount
+        return max(0.0, min(self.cash_buy_drop_rate_at_zero,
+                            self.cash_buy_drop_rate_at_zero * (1.0 - fraction)))
+
     def cash_capacity_reentry_enabled(self) -> bool:
-        return self.reentry_policy == "cash_capacity_oldest"
+        return not self.adaptive_lot_enabled and self.reentry_policy == "cash_capacity_oldest"
 
     def cash_capacity_reentry_active(self, now: datetime | None = None) -> bool:
         """Return whether cash-capacity reentry is allowed on the Korean date."""

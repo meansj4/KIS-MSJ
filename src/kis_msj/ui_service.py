@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import hashlib
 import csv
 import importlib.util
@@ -25,10 +26,11 @@ from .config import DEFAULT_CONFIG_PATH, BotConfig, config_hash, load_config
 from .kis_client import KisClient
 from .logger import append_hourly_log_line, tail_hourly_logs
 from .lot_manager import LotManager, ceil_price, round_price
-from .models import AccountSnapshot, OrderSide, PositionLifecycle, PositionState
+from .models import AccountSnapshot, OrderSide, PositionLifecycle, PositionState, SellReason
 from .position_manager import PositionManager
 from .runtime_control import DEFAULT_RUNTIME_CONTROL_PATH, RuntimeControl, load_runtime_control, runtime_block_reason, save_runtime_control
 from .strategy import LotGridStrategy, StrategyAction
+from .volatility import DailyVolatilityCache
 
 
 SENSITIVE_PARTS = ("account", "acct", "cano", "acnt", "appkey", "appsecret", "token", "authorization", "auth")
@@ -96,6 +98,9 @@ PLAN_STATUS_GUIDE: dict[str, str] = {
 
 
 CONFIG_METADATA: tuple[dict[str, Any], ...] = (
+    {"section": "Strategy", "key": "strategy.adaptive_lot_enabled", "label_ko": "변동성·추세 LOT 전략", "description_ko": "최저 매수 LOT 기준 4% 매수 간격과 개별 LOT 기준 3% 매도 목표에 종목 변동성과 연속 체결 추세를 적용합니다. 마지막에 현재 LOT 수 × 주당 0.1%p의 보유기간 decay를 차감합니다.", "type": "boolean", "unit": "bool", "display_format": "boolean", "config_format": "boolean", "warning_level": "warning", "requires_restart": True},
+    {"section": "Strategy", "key": "strategy.reentry_reserve_lots_per_symbol", "label_ko": "재매수 시 종목별 예비 LOT", "description_ko": "최근 LOT 매도 후 재매수 시 현재 보유 종목마다 추가 매수할 예비 LOT 수입니다. 최대 LOT·종목 한도 이내의 여유만 계산합니다.", "type": "number", "unit": "LOT", "display_format": "integer", "config_format": "integer", "warning_level": "warning", "requires_restart": True},
+    {"section": "Strategy", "key": "strategy.reentry_cash_buffer_ratio", "label_ko": "재매수 안전 현금 비율", "description_ko": "재매수 후에도 전체 운용자금에서 이 비율의 현금과 종목별 예비 LOT 금액이 남아야 합니다. 기본 10%입니다.", "type": "number", "unit": "%", "display_format": "decimal_percent", "config_format": "decimal_rate", "warning_level": "warning", "requires_restart": True},
     {"section": "Risk", "key": "risk.cash_shortfall_rotation_enabled", "label_ko": "현금 부족 시 오래된 LOT 교체", "description_ko": "대기 BUY 전체의 부족금액을 갱신하며 오래된 LOT부터 정리합니다. 교체에도 매도 할인 지정가를 적용하고 회수 현금으로 가능한 BUY부터 처리합니다. 손실이 확정될 수 있습니다.", "type": "boolean", "unit": "bool", "display_format": "boolean", "config_format": "boolean", "warning_level": "warning", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.review_loss_pct", "label_ko": "검토 필요 손실률", "description_ko": "종목 손실이 이 수준에 도달하면 REVIEW_REQUIRED 후보가 됩니다.", "type": "number", "unit": "%", "display_format": "percent_value", "config_format": "percent_value", "warning_level": "warning", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.max_open_lots_before_review", "label_ko": "검토 전 최대 OPEN LOT 수", "description_ko": "OPEN LOT이 많아진 종목을 재검토 대상으로 보기 위한 기준입니다.", "type": "number", "unit": "개", "display_format": "integer", "config_format": "integer", "warning_level": "warning", "requires_restart": True},
@@ -124,7 +129,11 @@ CONFIG_METADATA: tuple[dict[str, Any], ...] = (
     {"section": "Strategy", "key": "strategy.cash_target_profit_enabled", "label_ko": "예수금 비례 목표수익률", "description_ko": "가용현금에 비례한 공통 기본 목표에 기존 LOT별 age decay를 계속 적용합니다.", "type": "boolean", "unit": "bool", "display_format": "boolean", "config_format": "boolean", "warning_level": "danger", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.cash_target_reference_amount", "label_ko": "목표수익률 기준 현금", "description_ko": "기본 목표 = 가용현금 / 기준 현금 × 기준 수익률. 기본 2억원입니다.", "type": "number", "unit": "원", "display_format": "integer", "config_format": "integer", "warning_level": "warning", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.cash_target_reference_rate", "label_ko": "기준 현금 목표수익률", "description_ko": "가용현금이 기준 현금과 같을 때 적용할 기본 목표수익률입니다. 기본 50%입니다.", "type": "number", "unit": "%", "display_format": "decimal_percent", "config_format": "decimal_rate", "warning_level": "warning", "requires_restart": True},
-    {"section": "Strategy", "key": "strategy.cash_target_low_cash_threshold", "label_ko": "고원가 LOT 매도 현금 기준", "description_ko": "이 금액 이하에서는 최저 매수단가 LOT의 decay 목표가를 신호로 최고 매수단가 LOT을 지정가 매도하며 손실을 허용합니다.", "type": "number", "unit": "원", "display_format": "integer", "config_format": "integer", "warning_level": "danger", "requires_restart": True},
+    {"section": "Strategy", "key": "strategy.cash_target_low_cash_threshold", "label_ko": "저현금 우선매도 기준", "description_ko": "가용현금이 이 금액 이하이면 선택한 저현금 LOT 정책을 우선 적용합니다. oldest는 수익 목표 도달 여부와 무관하게 가장 오래된 LOT을 현재가의 매도 할인 지정가로 정리하며 손실을 허용합니다.", "type": "number", "unit": "원", "display_format": "integer", "config_format": "integer", "warning_level": "danger", "requires_restart": True},
+    {"section": "Strategy", "key": "strategy.cash_target_low_cash_lot_policy", "label_ko": "저현금 우선매도 LOT", "description_ko": "oldest는 해당 종목에서 가장 오래된 OPEN LOT을 목표가 대기 없이 현재가에 설정된 매도 할인을 적용한 지정가로 매도합니다. 최고원가 LOT을 선택하는 음수 목표 규칙보다 우선합니다. highest_cost는 기존 최저원가 LOT 목표 도달 시 최고원가 LOT을 파는 방식입니다.", "type": "text", "unit": "oldest / highest_cost", "display_format": "text", "config_format": "string", "warning_level": "danger", "requires_restart": True},
+    {"section": "Strategy", "key": "strategy.cash_buy_drop_enabled", "label_ko": "예수금 비례 추가매수·재진입", "description_ko": "추가매수와 재진입에 동일한 현금 비례 하락률을 사용합니다. 보유 중에는 남은 수량으로 가중한 매수 평단, 전량 청산 후에는 마지막 청산 직전 보존 평단을 기준으로 합니다. 재진입 현금 여유와 기존 위험 제한도 함께 충족해야 합니다.", "type": "boolean", "unit": "bool", "display_format": "boolean", "config_format": "boolean", "warning_level": "warning", "requires_restart": True},
+    {"section": "Strategy", "key": "strategy.cash_buy_drop_reference_amount", "label_ko": "매수 하락률 0% 기준 현금", "description_ko": "이 금액 이상이면 추가매수·재진입의 요구 하락률은 0%입니다. 요구 하락률 = 현금 0원 하락률 × max(0, 1 - 가용현금 / 기준 현금). 기준 평단 위 추격매수는 허용하지 않습니다.", "type": "number", "unit": "원", "display_format": "integer", "config_format": "integer", "warning_level": "warning", "requires_restart": True},
+    {"section": "Strategy", "key": "strategy.cash_buy_drop_rate_at_zero", "label_ko": "현금 0원 매수 요구 하락률", "description_ko": "예수금이 0원일 때 기준 평단에서 요구할 하락률입니다. 40%·기준 현금 2억원이면 현금 1억원에는 20% 하락, 2억원 이상에는 0%를 적용합니다. 기준가가 없는 기존 재진입 대기는 복원 전까지 보류합니다.", "type": "number", "unit": "%", "display_format": "decimal_percent", "config_format": "decimal_rate", "warning_level": "warning", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.cash_target_start_date", "label_ko": "예수금 비례 목표 시작일", "description_ko": "YYYY-MM-DD 형식의 적용 시작일입니다. 비워두면 즉시 적용합니다.", "type": "text", "unit": "date", "display_format": "text", "config_format": "string", "warning_level": "warning", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.reentry_start_date", "label_ko": "현금 여유 재진입 시작일", "description_ko": "YYYY-MM-DD 형식의 적용 시작일입니다. 현금 여유 재진입 정책은 이 날짜부터 허용합니다. 런타임 일시정지는 별도로 적용합니다.", "type": "text", "unit": "date", "display_format": "text", "config_format": "string", "warning_level": "warning", "requires_restart": True},
     {"section": "Strategy", "key": "strategy.cleanup_enabled", "label_ko": "Cleanup 손실 정리 활성화", "description_ko": "조건을 만족하는 오래된 손실 LOT의 제한적 CLEANUP_SELL을 허용합니다.", "type": "boolean", "unit": "bool", "display_format": "boolean", "config_format": "boolean", "warning_level": "danger", "requires_restart": True, "danger_confirm_required": True},
@@ -368,6 +377,8 @@ class UIService:
         sections: dict[str, list[dict[str, Any]]] = {}
         lot_sizing_metadata = _lot_sizing_config_metadata()
         cash_reentry = self.config.strategy.cash_capacity_reentry_enabled()
+        adaptive = self.config.strategy.adaptive_lot_enabled
+        cash_buy = self.config.strategy.cash_buy_drop_enabled and not adaptive
         legacy_reentry_keys = {
             "strategy.normal_reentry_drop_rate", "strategy.trailing_activation_gain",
             "strategy.trailing_reentry_drop_rate", "strategy.min_reentry_wait_minutes",
@@ -384,6 +395,10 @@ class UIService:
                 item["description_ko"] = DETAILED_CONFIG_DESCRIPTIONS[item["key"]]
             if cash_reentry and item["key"] in legacy_reentry_keys:
                 item["description_ko"] = "현재 현금 재진입 정책에서는 사용하지 않습니다. 기존 가격 재진입 정책 전용: " + item.get("description_ko", "")
+            if cash_buy and item["key"] in {"strategy.pnl_minus_threshold", "strategy.pnl_plus_threshold", "strategy.add_buy_lot_bands"}:
+                item["description_ko"] = "현재 예수금 비례 매수 정책에서는 PLUS/MINUS·median·단계별 하락률 대신 남은 수량 가중 평단과 현금 비례 하락률로 추가매수 가격을 판단합니다. " + item.get("description_ko", "")
+            if adaptive and (item["key"] in legacy_reentry_keys or item["key"].startswith("strategy.cash_") or item["key"] in {"strategy.reentry_policy", "strategy.reentry_cash_lot_multiple", "strategy.target_profit_lot_bands", "strategy.add_buy_lot_bands", "strategy.age_decay_mode", "strategy.age_decay_rate", "strategy.age_decay_per_open_lot_rate", "risk.cash_shortfall_rotation_enabled"}):
+                item["description_ko"] = "현재 변동성·추세 LOT 전략에서는 사용하지 않는 이전 정책 설정입니다. " + item.get("description_ko", "")
 
         for item in CONFIG_METADATA:
             if item["key"] in HIDDEN_CONFIG_KEYS:
@@ -393,8 +408,10 @@ class UIService:
             sections.setdefault(str(enriched["section"]), []).append(enriched)
         metadata = [dict(item) for item in CONFIG_METADATA if item["key"] not in HIDDEN_CONFIG_KEYS]
         for item in lot_sizing_metadata:
-            sections.setdefault(str(item["section"]), []).append(dict(item))
-            metadata.append(dict(item))
+            enriched = dict(item)
+            describe_policy(enriched)
+            sections.setdefault(str(enriched["section"]), []).append(enriched)
+            metadata.append(dict(enriched))
         for item in metadata:
             describe_policy(item)
         return {
@@ -418,13 +435,16 @@ class UIService:
         active = config.cash_target_profit_active()
         cash_reentry = config.cash_capacity_reentry_enabled()
         cash = None
+        total_asset = None
         observed_at = ""
         source = "unknown_ui_read_only"
-        if active or cash_reentry:
+        if active or cash_reentry or config.cash_buy_drop_enabled or config.adaptive_lot_enabled:
             for line in reversed(tail_hourly_logs(self.config.log_path, 2000)):
                 match = re.search(r"cash_target_account_snapshot cash_available=(\d+) snapshot_at=(\S+)", line)
                 if match:
                     cash, observed_at, source = int(match[1]), match[2], "bot_account_snapshot"
+                    asset_match = re.search(r"\btotal_asset=(\d+)", line)
+                    total_asset = int(asset_match[1]) if asset_match else None
                     break
                 match = re.search(r"account_cash_snapshot buyable_cash=(\d+)", line)
                 if match:
@@ -439,9 +459,14 @@ class UIService:
             snapshot_status = "current" if 0 <= age <= 900 else "stale"
             if snapshot_status != "current":
                 cash = None
+                total_asset = None
         runtime = load_runtime_control(self.runtime_path)
         policy = {
-            "cash_target_profit_enabled": config.cash_target_profit_enabled,
+            "adaptive_lot_enabled": config.adaptive_lot_enabled,
+            "reentry_reserve_lots_per_symbol": config.reentry_reserve_lots_per_symbol,
+            "reentry_cash_buffer_ratio": config.reentry_cash_buffer_ratio,
+            "total_asset_for_reserve": total_asset,
+            "cash_target_profit_enabled": config.cash_target_profit_enabled and not config.adaptive_lot_enabled,
             "cash_target_profit_active": active,
             "cash_target_start_date": config.cash_target_start_date,
             "cash_available_for_target": cash,
@@ -450,11 +475,18 @@ class UIService:
             "cash_snapshot_source": source,
             "current_base_target_profit_rate": (cash / config.cash_target_reference_amount * config.cash_target_reference_rate) if cash is not None and active else None,
             "cash_target_low_cash_threshold": config.cash_target_low_cash_threshold,
-            "low_cash_high_cost_sell": active and cash is not None and cash <= config.cash_target_low_cash_threshold,
+            "cash_target_low_cash_lot_policy": config.cash_target_low_cash_lot_policy,
+            "low_cash_high_cost_sell": active and cash is not None and cash <= config.cash_target_low_cash_threshold and config.cash_target_low_cash_lot_policy == "highest_cost",
+            "low_cash_oldest_lot_sell": active and cash is not None and cash <= config.cash_target_low_cash_threshold and config.cash_target_low_cash_lot_policy == "oldest",
+            "cash_buy_drop_enabled": config.cash_buy_drop_enabled and not config.adaptive_lot_enabled,
+            "cash_buy_drop_reference_amount": config.cash_buy_drop_reference_amount,
+            "cash_buy_drop_rate_at_zero": config.cash_buy_drop_rate_at_zero,
+            "cash_buy_drop_rate": config.cash_buy_drop_rate(cash) if config.cash_buy_drop_enabled and not config.adaptive_lot_enabled and cash is not None else None,
+            "sell_limit_markdown_pct": self.config.order.sell_limit_markdown_pct,
             "age_decay_rate": config.age_decay_rate,
-            "age_decay_mode": config.age_decay_mode,
-            "age_decay_per_open_lot_rate": config.age_decay_per_open_lot_rate,
-            "reentry_policy": config.reentry_policy,
+            "age_decay_mode": "current_open_lot_count" if config.adaptive_lot_enabled else config.age_decay_mode,
+            "age_decay_per_open_lot_rate": 0.001 if config.adaptive_lot_enabled else config.age_decay_per_open_lot_rate,
+            "reentry_policy": "adaptive_price_reserve" if config.adaptive_lot_enabled else config.reentry_policy,
             "cash_capacity_reentry_enabled": cash_reentry,
             "cash_capacity_reentry_active": config.cash_capacity_reentry_active(),
             "reentry_start_date": config.reentry_start_date,
@@ -466,7 +498,25 @@ class UIService:
 
     def _cash_target_snapshot(self, policy: dict[str, Any]) -> AccountSnapshot | None:
         cash = policy["cash_available_for_target"]
-        return AccountSnapshot(cash, 0, 0, 0, ()) if cash is not None else None
+        return AccountSnapshot(cash, policy.get("total_asset_for_reserve") or 0, 0, 0, ()) if cash is not None else None
+
+    def _configured_lot_manager(self, lots=None) -> LotManager:
+        manager = LotManager(self.config.strategy, lots)
+        if self.config.strategy.adaptive_lot_enabled:
+            cache = DailyVolatilityCache(Path(self.config.storage_path).with_suffix(".volatility.json"))
+            positions = self.positions()
+            codes = {lot.code for lot in manager.lots.values()} | {str(row["code"]) for row in positions} | {stock.code for stock in self.config.stocks}
+            for code in codes:
+                manager.set_volatility_multiplier(code, cache.multiplier(code))
+            for position in positions:
+                manager.set_symbol_trade_state(str(position["code"]), _to_int(position.get("consecutive_sell_count")))
+        return manager
+
+    def _configured_strategy(self, manager: LotManager) -> LotGridStrategy:
+        strategy = LotGridStrategy(self.config, manager)
+        if self.config.strategy.adaptive_lot_enabled:
+            strategy.positions = {row["code"]: _position_state_from_row(row) for row in self.positions()}
+        return strategy
 
     def status(self) -> dict[str, Any]:
         config = self.config
@@ -696,7 +746,6 @@ class UIService:
         key = ("status_metrics", str(self._db_path()), today, self._db_mtime())
         metrics = self._cached_load(key, lambda: self._load_status_metrics(positions))
         return json.loads(json.dumps(metrics, ensure_ascii=False))
-
 
     def _load_status_metrics(self, positions: list[dict[str, Any]]) -> dict[str, Any]:
         today = datetime.now().date().isoformat()
@@ -1106,7 +1155,7 @@ class UIService:
             "max_total_open_lots": config.risk.max_total_open_lots,
             "total_open_lot_count": len(open_lots),
             "max_total_invested_amount": config.risk.max_total_invested_amount,
-            "total_invested_amount": sum(int(lot.get("remaining_quantity", 0)) * int(lot.get("buy_price", 0)) for lot in open_lots),
+            "total_invested_amount": sum(int(lot.get("remaining_quantity", 0)) * _actual_price(lot.get("buy_price", 0)) for lot in open_lots),
             "max_new_buy_per_day": config.risk.max_new_buy_per_day,
             "new_buy_count_today": sum(1 for order in orders if order.get("side") == "BUY" and order.get("reason") == "initial_buy" and str(order.get("requested_at", "")).startswith(today)),
             "max_new_buy_amount_per_day": config.risk.max_new_buy_amount_per_day,
@@ -1137,21 +1186,21 @@ class UIService:
         open_lots = [lot for lot in lots if _to_int(lot.get("remaining_quantity")) > 0 and str(lot.get("status") or "") != "CLOSED"]
         for lot in open_lots:
             price = _to_int(positions_by_code.get(str(lot.get("code") or ""), {}).get("current_price"))
-            cost = _to_int(lot.get("buy_price"))
+            cost = _actual_price(lot.get("buy_price"))
             rate = (price - cost) / cost if price and cost else 0.0
             lot["stale_lot"] = rate <= config.strategy.stale_lot_loss_rate and float(lot.get("age_weeks") or 0) >= config.strategy.stale_lot_min_age_weeks
         buy_fills = [fill for fill in fills if str(fill.get("side") or "") == OrderSide.BUY.value]
         sell_fills = [fill for fill in fills if str(fill.get("side") or "") == OrderSide.SELL.value]
         lot_by_id = {str(lot.get("lot_id") or ""): lot for lot in lots}
-        buy_amount = sum(_to_int(fill.get("quantity")) * _to_int(fill.get("price")) for fill in buy_fills)
+        buy_amount = sum(_to_int(fill.get("quantity")) * _actual_price(fill.get("price")) for fill in buy_fills)
         buy_lot_count = len(_unique_lot_keys(buy_fills))
-        holding_buy_amount = sum(_to_int(lot.get("remaining_quantity")) * _to_int(lot.get("buy_price")) for lot in open_lots)
+        holding_buy_amount = sum(_to_int(lot.get("remaining_quantity")) * _actual_price(lot.get("buy_price")) for lot in open_lots)
         holding_market_value = sum(_to_int(lot.get("remaining_quantity")) * _current_price_for_lot(lot, latest_prices) for lot in open_lots)
         realized = self._realized_pnl_from_sell_fills(sell_fills, lot_by_id)
         if realized["sold_cost"] <= 0:
             realized["realized_pnl"] = sum(_to_int(lot.get("realized_profit_loss")) for lot in lots)
-            realized["sold_cost"] = sum(max(0, _to_int(lot.get("buy_quantity")) - _to_int(lot.get("remaining_quantity"))) * _to_int(lot.get("buy_price")) for lot in lots)
-        unrealized_pnl = sum((_current_price_for_lot(lot, latest_prices) - _to_int(lot.get("buy_price"))) * _to_int(lot.get("remaining_quantity")) for lot in open_lots)
+            realized["sold_cost"] = sum(max(0, _to_int(lot.get("buy_quantity")) - _to_int(lot.get("remaining_quantity"))) * _actual_price(lot.get("buy_price")) for lot in lots)
+        unrealized_pnl = sum((_current_price_for_lot(lot, latest_prices) - _actual_price(lot.get("buy_price"))) * _to_int(lot.get("remaining_quantity")) for lot in open_lots)
         today = datetime.now().date().isoformat()
         active_codes = self._active_symbol_codes(positions, open_lots, orders)
         overall = {
@@ -1217,8 +1266,8 @@ class UIService:
             if not lot:
                 continue
             quantity = _to_int(fill.get("quantity"))
-            buy_price = _to_int(lot.get("buy_price"))
-            sell_price = _to_int(fill.get("price"))
+            buy_price = _actual_price(lot.get("buy_price"))
+            sell_price = _actual_price(fill.get("price"))
             buy_amount = buy_price * quantity
             sell_amount = sell_price * quantity
             fee_tax = int(round(sell_amount * self.config.strategy.estimated_fee_tax_pct / 100.0))
@@ -1285,7 +1334,7 @@ class UIService:
         latest_prices = self._latest_prices(price_snapshots, positions_by_code)
         open_lots = [lot for lot in lots if _to_int(lot.get("remaining_quantity")) > 0 and str(lot.get("status") or "") != "CLOSED"]
         lot_states = {str(lot.get("lot_id") or ""): _lot_state_from_row(lot) for lot in open_lots}
-        lot_manager = LotManager(self.config.strategy, lot_states)
+        lot_manager = self._configured_lot_manager(lot_states)
         cash_policy = self.cash_target_policy()
         cash_known = not cash_policy["cash_target_profit_active"] or cash_policy["cash_available_for_target"] is not None
         rows = []
@@ -1295,7 +1344,7 @@ class UIService:
             current_price = _current_price_for_lot(lot, latest_prices)
             price_info = latest_prices.get(code, {})
             quantity = _to_int(lot.get("remaining_quantity"))
-            buy_price = _to_int(lot.get("buy_price"))
+            buy_price = _actual_price(lot.get("buy_price"))
             buy_amount = quantity * buy_price
             market_value = quantity * current_price if current_price else 0
             unrealized_pnl = market_value - buy_amount if current_price else 0
@@ -1305,7 +1354,7 @@ class UIService:
             if state is not None and cash_known:
                 lot_manager.update_lot_target_metadata(state, current_price, current_base_target_profit_rate=current_base_rate)
                 effective_rate = state.effective_target_profit_rate
-            target_price = (ceil_price if cash_policy["cash_target_profit_active"] else round_price)(buy_price * (1.0 + effective_rate)) if buy_price and cash_known else None
+            target_price = (ceil_price if cash_policy["cash_target_profit_active"] or self.config.strategy.adaptive_lot_enabled else round_price)(buy_price * (1.0 + effective_rate)) if buy_price and cash_known and effective_rate > -1.0 else None
             target_amount = target_price * quantity if target_price is not None else None
             row = {
                 "date": _date_key(lot.get("buy_filled_at")),
@@ -1333,6 +1382,8 @@ class UIService:
                 "cash_target_trigger_lot_id": lot.get("cash_target_trigger_lot_id", ""),
                 "cash_target_sell_limit_price": lot.get("cash_target_sell_limit_price"),
                 "negative_target_high_cost_sell": lot.get("negative_target_high_cost_sell", False),
+                "low_cash_oldest_lot_sell": lot.get("low_cash_oldest_lot_sell", False),
+                "cash_target_sell_reason": lot.get("cash_target_sell_reason", ""),
                 "cash_snapshot_status": cash_policy["cash_snapshot_status"],
                 "deep_loss_started_on": lot.get("deep_loss_started_on", ""),
                 "deep_loss_last_observed_on": lot.get("deep_loss_last_observed_on", ""),
@@ -1368,7 +1419,7 @@ class UIService:
             "generated_at": datetime.now().isoformat(timespec="seconds"),
             "calculation_basis": "OPEN LOT 현재 기준 평가손익. 날짜별 조회는 해당 날짜에 매수되어 현재 OPEN 상태인 LOT만 보여줍니다.",
             "data_quality_notes": self._portfolio_data_quality_notes(price_snapshots, latest_prices, open_lots) + [
-                "target_price/target_amount는 최신 확인 가용현금과 현재 종목 LOT 수에 따른 decay가 반영된 참고값입니다. 저현금 또는 음수 목표 손실매도로 선택한 최고원가 LOT의 실제 지정가는 cash_target_sell_limit_price입니다. 현금 미확인 시 목표는 표시하지 않습니다." if cash_policy["cash_target_profit_active"] else "target_price/target_amount는 실제 주문 예정가가 아니라 target_profit_lot_bands와 age_decay가 반영된 참고 목표값입니다.",
+                "개별 LOT 매수가 × (1 + 3% × 변동성 배수 × 연속매도 배수 - 현재 LOT 수 × 0.1% × 보유 주수)로 목표를 계산합니다." if self.config.strategy.adaptive_lot_enabled else ("target_price/target_amount는 최신 확인 가용현금과 현재 종목 LOT 수에 따른 decay가 반영된 참고값입니다. 저현금 또는 음수 목표 손실매도로 선택한 최고원가 LOT의 실제 지정가는 cash_target_sell_limit_price입니다. 현금 미확인 시 목표는 표시하지 않습니다." if cash_policy["cash_target_profit_active"] else "target_price/target_amount는 실제 주문 예정가가 아니라 target_profit_lot_bands와 age_decay가 반영된 참고 목표값입니다."),
             ],
             "price_source_info": {code: latest_prices.get(code, {}) for code in sorted({str(lot.get("code") or "") for lot in open_lots})},
             "read_only": True,
@@ -1438,8 +1489,8 @@ class UIService:
             if not lot:
                 continue
             quantity = _to_int(fill.get("quantity"))
-            sell_price = _to_int(fill.get("price"))
-            buy_price = _to_int(lot.get("buy_price"))
+            sell_price = _actual_price(fill.get("price"))
+            buy_price = _actual_price(lot.get("buy_price"))
             fee_tax = int(round(sell_price * quantity * self.config.strategy.estimated_fee_tax_pct / 100.0))
             fill_pnl = (sell_price - buy_price) * quantity - fee_tax
             realized_pnl += fill_pnl
@@ -1470,7 +1521,6 @@ class UIService:
             self._table_version("daily_prices"),
         )
         return dict(self._cached_load(cache_key, lambda: self._build_portfolio_history_chart(db_path), ttl_seconds=300.0))
-
 
     def _build_portfolio_history_chart(self, db_path: Path) -> dict[str, Any]:
         # A history chart needs persisted costs and quantities, not thousands of
@@ -1515,8 +1565,8 @@ class UIService:
             if not lot or not day:
                 continue
             quantity = _to_int(fill.get("quantity"))
-            sell_price = _to_int(fill.get("price"))
-            buy_price = _to_int(lot.get("buy_price"))
+            sell_price = _actual_price(fill.get("price"))
+            buy_price = _actual_price(lot.get("buy_price"))
             fee_tax = int(round(sell_price * quantity * fee_tax_rate))
             sell_events_by_date[day].append((lot_id, quantity))
             realized_by_date[day] += (sell_price - buy_price) * quantity - fee_tax
@@ -1531,7 +1581,7 @@ class UIService:
                 str(lot.get("lot_id") or ""),
                 str(lot.get("code") or ""),
                 _to_int(lot.get("buy_quantity")),
-                _to_int(lot.get("buy_price")),
+                _actual_price(lot.get("buy_price")),
             )
             for lot in lots
         ]
@@ -1586,7 +1636,6 @@ class UIService:
         }
         return dict(result)
 
-
     def _daily_snapshot_prices(self, first_date: str, codes: set[str]) -> tuple[set[str], list[dict[str, Any]]]:
         """Read the last indexed row per day/code without scanning tick history."""
         db_path = self._db_path()
@@ -1638,8 +1687,8 @@ class UIService:
             if not day or not lot:
                 continue
             quantity = _to_int(fill.get("quantity"))
-            sell_price = _to_int(fill.get("price"))
-            buy_price = _to_int(lot.get("buy_price"))
+            sell_price = _actual_price(fill.get("price"))
+            buy_price = _actual_price(lot.get("buy_price"))
             fee_tax = int(round(sell_price * quantity * self.config.strategy.estimated_fee_tax_pct / 100.0))
             daily[day]["realized_pnl"] += (sell_price - buy_price) * quantity - fee_tax
             daily[day]["sold_cost"] += buy_price * quantity
@@ -1672,14 +1721,14 @@ class UIService:
             if not day:
                 continue
             rows[day]["date"] = day
-            rows[day]["buy_amount"] += _to_int(fill.get("quantity")) * _to_int(fill.get("price"))
+            rows[day]["buy_amount"] += _to_int(fill.get("quantity")) * _actual_price(fill.get("price"))
             buy_lots_by_day[day].add(_lot_key(fill))
         for fill in sell_fills:
             day = _date_key(fill.get("filled_at"))
             if not day:
                 continue
             rows[day]["date"] = day
-            rows[day]["sell_amount"] += _to_int(fill.get("quantity")) * _to_int(fill.get("price"))
+            rows[day]["sell_amount"] += _to_int(fill.get("quantity")) * _actual_price(fill.get("price"))
             sell_lots_by_day[day].add(_lot_key(fill))
         daily_realized = self._daily_realized(sell_fills, lot_by_id)
         for day, values in daily_realized.items():
@@ -1691,8 +1740,8 @@ class UIService:
             if not day:
                 continue
             rows[day]["date"] = day
-            cost = _to_int(lot.get("remaining_quantity")) * _to_int(lot.get("buy_price"))
-            pnl = (_current_price_for_lot(lot, latest_prices) - _to_int(lot.get("buy_price"))) * _to_int(lot.get("remaining_quantity"))
+            cost = _to_int(lot.get("remaining_quantity")) * _actual_price(lot.get("buy_price"))
+            pnl = (_current_price_for_lot(lot, latest_prices) - _actual_price(lot.get("buy_price"))) * _to_int(lot.get("remaining_quantity"))
             rows[day]["unrealized_pnl"] += pnl
             rows[day]["_unrealized_cost"] = _to_int(rows[day].get("_unrealized_cost")) + cost
         for day, row in rows.items():
@@ -1730,7 +1779,7 @@ class UIService:
             code = str(lot.get("code") or "")
             row = by_code.setdefault(code, {"code": code, "name": positions_by_code.get(code, {}).get("name", ""), "open_lot_count": 0, "holding_buy_amount": 0, "market_value": 0, "unrealized_pnl": 0})
             quantity = _to_int(lot.get("remaining_quantity"))
-            buy_price = _to_int(lot.get("buy_price"))
+            buy_price = _actual_price(lot.get("buy_price"))
             current_price = _current_price_for_lot(lot, latest_prices)
             row["open_lot_count"] += 1
             row["holding_buy_amount"] += quantity * buy_price
@@ -1775,8 +1824,8 @@ class UIService:
                 continue
             code = str(fill.get("code") or lot.get("code") or "")
             quantity = _to_int(fill.get("quantity"))
-            sell_price = _to_int(fill.get("price"))
-            buy_price = _to_int(lot.get("buy_price"))
+            sell_price = _actual_price(fill.get("price"))
+            buy_price = _actual_price(lot.get("buy_price"))
             fee_tax = int(round(sell_price * quantity * self.config.strategy.estimated_fee_tax_pct / 100.0))
             rows[code]["realized_pnl"] += (sell_price - buy_price) * quantity - fee_tax
             rows[code]["realized_cost"] += buy_price * quantity
@@ -1784,7 +1833,7 @@ class UIService:
         for lot in lots:
             code = str(lot.get("code") or "")
             quantity = _to_int(lot.get("remaining_quantity"))
-            buy_price = _to_int(lot.get("buy_price"))
+            buy_price = _actual_price(lot.get("buy_price"))
             buy_quantity = _to_int(lot.get("buy_quantity"))
             if quantity > 0 and str(lot.get("status") or "") != "CLOSED":
                 current_price = _current_price_for_lot(lot, latest_prices)
@@ -1920,6 +1969,15 @@ class UIService:
         for lot in lots:
             if _to_int(lot.get("remaining_quantity")) > 0 and str(lot.get("status") or "") != "CLOSED":
                 open_lots_by_code[str(lot.get("code") or "")].append(lot)
+        cash_strategy = None
+        cash_snapshot = None
+        if config.strategy.cash_buy_drop_enabled or config.strategy.adaptive_lot_enabled:
+            manager = self._configured_lot_manager({
+                str(lot["lot_id"]): _lot_state_from_row(lot)
+                for values in open_lots_by_code.values() for lot in values
+            })
+            cash_strategy = self._configured_strategy(manager)
+            cash_snapshot = self._cash_target_snapshot(self.cash_target_policy())
         result = []
         for stock in config.stocks:
             position = positions.get(stock.code, {})
@@ -1927,13 +1985,17 @@ class UIService:
             risk_reasons = [flag for flag in RISK_FLAGS if getattr(stock, flag)]
             decision = latest_decisions.get(stock.code, {})
             pnl = pnl_by_code.get(stock.code, {})
+            cash_buy_details = (cash_strategy.adaptive_buy_details if config.strategy.adaptive_lot_enabled else cash_strategy.cash_buy_details)(
+                _position_state_from_row(position or {"code": stock.code}),
+                _to_int(position.get("current_price")), cash_snapshot,
+            ) if cash_strategy is not None else {}
             result.append({
                 **asdict(stock),
                 "risk_block_reasons": ",".join(risk_reasons),
                 "position_state": position.get("position_state", "UNKNOWN"),
                 "current_price": position.get("current_price", 0),
                 "open_lot_count": len(open_lots),
-                "invested_amount": sum(int(lot.get("buy_price", 0)) * int(lot.get("remaining_quantity", 0)) for lot in open_lots),
+                "invested_amount": sum(_actual_price(lot.get("buy_price", 0)) * int(lot.get("remaining_quantity", 0)) for lot in open_lots),
                 "profit_loss_pct": position.get("profit_loss_pct", 0.0),
                 "realized_pnl_rate": pnl.get("realized_pnl_rate", 0.0),
                 "realized_pnl": pnl.get("realized_pnl", 0),
@@ -1942,6 +2004,15 @@ class UIService:
                 "last_decision": decision.get("action", ""),
                 "skip_reason": decision.get("skip_reason", ""),
                 "final_block_reason": decision.get("final_block_reason", ""),
+                **{key: value for key, value in cash_buy_details.items() if key != "skip_reason"},
+                "cash_buy_skip_reason": cash_buy_details.get("skip_reason", ""),
+                **({
+                    "adaptive_lot_enabled": True,
+                    "volatility_multiplier": manager.volatility_multiplier_for(stock.code),
+                    "consecutive_buy_count": position.get("consecutive_buy_count", 0),
+                    "consecutive_sell_count": position.get("consecutive_sell_count", 0),
+                    "rebuy_restriction_active": position.get("rebuy_restriction_active", False),
+                } if config.strategy.adaptive_lot_enabled else {}),
             })
         return result
 
@@ -1951,14 +2022,14 @@ class UIService:
         position = next((item for item in self.positions() if item["code"] == code), {"code": code})
         lots = [lot for lot in self.lots() if lot.get("code") == code]
         open_lots = [lot for lot in lots if lot.get("remaining_quantity", 0) > 0 and lot.get("status") != "CLOSED"]
-        lot_manager = LotManager(config.strategy)
+        lot_manager = self._configured_lot_manager()
         lot_manager.lots = {lot["lot_id"]: _lot_state_from_row(lot) for lot in lots}
-        strategy = LotGridStrategy(config, lot_manager)
+        strategy = self._configured_strategy(lot_manager)
         position_state = _position_state_from_row(position)
         current_price = int(position.get("current_price") or 0)
         cash_policy = self.cash_target_policy()
         snapshot = self._cash_target_snapshot(cash_policy)
-        cash_required = cash_policy["cash_target_profit_active"] or config.strategy.cash_capacity_reentry_enabled()
+        cash_required = not config.strategy.adaptive_lot_enabled and (cash_policy["cash_target_profit_active"] or config.strategy.cash_capacity_reentry_enabled() or config.strategy.cash_buy_drop_enabled)
         cash_known = not cash_required or snapshot is not None
         context = strategy.context(position_state, current_price, snapshot) if current_price and cash_known else None
         return {
@@ -1967,7 +2038,9 @@ class UIService:
             "lots": lots,
             "open_lot_count": len(open_lots),
             "strategy_context": asdict(context) if context else {},
-            "reentry_details": strategy.reentry_details(position_state, current_price, snapshot=snapshot),
+            "cash_buy_details": {} if config.strategy.adaptive_lot_enabled else strategy.cash_buy_details(position_state, current_price, snapshot),
+            "adaptive_buy_details": strategy.adaptive_buy_details(position_state, current_price, snapshot) if config.strategy.adaptive_lot_enabled else {},
+            "reentry_details": strategy.adaptive_buy_details(position_state, current_price, snapshot) if config.strategy.adaptive_lot_enabled else strategy.reentry_details(position_state, current_price, snapshot=snapshot),
             "cash_target_policy": cash_policy,
             "recent_decisions": [item for item in self.parse_decision_logs(300) if item.get("code") == code][-50:],
             "review_status": self.review_status(code),
@@ -2047,7 +2120,7 @@ class UIService:
         store = StateStore(self.config.storage_path)
         positions = store.load_positions()
         position = positions.get(code, PositionState(code=code))
-        lot_manager = LotManager(self.config.strategy, store.load_lots())
+        lot_manager = self._configured_lot_manager(store.load_lots())
         position_manager = PositionManager(self.config.strategy, lot_manager, positions)
         position, triggers, event = position_manager.recheck_review_required(position, position.current_price)
         store.save_position(position)
@@ -2083,7 +2156,7 @@ class UIService:
 
     def _review_triggers(self, position: dict[str, Any]) -> dict[str, Any]:
         code = str(position.get("code") or "").zfill(6)
-        lot_manager = LotManager(self.config.strategy)
+        lot_manager = self._configured_lot_manager()
         lot_manager.lots = {lot["lot_id"]: _lot_state_from_row(lot) for lot in self.lots() if lot.get("code") == code}
         position_state = _position_state_from_row(position)
         return PositionManager(self.config.strategy, lot_manager).review_triggers(position_state, int(position.get("current_price") or 0))
@@ -2262,38 +2335,61 @@ class UIService:
         cash_policy = self.cash_target_policy()
         cash_active = cash_policy["cash_target_profit_active"]
         cash_known = cash_policy["cash_available_for_target"] is not None
-        # Sell-policy previews inspect OPEN LOTs, not closed history.
-        manager = LotManager(self.config.strategy, {
+        # Sell-policy previews only inspect OPEN LOTs. Including every CLOSED
+        # historical LOT makes each repeated per-symbol lookup scan years of
+        # irrelevant history while rendering the dashboard.
+        adaptive = self.config.strategy.adaptive_lot_enabled
+        manager = self._configured_lot_manager({
             row["lot_id"]: _lot_state_from_row(row)
             for row in self._table("lots")
             if _to_int(row.get("remaining_quantity")) > 0 and str(row.get("status") or "") != "CLOSED"
-        }) if cash_active else None
-        policy_targets: dict[str, tuple[str, str, int, bool]] = {}
+        }) if cash_active or adaptive else None
+        policy_targets: dict[str, tuple[str, str, int, str]] = {}
         if manager is not None and cash_policy["low_cash_high_cost_sell"]:
             for code in {lot.code for lot in manager.lots.values() if lot.remaining_quantity > 0}:
                 lowest = manager.lowest_open_buy_lot(code)
                 highest = manager.highest_open_buy_lot(code)
                 if lowest is not None and highest is not None:
                     effective = manager.effective_target_profit_rate(lowest, now, cash_policy["current_base_target_profit_rate"])
-                    policy_targets[code] = (lowest.lot_id, highest.lot_id, ceil_price(lowest.buy_price * (1.0 + effective)), False)
-        elif manager is not None and cash_known and self.config.strategy.age_decay_mode == "current_open_lot_count":
-            strategy = LotGridStrategy(self.config, manager)
+                    policy_targets[code] = (lowest.lot_id, highest.lot_id, ceil_price(lowest.buy_price * (1.0 + effective)), SellReason.LOW_CASH_HIGH_COST_SELL.value)
+        elif manager is not None and cash_known and (cash_policy["low_cash_oldest_lot_sell"] or self.config.strategy.age_decay_mode == "current_open_lot_count"):
+            strategy = self._configured_strategy(manager)
             snapshot = self._cash_target_snapshot(cash_policy)
             for code, position in positions.items():
                 price = by_code_price[code]
                 if price <= 0 or not manager.open_lots(code):
                     continue
                 context = strategy.context(_position_state_from_row(position), price, snapshot)
-                if context.negative_target_high_cost_sell:
-                    policy_targets[code] = (context.sell_trigger_lot_id, context.selected_sell_lot_id, context.sell_limit_price, True)
+                if context.low_cash_oldest_lot_sell or context.negative_target_high_cost_sell:
+                    reason = SellReason.LOW_CASH_OLDEST_LOT_SELL.value if context.low_cash_oldest_lot_sell else SellReason.NEGATIVE_TARGET_HIGH_COST_SELL.value
+                    policy_targets[code] = (context.sell_trigger_lot_id, context.selected_sell_lot_id, context.sell_limit_price, reason)
         for row in rows:
             current_price = by_code_price.get(row["code"], 0)
+            if adaptive:
+                row["adaptive_lot_enabled"] = True
             row["current_price"] = current_price
             row["lot_age_days"] = _age_days(row.get("buy_filled_at", ""), now)
-            row["unrealized_pnl"] = (current_price - int(row.get("buy_price", 0))) * int(row.get("remaining_quantity", 0)) if current_price else 0
-            row["unrealized_pnl_rate"] = (current_price - int(row.get("buy_price", 0))) / int(row.get("buy_price", 1)) if current_price and row.get("buy_price") else 0
+            row["unrealized_pnl"] = (current_price - _actual_price(row.get("buy_price", 0))) * int(row.get("remaining_quantity", 0)) if current_price else 0
+            row["unrealized_pnl_rate"] = (current_price - _actual_price(row.get("buy_price", 0))) / _actual_price(row.get("buy_price", 1)) if current_price and row.get("buy_price") else 0
             row["stale_lot"] = row["unrealized_pnl_rate"] <= self.config.strategy.stale_lot_loss_rate and float(row.get("age_weeks") or 0) >= self.config.strategy.stale_lot_min_age_weeks
-            row["sell_trigger_price"] = int(round(int(row.get("buy_price", 0)) * (1 + float(row.get("effective_target_profit_rate") or 0))))
+            row["sell_trigger_price"] = int(round(_actual_price(row.get("buy_price", 0)) * (1 + float(row.get("effective_target_profit_rate") or 0))))
+            if adaptive and _to_int(row.get("remaining_quantity")) > 0 and str(row.get("status") or "") != "CLOSED":
+                state = manager.lots[str(row["lot_id"])]
+                manager.update_lot_target_metadata(state, current_price, now)
+                row.update({
+                    "current_symbol_open_lot_count": len(manager.open_lots(row["code"])),
+                    "effective_weekly_age_decay_rate": manager.age_decay_rate_for(row["code"], now),
+                    "current_base_target_profit_rate": state.base_target_profit_rate,
+                    "effective_target_profit_rate": state.effective_target_profit_rate,
+                    "age_weeks": state.age_weeks, "target_sell_price": state.target_sell_price,
+                    "sell_trigger_price": state.target_sell_price,
+                    "volatility_multiplier": manager.volatility_multiplier_for(row["code"]),
+                    "consecutive_sell_count": _to_int(positions.get(row["code"], {}).get("consecutive_sell_count")),
+                    "cash_target_sell_candidate": False, "negative_target_high_cost_sell": False,
+                    "low_cash_oldest_lot_sell": False, "low_cash_high_cost_sell": False,
+                    "cash_target_sell_limit_price": None, "cash_target_trigger_lot_id": "",
+                    "cash_target_sell_reason": "", "cleanup_candidate": False,
+                })
             if cash_active and _to_int(row.get("remaining_quantity")) > 0 and str(row.get("status") or "") != "CLOSED":
                 row["current_symbol_open_lot_count"] = len(manager.open_lots(row["code"]))
                 row["effective_weekly_age_decay_rate"] = manager.age_decay_rate_for(row["code"], now)
@@ -2304,6 +2400,9 @@ class UIService:
                 row["cash_target_trigger_lot_id"] = ""
                 row["cash_target_sell_limit_price"] = None
                 row["negative_target_high_cost_sell"] = False
+                row["low_cash_oldest_lot_sell"] = False
+                row["low_cash_high_cost_sell"] = False
+                row["cash_target_sell_reason"] = ""
                 if cash_known:
                     state = manager.lots[str(row["lot_id"])]
                     manager.update_lot_target_metadata(state, current_price, now, cash_policy["current_base_target_profit_rate"])
@@ -2312,11 +2411,14 @@ class UIService:
                     row["target_sell_price"] = ceil_price(state.buy_price * (1.0 + state.effective_target_profit_rate))
                     row["sell_trigger_price"] = row["target_sell_price"]
                     if row["code"] in policy_targets:
-                        trigger_id, sell_id, limit, negative_target = policy_targets[row["code"]]
+                        trigger_id, sell_id, limit, reason = policy_targets[row["code"]]
                         row["cash_target_trigger_lot_id"] = trigger_id
                         row["cash_target_sell_candidate"] = str(row["lot_id"]) == sell_id
                         if row["cash_target_sell_candidate"]:
-                            row["negative_target_high_cost_sell"] = negative_target
+                            row["negative_target_high_cost_sell"] = reason == SellReason.NEGATIVE_TARGET_HIGH_COST_SELL.value
+                            row["low_cash_oldest_lot_sell"] = reason == SellReason.LOW_CASH_OLDEST_LOT_SELL.value
+                            row["low_cash_high_cost_sell"] = reason == SellReason.LOW_CASH_HIGH_COST_SELL.value
+                            row["cash_target_sell_reason"] = reason
                             row["cash_target_sell_limit_price"] = limit
                             row["sell_trigger_price"] = limit
                     else:
@@ -2684,7 +2786,7 @@ class UIService:
         estimated_pnl_rate = 0.0
         estimated_fee_tax = 0
         if side == OrderSide.SELL.value and lot and current_price > 0:
-            buy_price = int(lot.get("buy_price") or 0)
+            buy_price = _actual_price(lot.get("buy_price"))
             estimated_pnl = (current_price - buy_price) * quantity
             estimated_pnl_rate = (current_price - buy_price) / buy_price if buy_price else 0.0
             estimated_fee_tax = int(round(amount * config.strategy.estimated_fee_tax_pct / 100.0))
@@ -3061,11 +3163,11 @@ class UIService:
     def decision_preview(self, code: str | None = None, current_price: int | None = None) -> dict[str, Any]:
         config = self.config
         lots = {row["lot_id"]: _lot_state_from_row(row) for row in self.lots()}
-        lot_manager = LotManager(config.strategy, lots)
-        strategy = LotGridStrategy(config, lot_manager)
+        lot_manager = self._configured_lot_manager(lots)
+        strategy = self._configured_strategy(lot_manager)
         cash_policy = self.cash_target_policy()
         snapshot = self._cash_target_snapshot(cash_policy)
-        cash_required = cash_policy["cash_target_profit_active"] or config.strategy.cash_capacity_reentry_enabled()
+        cash_required = not config.strategy.adaptive_lot_enabled and (cash_policy["cash_target_profit_active"] or config.strategy.cash_capacity_reentry_enabled() or config.strategy.cash_buy_drop_enabled)
         cash_known = not cash_required or snapshot is not None
         positions = [_position_state_from_row(row) for row in self.positions()]
         if code:
@@ -3074,7 +3176,8 @@ class UIService:
         for position in positions:
             price = current_price or position.current_price
             context = strategy.context(position, price, snapshot) if price and cash_known else None
-            action = strategy.decide(position, price, snapshot or _empty_snapshot(), _allowed(), _allowed()) if price and cash_known else None
+            preview_snapshot = snapshot if config.strategy.adaptive_lot_enabled else (snapshot or _empty_snapshot())
+            action = strategy.decide(position, price, preview_snapshot, _allowed(), _allowed()) if price and cash_known else None
             final_block_reason = "cash_snapshot_unavailable" if not cash_known else (runtime_block_reason(load_runtime_control(self.runtime_path), action) if action else "")
             previews.append({
                 "code": position.code,
@@ -3293,7 +3396,6 @@ class UIService:
             return key[:2]
         return key
 
-
     def _cache_set(self, key: tuple[Any, ...], value: Any, *, generation: int | None = None) -> Any:
         now = time.monotonic()
         family = self._cache_family(key)
@@ -3308,7 +3410,6 @@ class UIService:
             while len(self._cache) > UI_CACHE_MAX_ENTRIES:
                 self._cache.pop(next(iter(self._cache)))
         return value
-
 
     def _cached_load(self, key: tuple[Any, ...], loader: Callable[[], Any], ttl_seconds: float = UI_CACHE_TTL_SECONDS) -> Any:
         """Coalesce matching work without holding the global lock during I/O."""
@@ -3537,6 +3638,17 @@ def _safe_float(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _actual_price(value: Any) -> int | float:
+    """Retain fractional execution averages; exchange order prices stay ticks."""
+    try:
+        number = float(value or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    if not math.isfinite(number):
+        return 0
+    return int(number) if number.is_integer() else number
 
 
 def _to_int(value: Any) -> int:

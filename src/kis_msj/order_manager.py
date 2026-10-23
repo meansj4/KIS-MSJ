@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import logging
 import json
+import math
 import time
 from dataclasses import replace
 from uuid import uuid4
 from datetime import datetime, time as day_time, timedelta
 
 from .config import BotConfig
+from .adaptive_policy import floor_order_price
 from .order_identity import broker_order_id
 from .lot_manager import round_price
 from .models import OrderRequest, OrderResult, OrderSide, OrderStatus, PositionState, ReentryType, TradeFill
@@ -23,7 +25,8 @@ class OrderManager:
         self.client = client
         self.store = store
         self.logger = logger
-        if config.risk.cash_shortfall_rotation_enabled or config.strategy.cash_capacity_reentry_enabled():
+        if (config.risk.cash_shortfall_rotation_enabled or config.strategy.cash_capacity_reentry_enabled()
+                or config.strategy.adaptive_lot_enabled):
             # A durable ledger cannot prevent duplicate sales if the HTTP layer
             # silently repeats a POST whose broker outcome is unknown.
             self.client.durable_order_submission = True
@@ -36,15 +39,40 @@ class OrderManager:
         *,
         market_order: bool = False,
     ) -> OrderRequest | None:
+        if not _positive_finite(current_price):
+            return None
+        adaptive_auto = (self.config.strategy.adaptive_lot_enabled
+                         and action.reason.startswith("adaptive_"))
+        # Negative/non-finite targets must never become an unrelated fallback
+        # order. Zero remains the explicit legacy/manual "use quote" sentinel.
+        if not _nonnegative_finite(action.limit_price):
+            return None
+        adaptive_target_sell = (self.config.strategy.adaptive_lot_enabled and action.side is OrderSide.SELL
+                                and action.target_lot is not None
+                                and action.sell_reason not in {"RISK_EXIT", "DEEP_LOSS_RECOVERY_SELL"})
+        if adaptive_target_sell:
+            if (action.limit_price <= 0 or action.limit_price > current_price
+                    or round_price(action.limit_price) != action.limit_price):
+                return None
         if action.side is OrderSide.BUY:
+            if not _positive_finite(action.amount):
+                return None
+            if adaptive_auto and (not _positive_finite(action.limit_price) or market_order):
+                return None
             executable_buy_limit = self.buy_limit_price(current_price)
-            if action.limit_price > 0 and action.reason == "reentry_buy":
+            if action.limit_price > 0 and (
+                    adaptive_auto or action.reason == "reentry_buy"
+                    or (self.config.strategy.cash_buy_drop_enabled
+                        and (action.reason.startswith("add_buy_drop_")
+                             or action.reentry_type == ReentryType.CASH_CAPACITY_REENTRY.value))):
                 # A stale/decayed trigger can sit above today's exchange upper
                 # limit.  Keep the trigger as the willingness-to-pay ceiling,
                 # but submit a marketable limit near the live quote so KIS does
                 # not reject an otherwise valid "price fell through trigger"
                 # reentry before it reaches the order book.
                 limit_price = min(action.limit_price, executable_buy_limit)
+                if adaptive_auto:
+                    limit_price = floor_order_price(limit_price)
                 if limit_price != action.limit_price:
                     self.logger.info(
                         "buy_limit_capped code=%s reason=%s strategy_limit=%s executable_limit=%s current_price=%s",
@@ -58,25 +86,34 @@ class OrderManager:
                 limit_price = action.limit_price
             else:
                 limit_price = executable_buy_limit
-            quantity = action.amount // current_price
+            quantity_price = limit_price if self.config.strategy.adaptive_lot_enabled else current_price
+            quantity = action.amount // quantity_price if _positive_finite(quantity_price) else 0
         else:
             quantity = action.quantity or 0
-            limit_price = action.limit_price if action.limit_price > 0 else self.sell_limit_price(current_price)
-        if action.side is OrderSide.BUY and self.config.risk.cash_shortfall_rotation_enabled:
+            if adaptive_target_sell:
+                # A long-decayed trigger can lie outside today's daily price
+                # band. The validated quote is executable and still clears
+                # the LOT's threshold without submitting an ancient price.
+                limit_price = max(action.limit_price, current_price)
+            else:
+                limit_price = action.limit_price if action.limit_price > 0 else self.sell_limit_price(current_price)
+        if (action.side is OrderSide.BUY and self.config.risk.cash_shortfall_rotation_enabled
+                and not self.config.strategy.adaptive_lot_enabled):
             from .cash_rotation import rebuy_price_limit
             ceiling = rebuy_price_limit(self, position)
             if ceiling is not None:
                 limit_price = min(limit_price, ceiling)
                 if limit_price <= 0:
                     return None
-        if quantity < 1:
+        if (not _positive_finite(limit_price) or not _positive_finite(quantity)
+                or int(quantity) != quantity or round_price(limit_price) != limit_price):
             return None
         return OrderRequest(
             position.code,
             position.name,
             action.side,
-            quantity,
-            limit_price,
+            int(quantity),
+            int(limit_price),
             action.reason,
             action.lot_id,
             market_order,
@@ -86,7 +123,10 @@ class OrderManager:
         )
 
     def submit_and_confirm(self, request: OrderRequest) -> tuple[OrderResult, TradeFill | None]:
-        if (self.config.strategy.cash_capacity_reentry_enabled() and request.side is OrderSide.BUY
+        adaptive_enabled = self.config.strategy.adaptive_lot_enabled
+        adaptive_reentry = self._adaptive_submission_guard(request) if adaptive_enabled else False
+        confirmed_cash_snapshot = None
+        if (not adaptive_enabled and self.config.strategy.cash_capacity_reentry_enabled() and request.side is OrderSide.BUY
                 and request.reentry_type == ReentryType.CASH_CAPACITY_REENTRY.value):
             from .market_session import SessionUnavailable
             from .lot_manager import LotManager
@@ -99,6 +139,7 @@ class OrderManager:
                 # Guard the final executable notional even for callers that
                 # bypass the main strategy evaluation path.
                 snapshot = self.client.account_snapshot()
+                confirmed_cash_snapshot = snapshot
                 strategy = LotGridStrategy(self.config, LotManager(self.config.strategy))
                 sizing = strategy.lot_sizing_for_new_cycle(request.limit_price)
                 unit_amount = int(sizing.get("lot_unit_amount", 0))
@@ -109,6 +150,25 @@ class OrderManager:
                 required = max(unit_amount, request.quantity * request.limit_price) * self.config.strategy.reentry_cash_lot_multiple
                 if snapshot.cash_available < required:
                     raise SessionUnavailable("cash_capacity_reentry_cash_insufficient")
+        if (not adaptive_enabled and self.config.order.live_trading and self.config.strategy.cash_buy_drop_enabled
+                and request.side is OrderSide.BUY
+                and (request.reason.startswith("add_buy_drop_")
+                     or request.reentry_type == ReentryType.CASH_CAPACITY_REENTRY.value)):
+            from .market_session import SessionUnavailable
+            from .lot_manager import LotManager
+            from .strategy import LotGridStrategy
+            # The main loop already re-evaluates against fresh cash. Enforce
+            # the same price ceiling immediately before an automatic POST,
+            # including callers that bypass that loop. Initial/manual entries
+            # have no historical LOT reference and keep their own guards.
+            snapshot = confirmed_cash_snapshot or self.client.account_snapshot()
+            position = self.store.load_positions().get(request.code)
+            if position is None:
+                raise SessionUnavailable("cash_buy_reference_missing")
+            strategy = LotGridStrategy(self.config, LotManager(self.config.strategy, self.store.load_lots()))
+            details = strategy.cash_buy_details(position, request.limit_price, snapshot)
+            if not details["cash_buy_price_condition_met"]:
+                raise SessionUnavailable(str(details.get("skip_reason") or "cash_buy_price_not_reached"))
         if request.session:
             from .market_session import SessionUnavailable, Route
             if not self.config.extended_hours.enabled:
@@ -142,13 +202,16 @@ class OrderManager:
                 return result, None
             return result, fill
 
-        if request.session or self.config.risk.cash_shortfall_rotation_enabled or self.config.strategy.cash_capacity_reentry_enabled():
+        if (request.session or self.config.risk.cash_shortfall_rotation_enabled
+                or self.config.strategy.cash_capacity_reentry_enabled() or adaptive_enabled):
             from .market_session import SessionUnavailable
             # Durable reservation *before* sending. Ambiguous transport failure
             # stays pending and blocks retransmission, including after restart.
             intent_id = "INTENT-" + uuid4().hex
             intent = OrderResult(request, intent_id, OrderStatus.REQUESTED, "submission_in_progress")
-            if not self.store.reserve_session_intent(intent):
+            reservation_options = ({"block_any_side": True, "block_pending_buy": adaptive_reentry}
+                                   if adaptive_enabled else {})
+            if not self.store.reserve_session_intent(intent, **reservation_options):
                 raise SessionUnavailable("existing_order_any_venue")
             try:
                 result = self.client.place_order(request)
@@ -172,6 +235,9 @@ class OrderManager:
                     route = Route(request.session, request.venue, request.quote_market, request.order_division)
                     market.reject_for_day(request.code, route, "submission_requires_reconciliation")
                 raise
+            if not result.order_id and result.status is not OrderStatus.REJECTED:
+                self.store.record_order(replace(intent, message="submission_outcome_unknown:missing_broker_order_id"))
+                raise SessionUnavailable("submission_requires_reconciliation")
             try:
                 result = self.store.resolve_session_intent(intent, result)
             except Exception:
@@ -237,6 +303,73 @@ class OrderManager:
         canceled = OrderResult(request, result.order_id, final_status, "unfilled_limit_order_timeout")
         self.store.record_order(canceled)
         return canceled, None
+
+    def _adaptive_submission_guard(self, request: OrderRequest) -> bool:
+        """Recheck persisted anchors and spendable cash immediately before POST."""
+        from .market_session import SessionUnavailable
+        from .lot_manager import LotManager
+        from .strategy import LotGridStrategy
+        from .volatility import DailyVolatilityCache
+
+        if (not _positive_finite(request.quantity) or int(request.quantity) != request.quantity
+                or not _positive_finite(request.limit_price)
+                or int(request.limit_price) != request.limit_price
+                or round_price(request.limit_price) != request.limit_price):
+            raise SessionUnavailable("adaptive_invalid_order")
+        open_orders = self.store.open_orders()
+        if any(order.request.code == request.code for order in open_orders):
+            raise SessionUnavailable("existing_order_any_venue")
+        if request.side is not OrderSide.BUY:
+            if request.lot_id:
+                lot = self.store.load_lots().get(request.lot_id)
+                if lot is None or lot.code != request.code or request.quantity > lot.remaining_quantity:
+                    raise SessionUnavailable("adaptive_sell_quantity_unavailable")
+            return False
+
+        positions = self.store.load_positions()
+        position = positions.get(request.code)
+        automatic = request.reason.startswith("adaptive_")
+        if position is None and automatic:
+            raise SessionUnavailable("adaptive_buy_reference_missing")
+        if automatic and (position.position_state in {"SYNC_REQUIRED", "RISK_BLOCKED", "REVIEW_REQUIRED"}
+                          or position.sync_status != "OK" or position.lot_quantity_mismatch
+                          or position.trading_paused or not position.auto_buy_enabled):
+            raise SessionUnavailable("adaptive_persisted_buy_block")
+        restricted = bool(position is not None and position.rebuy_restriction_active)
+        # Uncertain local BUY reservations can be absent from the broker's
+        # spendable-cash response. Reentry waits for their reconciliation.
+        if restricted and any(order.request.side is OrderSide.BUY for order in open_orders):
+            raise SessionUnavailable("adaptive_reentry_wait_pending_buy")
+        snapshot = self.client.account_snapshot()
+        cash = snapshot.cash_available
+        cost = request.quantity * request.limit_price
+        if not _nonnegative_finite(cash) or cash < cost:
+            raise SessionUnavailable("adaptive_cash_insufficient")
+        if not automatic and not restricted:
+            return False
+        if request.market_order:
+            raise SessionUnavailable("adaptive_market_buy_has_no_price_ceiling")
+        lots = LotManager(self.config.strategy, self.store.load_lots())
+        cache = DailyVolatilityCache(self.store.path.with_suffix(".volatility.json"))
+        lots.set_volatility_multiplier(request.code, cache.multiplier(request.code))
+        strategy = LotGridStrategy(self.config, lots)
+        strategy.positions = positions
+        details = strategy.adaptive_buy_details(position, request.limit_price, snapshot)
+        target = details.get("buy_target_price")
+        if (not _positive_finite(target) or request.limit_price > target
+                or not details.get("buy_condition_met")):
+            raise SessionUnavailable(str(details.get("skip_reason") or "adaptive_buy_price_not_reached"))
+        if automatic:
+            budget = details.get("buy_amount")
+            if not _positive_finite(budget) or cost > budget:
+                raise SessionUnavailable("adaptive_buy_budget_exceeded")
+            if details.get("skip_reason"):
+                raise SessionUnavailable(str(details["skip_reason"]))
+        if restricted:
+            reserve = strategy.adaptive_reentry_cash_details(position, snapshot, cost)
+            if not reserve.get("reentry_cash_condition_met"):
+                raise SessionUnavailable(str(reserve.get("skip_reason") or "adaptive_reentry_cash_insufficient"))
+        return restricted
 
     def reconcile_open_orders(self) -> tuple[TradeFill, ...]:
         self._recover_acknowledged_intents()
@@ -430,6 +563,7 @@ class OrderManager:
                 order.request.reentry_type,
                 fill.reported_order_venue,
                 fill.timestamp_source,
+                fill.filled_amount,
             )
             if order.request.session:
                 matched = self._matching_fills(order, (fill,))[0]
@@ -468,17 +602,32 @@ class OrderManager:
                 code=fill.code,
                 side=fill.side,
                 lot_id=fill.lot_id if fill.side is OrderSide.SELL else "",
+                filled_at=fill.filled_at,
             )
             delta_quantity = fill.quantity - already_filled
             if delta_quantity <= 0:
                 return None
+            cumulative_amount = fill.filled_amount or fill.quantity * fill.price
+            already_amount = self.store.recorded_fill_amount(
+                fill.code, fill.order_id, fill.side, filled_at=fill.filled_at,
+                lot_id=fill.lot_id if fill.side is OrderSide.SELL else "",
+            )
+            delta_amount = cumulative_amount - already_amount
+            if not _positive_finite(delta_amount):
+                self.logger.error(
+                    "aggregate_fill_amount_inconsistent code=%s order_id=%s cumulative_qty=%s prior_qty=%s cumulative_amount=%s prior_amount=%s",
+                    fill.code, fill.order_id, fill.quantity, already_filled, cumulative_amount, already_amount,
+                )
+                return None
+            delta_price = delta_amount / delta_quantity
+            delta_price = int(delta_price) if float(delta_price).is_integer() else delta_price
             delta_filled_at = fill.filled_at + timedelta(microseconds=max(1, already_filled))
             return TradeFill(
                 fill.code,
                 fill.name,
                 fill.side,
                 delta_quantity,
-                fill.price,
+                delta_price,
                 fill.order_id,
                 delta_filled_at,
                 fill.lot_id,
@@ -487,6 +636,7 @@ class OrderManager:
                 fill.reentry_type,
                 fill.reported_order_venue,
                 fill.timestamp_source,
+                delta_amount if fill.filled_amount else 0,
             )
         return fill
 
@@ -603,7 +753,7 @@ class OrderManager:
             return False
         max_retries = max(1, self.config.order.cancel_rejected_max_retries)
         if result.cancel_retry_count >= max_retries:
-            if result.request.session:
+            if result.request.session or self.config.strategy.adaptive_lot_enabled:
                 self.logger.error("session_order_reconciliation_required order_id=%s reservation_retained=true", result.order_id)
                 return True
             status = OrderStatus.CANCELED_AFTER_PARTIAL_FILL if filled_quantity > 0 else OrderStatus.CANCELED_NO_FILL
@@ -690,6 +840,14 @@ class OrderManager:
 def _normalize_order_id(order_id: str) -> str:
     normalized = str(order_id).strip()
     return normalized.lstrip("0") or normalized
+
+
+def _positive_finite(value) -> bool:
+    return type(value) in (int, float) and math.isfinite(value) and value > 0
+
+
+def _nonnegative_finite(value) -> bool:
+    return type(value) in (int, float) and math.isfinite(value) and value >= 0
 
 
 def _is_no_cancelable_quantity_error(error: Exception) -> bool:

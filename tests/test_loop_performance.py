@@ -3,6 +3,8 @@ import logging
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from kis_msj.config import BotConfig, OrderConfig, StockConfig, config_to_dict
 from kis_msj.main import AutoTrader
 from kis_msj import main as trader_main
@@ -10,6 +12,11 @@ from kis_msj.models import AccountSnapshot, PositionLifecycle, PositionState
 from kis_msj.risk_manager import RiskDecision
 
 from scripts import benchmark_loop
+
+
+@pytest.fixture(autouse=True)
+def isolated_runtime_control(monkeypatch):
+    monkeypatch.setattr(trader_main, "load_runtime_control", lambda: trader_main.RuntimeControl())
 
 
 def _config(tmp_path, *, loop_interval_seconds: float = 3.0, loop_profiling_enabled: bool = True, loop_interval_warning_min_seconds: float = 60.0) -> BotConfig:

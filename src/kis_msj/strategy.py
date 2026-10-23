@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import math
 from statistics import median
 from typing import NamedTuple
 
@@ -11,6 +12,7 @@ from .config import BotConfig
 from .lot_manager import LotManager, ceil_price, lot_buy_timestamp, round_price
 from .models import AccountSnapshot, LotState, OrderSide, PositionLifecycle, PositionState, ReentryType, SellReason
 from .risk_manager import RiskDecision
+from .adaptive_policy import trend_multiplier, lowest_lot_buy_target, reentry_buy_target, floor_order_price
 
 
 EPSILON = 1e-9
@@ -151,6 +153,7 @@ class StrategyContext:
     cash_target_profit_active: bool = False
     cash_available_for_target: int = 0
     low_cash_high_cost_sell: bool = False
+    low_cash_oldest_lot_sell: bool = False
     negative_target_high_cost_sell: bool = False
     sell_trigger_lot_id: str = ""
     sell_trigger_price: int = 0
@@ -161,6 +164,21 @@ class StrategyContext:
     reentry_cash_available: int | None = None
     reentry_cash_condition_met: bool = False
     wait_reentry_timestamp_valid: bool = False
+    cash_buy_drop_enabled: bool = False
+    cash_buy_reference_price: float = 0.0
+    cash_buy_reference_source: str = ""
+    cash_buy_drop_rate: float | None = None
+    cash_buy_limit_price: int = 0
+    cash_buy_price_condition_met: bool = False
+    cash_buy_skip_reason: str = ""
+    pre_exit_average_price: float = 0.0
+    pre_exit_average_captured_at: str = ""
+    reentry_price_condition_met: bool = False
+    volatility_multiplier: float = 1.0
+    consecutive_buy_count: int = 0
+    consecutive_sell_count: int = 0
+    rebuy_restriction_active: bool = False
+    adaptive_buy_target_price: int = 0
 
 
 @dataclass(frozen=True)
@@ -186,6 +204,112 @@ class LotGridStrategy:
     def __init__(self, config: BotConfig, lot_manager: LotManager) -> None:
         self.config = config
         self.lot_manager = lot_manager
+        self.positions: dict[str, PositionState] = {}
+
+    def adaptive_reentry_cash_details(self, position: PositionState, snapshot: AccountSnapshot | None,
+                                     new_order_cost: int) -> dict[str, object]:
+        """Broker buying power already reserves acknowledged pending orders."""
+        cash = snapshot.cash_available if snapshot else None
+        assets = snapshot.total_asset if snapshot else None
+        valid = (type(cash) in (int, float) and math.isfinite(cash) and cash >= 0
+                 and type(assets) in (int, float) and math.isfinite(assets) and assets > 0)
+        future = 0
+        codes = {lot.code for lot in self.lot_manager.lots.values() if lot.remaining_quantity > 0}
+        codes.update(code for code, held in self.positions.items() if held.quantity > 0)
+        broker_held = {held.code for held in snapshot.positions if held.quantity > 0} if snapshot else set()
+        codes.update(broker_held)
+        codes.add(position.code)
+        for code in codes:
+            lots = self.lot_manager.open_lots(code)
+            held = self.positions.get(code) or (position if code == position.code else PositionState(code))
+            if not lots and (held.quantity > 0 or code in broker_held):
+                valid = False
+            price = min((lot.buy_price for lot in lots), default=position.current_price)
+            sizing = (self.lot_sizing_from_position(held) if held.lot_unit_amount
+                      else self.lot_sizing_for_new_cycle(price))
+            unit = int(sizing.get("lot_unit_amount", 0)) if self._lot_sizing_enabled() else self.config.strategy.initial_buy_amount
+            maximum = int(sizing.get("max_lots_per_symbol", 0)) or self.config.strategy.max_lots_per_symbol_default
+            max_amount = int(sizing.get("max_symbol_amount", 0)) if self._lot_sizing_enabled() else self.config.strategy.absolute_max_investment
+            proposed = int(code == position.code)
+            exposure = sum(lot.open_amount for lot in lots) + (new_order_cost if proposed else 0)
+            slots = min(self.config.strategy.reentry_reserve_lots_per_symbol,
+                        max(0, maximum - len(lots) - proposed))
+            if unit <= 0:
+                valid = False
+                continue
+            slots = min(slots, max(0, (max_amount - exposure) // unit)) if max_amount else slots
+            future += slots * unit
+        buffer = math.ceil(assets * self.config.strategy.reentry_cash_buffer_ratio) if valid else 0
+        required = new_order_cost + future + buffer
+        allowed = bool(valid and cash >= required)
+        return {"reentry_required_cash": required, "reentry_future_lot_reserve": future,
+                "reentry_safety_cash_buffer": buffer, "reentry_cash_available": cash,
+                "reentry_cash_condition_met": allowed,
+                "skip_reason": "" if allowed else "adaptive_reentry_cash_insufficient"}
+
+    def adaptive_buy_details(self, position: PositionState, current_price: int,
+                             snapshot: AccountSnapshot | None) -> dict[str, object]:
+        lots = self.lot_manager.open_lots(position.code)
+        self.lot_manager.set_symbol_trade_state(position.code, position.consecutive_sell_count)
+        multiplier = self.lot_manager.volatility_multiplier_for(position.code)
+        gap = 4.0 * multiplier * trend_multiplier(position.consecutive_buy_count)
+        normal = lowest_lot_buy_target(lots, gap)
+        restricted = position.rebuy_restriction_active
+        rebuy = reentry_buy_target(position.last_sell_price, 4.0 * multiplier) if restricted else 0.0
+        ceilings = ([normal] if lots else []) + ([rebuy] if restricted else [])
+        target = floor_order_price(min(ceilings) if ceilings else current_price)
+        sizing = (self.ensure_lot_sizing(position, current_price) if lots else
+                  self.lot_sizing_for_new_cycle(current_price)) if self._lot_sizing_enabled() else {}
+        amount = int(sizing.get("lot_unit_amount", 0)) if self._lot_sizing_enabled() else self.config.strategy.initial_buy_amount
+        block = self._retire_buy_block_reason(position, self._position_state(position), current_price)
+        block = block or self._buy_block_reason(position)
+        if self._lot_sizing_enabled():
+            block = block or self.lot_sizing_buy_block_reason(position, current_price, sizing,
+                next_buy_amount=amount, open_lot_count=len(lots))
+        elif len(lots) >= self.config.strategy.max_lots_per_symbol_default:
+            block = block or "max_lots_per_symbol_reached"
+        elif (position.cumulative_invested_amount + amount > self.config.strategy.absolute_max_investment
+              or position.cumulative_invested_amount + amount > self.config.strategy.auto_buy_limit):
+            block = block or "max_symbol_amount_reached"
+        cash = snapshot.cash_available if snapshot else None
+        valid_cash = type(cash) in (int, float) and math.isfinite(cash) and cash >= 0
+        if not valid_cash or cash < amount:
+            block = block or "cash_not_enough"
+        condition = current_price > 0 and target > 0 and current_price <= target
+        if not lots and not self._lot_sizing_enabled() and current_price > self.config.strategy.initial_buy_amount:
+            condition = False
+        reserve = self.adaptive_reentry_cash_details(position, snapshot, amount) if restricted else {
+            "reentry_required_cash": amount, "reentry_cash_condition_met": bool(valid_cash and cash >= amount),
+            "reentry_cash_available": cash, "skip_reason": ""}
+        block = block or str(reserve["skip_reason"])
+        if not condition:
+            block = block or "adaptive_buy_price_not_reached"
+        return {**reserve, "buy_amount": amount, "buy_target_price": target,
+                "normal_buy_target": normal, "reentry_target": rebuy,
+                "effective_buy_gap_pct": gap, "effective_rebuy_gap_pct": 4.0 * multiplier,
+                "buy_condition_met": condition, "skip_reason": block}
+
+    def _adaptive_decide(self, position, current_price, snapshot, account_risk, symbol_risk):
+        self.lot_manager.set_symbol_trade_state(position.code, position.consecutive_sell_count)
+        lifecycle = self._position_state(position)
+        if lifecycle in {PositionLifecycle.SYNC_REQUIRED.value, PositionLifecycle.RISK_BLOCKED.value}:
+            position.skip_reason = lifecycle.lower()
+            return None
+        sell = self._sell_action(position, current_price, snapshot)
+        if sell:
+            return sell
+        if not account_risk.allowed or not symbol_risk.allowed:
+            position.skip_reason = "|".join(account_risk.reasons + symbol_risk.reasons)
+            return None
+        details = self.adaptive_buy_details(position, current_price, snapshot)
+        position.skip_reason = str(details["skip_reason"])
+        if position.skip_reason:
+            return None
+        restricted = position.rebuy_restriction_active
+        reason = "adaptive_reentry_buy" if restricted else ("adaptive_add_buy" if self.lot_manager.open_lots(position.code) else "adaptive_initial_buy")
+        return StrategyAction(OrderSide.BUY, int(details["buy_amount"]), None, reason,
+            reentry_type=ReentryType.NORMAL_REENTRY.value if restricted else ReentryType.NONE.value,
+            limit_price=int(details["buy_target_price"]))
 
     def decide(
         self,
@@ -195,6 +319,8 @@ class LotGridStrategy:
         account_risk: RiskDecision,
         symbol_risk: RiskDecision,
     ) -> StrategyAction | None:
+        if self.config.strategy.adaptive_lot_enabled:
+            return self._adaptive_decide(position, current_price, snapshot, account_risk, symbol_risk)
         lifecycle = self._position_state(position)
         if lifecycle == PositionLifecycle.SYNC_REQUIRED.value:
             position.skip_reason = "sync_required"
@@ -214,6 +340,11 @@ class LotGridStrategy:
         if not account_risk.allowed or not symbol_risk.allowed:
             position.skip_reason = "|".join(account_risk.reasons + symbol_risk.reasons)
             return None
+        if self.config.strategy.cash_buy_drop_enabled:
+            cash = snapshot.cash_available if snapshot is not None else None
+            if type(cash) not in (int, float) or not math.isfinite(cash) or cash < 0:
+                position.skip_reason = "cash_buy_snapshot_unavailable"
+                return None
         buy_block = self._buy_block_reason(position)
         if buy_block:
             position.skip_reason = buy_block
@@ -239,6 +370,8 @@ class LotGridStrategy:
                     return StrategyAction(
                         OrderSide.BUY, int(details["reentry_lot_unit_amount"]), None,
                         "cash_capacity_reentry", reentry_type=ReentryType.CASH_CAPACITY_REENTRY.value,
+                        limit_price=(int(details.get("cash_buy_limit_price", 0))
+                                     if self.config.strategy.cash_buy_drop_enabled else 0),
                     )
                 normal, trailing = self.check_reentry_conditions(position, current_price)
                 if normal:
@@ -286,6 +419,10 @@ class LotGridStrategy:
         return self._add_buy_action(position, current_price, snapshot)
 
     def _add_buy_action(self, position: PositionState, current_price: int, snapshot: AccountSnapshot) -> StrategyAction | None:
+        cash_buy = self.cash_buy_details(position, current_price, snapshot)
+        if self.config.strategy.cash_buy_drop_enabled and cash_buy["skip_reason"]:
+            position.skip_reason = str(cash_buy["skip_reason"])
+            return None
         if self._lot_sizing_enabled():
             self.ensure_lot_sizing(position, current_price)
             open_lot_count = len(self.lot_manager.open_lots(position.code))
@@ -294,6 +431,9 @@ class LotGridStrategy:
             if not reference_price or not plan:
                 return None
             drop_rate, add_lot_count = plan
+            if self.config.strategy.cash_buy_drop_enabled:
+                drop_rate = float(cash_buy["cash_buy_drop_rate"])
+                reference_price = float(cash_buy["cash_buy_reference_price"])
             amount = position.lot_unit_amount * add_lot_count
             block = self.lot_sizing_buy_block_reason(position, current_price, self.lot_sizing_from_position(position), next_buy_amount=amount, open_lot_count=open_lot_count)
             if block:
@@ -306,8 +446,10 @@ class LotGridStrategy:
                 position.skip_reason = "cash_not_enough"
                 return None
             decline = (current_price - reference_price) / reference_price
-            if decline <= -drop_rate:
-                limit_price = round_price(reference_price * (1.0 - drop_rate))
+            if (cash_buy["cash_buy_price_condition_met"] if self.config.strategy.cash_buy_drop_enabled
+                    else decline <= -drop_rate):
+                limit_price = (int(cash_buy["cash_buy_limit_price"]) if self.config.strategy.cash_buy_drop_enabled
+                               else round_price(reference_price * (1.0 - drop_rate)))
                 return StrategyAction(OrderSide.BUY, amount, None, f"add_buy_drop_{drop_rate * 100:g}%", limit_price=limit_price)
             return None
         exposure = position.cumulative_invested_amount
@@ -321,6 +463,9 @@ class LotGridStrategy:
         if not reference_price or not plan:
             return None
         drop_pct, amount = plan
+        if self.config.strategy.cash_buy_drop_enabled:
+            drop_pct = float(cash_buy["cash_buy_drop_rate"]) * 100.0
+            reference_price = float(cash_buy["cash_buy_reference_price"])
         if exposure + amount > self.config.strategy.auto_buy_limit:
             return None
         if exposure + amount > self.config.strategy.absolute_max_investment:
@@ -328,8 +473,10 @@ class LotGridStrategy:
         if snapshot.cash_available < amount:
             return None
         decline = (current_price - reference_price) / reference_price * 100.0
-        if decline <= -drop_pct:
-            limit_price = round_price(reference_price * (1.0 - drop_pct / 100.0))
+        if (cash_buy["cash_buy_price_condition_met"] if self.config.strategy.cash_buy_drop_enabled
+                else decline <= -drop_pct):
+            limit_price = (int(cash_buy["cash_buy_limit_price"]) if self.config.strategy.cash_buy_drop_enabled
+                           else round_price(reference_price * (1.0 - drop_pct / 100.0)))
             return StrategyAction(OrderSide.BUY, amount, None, f"add_buy_drop_{drop_pct:g}%", limit_price=limit_price)
         return None
 
@@ -349,11 +496,14 @@ class LotGridStrategy:
             return None
         estimated_fee_tax = int(round(current_price * quantity * self.config.strategy.estimated_fee_tax_pct / 100.0))
         net_pnl = (current_price - lot.buy_price) * quantity - estimated_fee_tax
-        if sell_reason == SellReason.PROFIT_TAKE.value and net_pnl < 0:
+        if sell_reason == SellReason.PROFIT_TAKE.value and net_pnl < 0 and not self.config.strategy.adaptive_lot_enabled:
             return None
         if sell_reason == SellReason.CLEANUP_SELL.value and not cleanup_allowed:
             return None
         reason = (
+            "low_cash_oldest_lot_sell"
+            if sell_reason == SellReason.LOW_CASH_OLDEST_LOT_SELL.value
+            else
             "negative_target_high_cost_sell_lot"
             if sell_reason == SellReason.NEGATIVE_TARGET_HIGH_COST_SELL.value
             else
@@ -370,21 +520,37 @@ class LotGridStrategy:
         # A zero limit delegates pricing to OrderManager, which applies the
         # configured sell_limit_markdown_pct to the latest validated quote.
         limit_price = candidate.limit_price
-        if sell_reason in {SellReason.LOW_CASH_HIGH_COST_SELL.value, SellReason.NEGATIVE_TARGET_HIGH_COST_SELL.value}:
+        if sell_reason in {SellReason.LOW_CASH_HIGH_COST_SELL.value, SellReason.LOW_CASH_OLDEST_LOT_SELL.value,
+                           SellReason.NEGATIVE_TARGET_HIGH_COST_SELL.value}:
             expected_cleanup_loss = max(0, -self.calculate_expected_realized_pnl(lot, limit_price, quantity))
         return StrategyAction(OrderSide.SELL, 0, quantity, reason, lot.lot_id, lot, sell_reason, cleanup_flag=expected_cleanup_loss > 0, limit_price=limit_price)
 
     def _target_sell_price(self, lot: LotState) -> int:
         raw_price = lot.buy_price * (1.0 + lot.effective_target_profit_rate)
+        if self.config.strategy.adaptive_lot_enabled:
+            return ceil_price(raw_price) if math.isfinite(raw_price) and raw_price > 0 else 0
         return ceil_price(raw_price) if self.config.strategy.cash_target_profit_active() else round_price(raw_price)
 
     def _sell_candidate(self, position: PositionState, current_price: int, snapshot: AccountSnapshot) -> SellCandidate | None:
+        if self.config.strategy.adaptive_lot_enabled:
+            return self._adaptive_sell_candidate(position, current_price, snapshot)
+        if not self.lot_manager.open_lots(position.code):
+            return None
+        if self.config.strategy.cash_target_profit_active():
+            cash = snapshot.cash_available if snapshot is not None else None
+            if type(cash) not in (int, float) or not math.isfinite(cash):
+                return None
         candidate = self._base_sell_candidate(position, current_price, snapshot)
         if candidate is None:
             return None
         lot, reason, loss, allowed = candidate
         trigger_lot = self.lot_manager.lowest_open_buy_lot(position.code) if reason == SellReason.LOW_CASH_HIGH_COST_SELL.value else lot
-        limit_price = 0 if reason == SellReason.DEEP_LOSS_RECOVERY_SELL.value else self._target_sell_price(trigger_lot)
+        if reason == SellReason.DEEP_LOSS_RECOVERY_SELL.value:
+            limit_price = 0
+        elif reason == SellReason.LOW_CASH_OLDEST_LOT_SELL.value:
+            limit_price = round_price(current_price * (1.0 - self.config.order.sell_limit_markdown_pct / 100.0))
+        else:
+            limit_price = self._target_sell_price(trigger_lot)
         if (self.config.strategy.age_decay_mode == "current_open_lot_count"
                 and self.config.strategy.cash_target_profit_active()
                 and reason in {SellReason.PROFIT_TAKE.value, SellReason.AUTO_DECAY_CLEANUP_SELL.value, SellReason.CLEANUP_SELL.value}
@@ -395,6 +561,30 @@ class LotGridStrategy:
             loss = max(0, -self.calculate_expected_realized_pnl(lot, limit_price))
             allowed = True
         return SellCandidate(lot, reason, loss, allowed, trigger_lot, limit_price)
+
+    def _adaptive_sell_candidate(self, position, current_price, snapshot):
+        self.lot_manager.set_symbol_trade_state(position.code, position.consecutive_sell_count)
+        base, _, _ = self.lot_manager.current_target_profit_info(position.code)
+        profits, recoveries, decayed = [], [], []
+        for lot in self.lot_manager.open_lots(position.code):
+            self.lot_manager.update_lot_target_metadata(lot, current_price,
+                                                       current_base_target_profit_rate=base)
+            target = self._target_sell_price(lot)
+            if self.deep_loss_recovery_triggered(lot, current_price):
+                recoveries.append(lot)
+            elif target > 0 and current_price >= target:
+                (decayed if lot.effective_target_profit_rate < 0 else profits).append(lot)
+        # Keep the existing profit, independent recovery, then decay priority.
+        pool = profits or recoveries or decayed
+        if not pool:
+            return None
+        lot = self._sort_sell_lots(pool, current_price)[0]
+        reason = (SellReason.PROFIT_TAKE.value if profits else
+                  SellReason.DEEP_LOSS_RECOVERY_SELL.value if recoveries else
+                  SellReason.AUTO_DECAY_CLEANUP_SELL.value)
+        target = 0 if recoveries and not profits else self._target_sell_price(lot)
+        loss = max(0, -self._net_pnl(lot, current_price, lot.remaining_quantity))
+        return SellCandidate(lot, reason, loss, True, lot, target)
 
     def _base_sell_candidate(self, position: PositionState, current_price: int, snapshot: AccountSnapshot) -> tuple[LotState, str, int, bool] | None:
         profit_candidates: list[LotState] = []
@@ -411,10 +601,20 @@ class LotGridStrategy:
         cash_target_active = self.config.strategy.cash_target_profit_active()
         low_cash = cash_target_active and snapshot.cash_available <= self.config.strategy.cash_target_low_cash_threshold
         if low_cash and open_lots:
-            # Trigger age belongs to the lowest-cost LOT.  Fill attribution and
-            # quantity belong to the highest-cost LOT, including realized loss.
-            trigger_lot = self.lot_manager.lowest_open_buy_lot(position.code)
-            sell_lot = self.lot_manager.highest_open_buy_lot(position.code)
+            # The oldest policy funds cash immediately. The legacy policy
+            # waits for the lowest-cost target and sells the highest-cost LOT.
+            oldest_policy = self.config.strategy.cash_target_low_cash_lot_policy == "oldest"
+            trigger_lot = (min(open_lots, key=lambda lot: (lot_buy_timestamp(lot), lot.lot_id))
+                           if oldest_policy else self.lot_manager.lowest_open_buy_lot(position.code))
+            sell_lot = trigger_lot if oldest_policy else self.lot_manager.highest_open_buy_lot(position.code)
+            if oldest_policy:
+                # Funding is immediate: no profit/decay target may delay the
+                # oldest LOT sale. Order pricing follows the normal markdown.
+                if current_price <= 0:
+                    return None
+                limit = round_price(current_price * (1.0 - self.config.order.sell_limit_markdown_pct / 100.0))
+                loss = max(0, -self.calculate_expected_realized_pnl(sell_lot, limit))
+                return (sell_lot, SellReason.LOW_CASH_OLDEST_LOT_SELL.value, loss, True)
             trigger_price = self._target_sell_price(trigger_lot)
             if current_price >= trigger_price:
                 loss = max(0, -self.calculate_expected_realized_pnl(sell_lot, trigger_price))
@@ -568,6 +768,9 @@ class LotGridStrategy:
         )
 
     def context(self, position: PositionState, current_price: int, snapshot: AccountSnapshot | None = None) -> StrategyContext:
+        if self.config.strategy.adaptive_lot_enabled:
+            return self._adaptive_context(position, current_price, snapshot)
+        cash_buy = self.cash_buy_details(position, current_price, snapshot)
         snapshot = snapshot or AccountSnapshot(0, 0, 0, 0, ())
         exposure = position.cumulative_invested_amount
         lowest = self.lot_manager.lowest_open_buy_lot(position.code)
@@ -591,7 +794,11 @@ class LotGridStrategy:
         selected_target_lot = sell_candidate[0] if sell_candidate else (profit_take_lots[0] if profit_take_lots else (self.lot_manager.open_lots(position.code)[0] if self.lot_manager.open_lots(position.code) else None))
         cash_target_active = self.config.strategy.cash_target_profit_active()
         low_cash = cash_target_active and snapshot.cash_available <= self.config.strategy.cash_target_low_cash_threshold
-        trigger_lot = sell_candidate.trigger_lot if sell_candidate else (lowest if low_cash else selected_target_lot)
+        low_cash_trigger = lowest
+        if low_cash and self.config.strategy.cash_target_low_cash_lot_policy == "oldest":
+            low_cash_trigger = min(self.lot_manager.open_lots(position.code),
+                                   key=lambda lot: (lot_buy_timestamp(lot), lot.lot_id), default=None)
+        trigger_lot = sell_candidate.trigger_lot if sell_candidate else (low_cash_trigger if low_cash else selected_target_lot)
         trigger_price = sell_candidate.limit_price if sell_candidate else (self._target_sell_price(trigger_lot) if trigger_lot else 0)
         cleanup_budget = self.cleanup_loss_budget(snapshot)
         buy_condition = False
@@ -608,6 +815,9 @@ class LotGridStrategy:
         if self._lot_sizing_enabled() and reference_buy_price and add_buy_plan:
             active_buy_drop_rate = add_buy_plan[0]
             buy_condition = current_price <= reference_buy_price * (1.0 - active_buy_drop_rate)
+        if self.config.strategy.cash_buy_drop_enabled:
+            active_buy_drop_rate = cash_buy["cash_buy_drop_rate"] or 0.0
+            buy_condition = bool(cash_buy["cash_buy_price_condition_met"])
         max_lots = int(sizing.get("max_lots_per_symbol") or position.max_lots_per_symbol or 0) if isinstance(sizing, dict) else int(position.max_lots_per_symbol or 0)
         max_lots_reached = bool(max_lots and open_lot_count >= max_lots)
         lot_sizing_skip_reason = self.lot_sizing_buy_block_reason(position, current_price, sizing, next_buy_amount=position.lot_unit_amount or int(sizing.get("lot_unit_amount", 0)), open_lot_count=open_lot_count) if self._lot_sizing_enabled() else ""
@@ -649,7 +859,7 @@ class LotGridStrategy:
             sell_signal_met=bool(sell_candidate) if cash_target_active else self._sell_signal_met(position, current_price, target_profit),
             profitable_lots=";".join(lot.lot_id for lot in profit_take_lots) or "NONE",
             selected_sell_lot_id=sell_candidate[0].lot_id if sell_candidate else (profit_take_lots[0].lot_id if profit_take_lots else ""),
-            reentry_condition_met=(bool(reentry_details.get("reentry_cash_condition_met"))
+            reentry_condition_met=(bool(reentry_details.get("reentry_condition_met", reentry_details.get("reentry_cash_condition_met")))
                                   if self.config.strategy.cash_capacity_reentry_enabled() else normal_reentry or trailing_reentry),
             normal_reentry_condition_met=normal_reentry,
             trailing_reentry_condition_met=trailing_reentry,
@@ -677,7 +887,7 @@ class LotGridStrategy:
             realized_pnl_rate=(sell_candidate[0].profit_pct_at(current_price) / 100.0) if sell_candidate else 0.0,
             net_realized_pnl=self._net_pnl(sell_candidate[0], current_price, sell_candidate[0].remaining_quantity) if sell_candidate else 0,
             reentry_type=(ReentryType.CASH_CAPACITY_REENTRY.value if self.config.strategy.cash_capacity_reentry_enabled()
-                          and reentry_details.get("reentry_cash_condition_met") else
+                          and reentry_details.get("reentry_condition_met", reentry_details.get("reentry_cash_condition_met")) else
                           (ReentryType.TRAILING_REENTRY.value if trailing_reentry else (ReentryType.NORMAL_REENTRY.value if normal_reentry else ReentryType.NONE.value))),
             exit_anchor_price=position.exit_anchor_price,
             cycle_highest_sell_price=position.cycle_highest_sell_price,
@@ -693,7 +903,7 @@ class LotGridStrategy:
             cleanup_candidate=bool(cleanup_candidate_lots),
             cleanup_loss_budget=cleanup_budget,
             expected_cleanup_loss=sell_candidate[2] if sell_candidate else 0,
-            cleanup_allowed=bool(sell_candidate and sell_candidate[1] in {SellReason.CLEANUP_SELL.value, SellReason.AUTO_DECAY_CLEANUP_SELL.value, SellReason.LOW_CASH_HIGH_COST_SELL.value, SellReason.NEGATIVE_TARGET_HIGH_COST_SELL.value} and sell_candidate[3]),
+            cleanup_allowed=bool(sell_candidate and sell_candidate[1] in {SellReason.CLEANUP_SELL.value, SellReason.AUTO_DECAY_CLEANUP_SELL.value, SellReason.LOW_CASH_HIGH_COST_SELL.value, SellReason.LOW_CASH_OLDEST_LOT_SELL.value, SellReason.NEGATIVE_TARGET_HIGH_COST_SELL.value} and sell_candidate[3]),
             cleanup_buy_cooldown_until=position.cleanup_buy_cooldown_until,
             cleanup_reentry_cooldown_until=position.cleanup_reentry_cooldown_until,
             profit_take_lot_count=len(profit_take_lots),
@@ -732,6 +942,7 @@ class LotGridStrategy:
             cash_target_profit_active=cash_target_active,
             cash_available_for_target=snapshot.cash_available,
             low_cash_high_cost_sell=bool(sell_candidate and sell_candidate[1] == SellReason.LOW_CASH_HIGH_COST_SELL.value),
+            low_cash_oldest_lot_sell=bool(sell_candidate and sell_candidate[1] == SellReason.LOW_CASH_OLDEST_LOT_SELL.value),
             negative_target_high_cost_sell=bool(sell_candidate and sell_candidate[1] == SellReason.NEGATIVE_TARGET_HIGH_COST_SELL.value),
             sell_trigger_lot_id=trigger_lot.lot_id if trigger_lot else "",
             sell_trigger_price=trigger_price,
@@ -742,6 +953,60 @@ class LotGridStrategy:
             reentry_cash_available=reentry_details.get("reentry_cash_available"),
             reentry_cash_condition_met=bool(reentry_details.get("reentry_cash_condition_met", False)),
             wait_reentry_timestamp_valid=bool(reentry_details.get("wait_reentry_timestamp_valid", False)),
+            cash_buy_drop_enabled=self.config.strategy.cash_buy_drop_enabled,
+            cash_buy_reference_price=float(cash_buy["cash_buy_reference_price"]),
+            cash_buy_reference_source=str(cash_buy["cash_buy_reference_source"]),
+            cash_buy_drop_rate=cash_buy["cash_buy_drop_rate"],
+            cash_buy_limit_price=int(cash_buy["cash_buy_limit_price"]),
+            cash_buy_price_condition_met=bool(cash_buy["cash_buy_price_condition_met"]),
+            cash_buy_skip_reason=str(cash_buy["skip_reason"]),
+            pre_exit_average_price=getattr(position, "pre_exit_average_price", 0.0),
+            pre_exit_average_captured_at=getattr(position, "pre_exit_average_captured_at", ""),
+            reentry_price_condition_met=bool(reentry_details.get("reentry_price_condition_met", False)),
+        )
+
+    def _adaptive_context(self, position, current_price, snapshot):
+        details = self.adaptive_buy_details(position, current_price, snapshot)
+        lots = self.lot_manager.open_lots(position.code)
+        candidate = self._adaptive_sell_candidate(position, current_price, snapshot)
+        selected = candidate.lot if candidate else (self._sort_sell_lots(lots, current_price)[0] if lots else None)
+        base, _, source = self.lot_manager.current_target_profit_info(position.code)
+        effective = selected.effective_target_profit_rate if selected else 0.0
+        return StrategyContext(
+            position_state=self._position_state(position), pnl_mode=self._pnl_mode(position),
+            position_pnl_rate=position.profit_loss_pct / 100.0,
+            lowest_open_buy_lot_price=min((lot.buy_price for lot in lots), default=0),
+            highest_open_buy_lot_price=max((lot.buy_price for lot in lots), default=0),
+            reference_buy_price=min((lot.buy_price for lot in lots), default=0),
+            reference_buy_source="lowest_open_buy_lot", target_buy_drop_rate=details["effective_buy_gap_pct"] / 100.0,
+            target_profit_rate=base, buy_condition_met=bool(details["buy_condition_met"]),
+            sell_signal_met=bool(candidate), selected_sell_lot_id=candidate.lot.lot_id if candidate else "",
+            sell_reason=candidate.reason if candidate else SellReason.UNKNOWN.value,
+            sell_trigger_lot_id=candidate.lot.lot_id if candidate else "",
+            sell_trigger_price=candidate.limit_price if candidate else (self._target_sell_price(selected) if selected else 0),
+            sell_limit_price=current_price if candidate and candidate.limit_price > 0 else 0,
+            current_open_lot_count=len(lots), current_base_target_profit_rate=base,
+            base_target_profit_rate=base, effective_target_profit_rate=effective, target_profit_source=source,
+            age_decay_rate=self.lot_manager.age_decay_rate_for(position.code),
+            lot_age_weeks=selected.age_weeks if selected else 0.0,
+            age_decay_applied=base - effective if selected else 0.0,
+            lot_unit_amount=int(details["buy_amount"]), max_lots_per_symbol=position.max_lots_per_symbol,
+            max_symbol_amount=position.max_symbol_amount, lot_sizing_bucket=position.lot_sizing_bucket,
+            lot_sizing_locked=bool(position.lot_unit_amount), lot_sizing_mode=position.lot_sizing_mode,
+            entry_price_for_lot_sizing=position.entry_price_for_lot_sizing,
+            reentry_policy="adaptive_price_reserve", reentry_trigger_price=floor_order_price(details["reentry_target"]),
+            reentry_required_cash=int(details["reentry_required_cash"]),
+            reentry_cash_available=details["reentry_cash_available"],
+            reentry_cash_condition_met=bool(details["reentry_cash_condition_met"]),
+            reentry_price_condition_met=bool(details["buy_condition_met"]),
+            reentry_condition_met=bool(position.rebuy_restriction_active and not details["skip_reason"]),
+            reentry_type=ReentryType.NORMAL_REENTRY.value if position.rebuy_restriction_active else ReentryType.NONE.value,
+            retire_after_exit=position.retire_after_exit, retire_reason=position.retire_reason,
+            skip_reason=position.skip_reason or str(details["skip_reason"]),
+            volatility_multiplier=self.lot_manager.volatility_multiplier_for(position.code),
+            consecutive_buy_count=position.consecutive_buy_count, consecutive_sell_count=position.consecutive_sell_count,
+            rebuy_restriction_active=position.rebuy_restriction_active,
+            adaptive_buy_target_price=int(details["buy_target_price"]),
         )
 
     def _position_state(self, position: PositionState) -> str:
@@ -785,6 +1050,8 @@ class LotGridStrategy:
         raw_median = _median_buy_price(lots)
         mode = self._pnl_mode(position)
         after_price, source = _reference_from_vwap_median(mode, raw_vwap, raw_median)
+        if self.config.strategy.cash_buy_drop_enabled:
+            after_price, source = self._cash_buy_reference(position)
         return ReferencePriceContext(
             enabled=False,
             threshold=0.0,
@@ -803,6 +1070,52 @@ class LotGridStrategy:
             fallback_to_current_price=False,
         )
 
+    def _cash_buy_reference(self, position: PositionState) -> tuple[float, str]:
+        lots = self.lot_manager.open_lots(position.code)
+        quantity = sum(lot.remaining_quantity for lot in lots)
+        if quantity > 0:
+            return sum(lot.buy_price * lot.remaining_quantity for lot in lots) / quantity, "remaining_quantity_vwap"
+        if self._position_state(position) == PositionLifecycle.WAIT_REENTRY.value:
+            reference = getattr(position, "pre_exit_average_price", 0.0)
+            if type(reference) in (int, float) and math.isfinite(reference) and reference > 0:
+                return float(reference), "pre_exit_remaining_quantity_vwap"
+        return 0.0, "missing_cash_buy_reference"
+
+    def cash_buy_details(self, position: PositionState, current_price: int,
+                         snapshot: AccountSnapshot | None) -> dict[str, object]:
+        """One shared price test for additional buys, reentry and UI previews."""
+        reference, source = self._cash_buy_reference(position)
+        cash = snapshot.cash_available if snapshot is not None else None
+        drop = None
+        limit = 0
+        condition = False
+        block = ""
+        if self.config.strategy.cash_buy_drop_enabled:
+            if type(cash) not in (int, float) or not math.isfinite(cash) or cash < 0:
+                block = "cash_buy_snapshot_unavailable"
+            else:
+                drop = self.config.strategy.cash_buy_drop_rate(cash)
+            if not block and reference <= 0:
+                block = "cash_buy_reference_missing"
+            if not block and (type(current_price) not in (int, float)
+                              or not math.isfinite(current_price) or current_price <= 0):
+                block = "current_price_lookup_failed"
+            if not block:
+                limit = _floor_cash_buy_price(reference * (1.0 - drop))
+                condition = limit > 0 and current_price <= limit
+                if not condition:
+                    block = "cash_buy_price_not_reached"
+        return {
+            "cash_buy_drop_enabled": self.config.strategy.cash_buy_drop_enabled,
+            "cash_buy_reference_price": reference,
+            "cash_buy_reference_source": source,
+            "cash_buy_drop_rate": drop,
+            "cash_buy_limit_price": limit,
+            "cash_buy_price_condition_met": condition,
+            "cash_buy_cash_available": cash,
+            "skip_reason": block,
+        }
+
     def _reference_sell_lot(self, position: PositionState) -> LotState | None:
         mode = self._pnl_mode(position)
         if mode == "PLUS":
@@ -815,6 +1128,8 @@ class LotGridStrategy:
         return bool(self.lot_manager.profit_take_lots(position.code, current_price, position.cumulative_invested_amount, target_pct))
 
     def update_reentry_tracking(self, position: PositionState, current_price: int, now: datetime | None = None) -> bool:
+        if self.config.strategy.adaptive_lot_enabled:
+            return False
         if self.config.strategy.cash_capacity_reentry_enabled():
             return False
         now = now or datetime.now()
@@ -875,6 +1190,8 @@ class LotGridStrategy:
         return max(0, (now.date() - started.date()).days)
 
     def force_reentry_eligible(self, position: PositionState, current_price: int, now: datetime | None = None) -> bool:
+        if self.config.strategy.adaptive_lot_enabled:
+            return False
         if self.config.strategy.cash_capacity_reentry_enabled():
             return False
         now = now or datetime.now()
@@ -924,14 +1241,22 @@ class LotGridStrategy:
             block = "initial_buy_amount_below_price"
         if not block and (available is None or available < required_cash):
             block = "reentry_cash_capacity_insufficient"
+        cash_condition_met = not block
+        cash_buy = self.cash_buy_details(position, current_price, snapshot)
+        if self.config.strategy.cash_buy_drop_enabled and not block:
+            block = str(cash_buy["skip_reason"])
         return {
             "reentry_policy": self.config.strategy.reentry_policy,
             "reentry_lot_unit_amount": amount,
             "reentry_required_cash": required_cash,
             "reentry_cash_available": available,
-            "reentry_cash_condition_met": not block,
+            "reentry_cash_condition_met": cash_condition_met,
+            "reentry_price_condition_met": (bool(cash_buy["cash_buy_price_condition_met"])
+                                             if self.config.strategy.cash_buy_drop_enabled else True),
+            "reentry_condition_met": not block,
             "wait_reentry_timestamp_valid": timestamp_valid,
             "skip_reason": block,
+            **{key: value for key, value in cash_buy.items() if key != "skip_reason"},
         }
 
     def reentry_details(self, position: PositionState, current_price: int, now: datetime | None = None, snapshot: AccountSnapshot | None = None) -> dict[str, object]:
@@ -944,13 +1269,19 @@ class LotGridStrategy:
                 "reentry_mode": ReentryType.CASH_CAPACITY_REENTRY.value if waiting else ReentryType.NONE.value,
                 "wait_reentry_started_at": position.exit_time,
                 "days_since_wait_reentry_started": self.days_since_wait_reentry_started(position, now),
-                "base_reentry_rate": 0.0, "daily_reentry_decay_rate": 0.0,
-                "decay_duration_days": 0, "effective_reentry_rate": 0.0,
-                "reentry_anchor_price": 0, "reentry_trigger_price": 0,
+                "base_reentry_rate": (-self.config.strategy.cash_buy_drop_rate_at_zero
+                                      if self.config.strategy.cash_buy_drop_enabled else 0.0),
+                "daily_reentry_decay_rate": 0.0,
+                "decay_duration_days": 0,
+                "effective_reentry_rate": -(cash_details.get("cash_buy_drop_rate") or 0.0),
+                "reentry_anchor_price": (cash_details.get("cash_buy_reference_price", 0)
+                                         if self.config.strategy.cash_buy_drop_enabled else 0),
+                "reentry_trigger_price": (cash_details.get("cash_buy_limit_price", 0)
+                                          if self.config.strategy.cash_buy_drop_enabled else 0),
                 "force_reentry_timeout_days": 0, "force_reentry_eligible": False,
                 "force_reentry_reason": "", "force_reentry_starts_new_cycle": False,
                 "old_cycle_id": self._cycle_id(position),
-                "new_cycle_id": f"{position.code}:{current_price}:pending_new_cycle" if cash_details["reentry_cash_condition_met"] else "",
+                "new_cycle_id": f"{position.code}:{current_price}:pending_new_cycle" if cash_details["reentry_condition_met"] else "",
             }
         normal, trailing = self.check_reentry_conditions(position, current_price, now)
         mode = ReentryType.TRAILING_REENTRY.value if trailing else (ReentryType.NORMAL_REENTRY.value if normal else ReentryType.NONE.value)
@@ -1174,6 +1505,15 @@ def _vwap_buy_price(lots: list[LotState]) -> int:
     if quantity <= 0:
         return 0
     return int(round(sum(lot.buy_price * lot.remaining_quantity for lot in lots) / quantity))
+
+
+def _floor_cash_buy_price(price: float) -> int:
+    """A cash-derived BUY limit never exceeds its unrounded price target."""
+    if not math.isfinite(price) or price <= 0:
+        return 0
+    unit = (1 if price < 1_000 else 5 if price < 5_000 else 10 if price < 10_000 else
+            50 if price < 50_000 else 100 if price < 100_000 else 500 if price < 500_000 else 1_000)
+    return max(0, int(math.floor((price + EPSILON) / unit)) * unit)
 
 
 def _median_buy_price(lots: list[LotState]) -> int:

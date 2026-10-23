@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from statistics import median
 
 from .config import StrategyConfig
+from .fill_state import fill_already_applied, record_actual_fill_state
 from .lot_manager import LotManager
 from .models import AccountSnapshot, OrderSide, PositionLifecycle, PositionState, ReentryType, SellReason, TradeFill
 
@@ -22,6 +23,8 @@ class PositionManager:
         self.lot_manager = lot_manager
         self.positions = positions or {}
         self.account_mismatch_detected = False
+        for position in self.positions.values():
+            self.lot_manager.set_symbol_trade_state(position.code, position.consecutive_sell_count)
 
     def get(self, code: str, name: str = "") -> PositionState:
         if code not in self.positions:
@@ -36,6 +39,7 @@ class PositionManager:
             self.positions[code].absolute_max_investment = self.config.absolute_max_investment
         if name and not self.positions[code].name:
             self.positions[code].name = name
+        self.lot_manager.set_symbol_trade_state(code, self.positions[code].consecutive_sell_count)
         return self.positions[code]
 
     def refresh_from_lots(self, code: str, current_price: int = 0) -> PositionState:
@@ -242,11 +246,15 @@ class PositionManager:
 
     def apply_fill(self, fill: TradeFill) -> PositionState:
         position = self.get(fill.code, fill.name)
+        if fill.quantity <= 0 or fill.price <= 0 or fill.filled_amount < 0:
+            raise ValueError("Actual fills require positive quantity and price")
+        if fill_already_applied(position, fill):
+            return position
         if fill.side is OrderSide.BUY:
             starts_new_cycle = not self.lot_manager.open_lots(fill.code)
             lot = self.lot_manager.create_buy_lot(fill)
             position.last_buy_lot_id = lot.lot_id
-            position.daily_buy_amount += lot.buy_amount
+            position.daily_buy_amount += fill.filled_amount or fill.quantity * fill.price
             position.position_state = PositionLifecycle.HOLDING.value
             if starts_new_cycle:
                 self._lock_lot_sizing_for_new_cycle(position, fill.price, fill.filled_at)
@@ -278,8 +286,11 @@ class PositionManager:
             position.post_exit_high_price = 0
             position.skip_reason = ""
         else:
+            before_exit_lots = self.lot_manager.open_lots(fill.code)
+            before_exit_quantity = sum(item.remaining_quantity for item in before_exit_lots)
+            before_exit_cost = sum(item.open_amount for item in before_exit_lots)
             lot = self.lot_manager.apply_sell_fill(fill)
-            position.daily_sell_amount += fill.quantity * fill.price
+            position.daily_sell_amount += fill.filled_amount or fill.quantity * fill.price
             position.last_sell_price = fill.price
             sell_reason = lot.last_sell_reason or fill.sell_reason or SellReason.UNKNOWN.value
             position.cycle_last_sell_price = fill.price
@@ -288,7 +299,7 @@ class PositionManager:
             position.cycle_sell_prices = ",".join(str(price) for price in sell_prices)
             position.cycle_sell_fill_count = len(sell_prices)
             position.cycle_sell_quantity += fill.quantity
-            position.cycle_sell_value_amount += fill.price * fill.quantity
+            position.cycle_sell_value_amount += fill.filled_amount or fill.price * fill.quantity
             position.cycle_sell_vwap_price = int(round(position.cycle_sell_value_amount / position.cycle_sell_quantity)) if position.cycle_sell_quantity else fill.price
             position.cycle_sell_median_price = int(round(median(sell_prices)))
             position.anchor_single_fill = position.cycle_sell_fill_count == 1
@@ -299,6 +310,12 @@ class PositionManager:
                 position.cleanup_sell_price = fill.price
                 position.cleanup_time = fill.filled_at.isoformat(timespec="seconds")
             if not self.lot_manager.open_lots(fill.code):
+                # Preserve the remaining book's quantity-weighted cost BEFORE
+                # this final fill. Neither the sale price nor the original
+                # cycle's already-sold LOTs define the new cash BUY reference.
+                if before_exit_quantity > 0:
+                    position.pre_exit_average_price = before_exit_cost / before_exit_quantity
+                    position.pre_exit_average_captured_at = fill.filled_at.isoformat(timespec="seconds")
                 position.position_state = PositionLifecycle.WAIT_REENTRY.value
                 normal_anchor, trailing_anchor = _cycle_reentry_anchors(position, fill.price)
                 position.normal_exit_anchor_price = normal_anchor
@@ -316,7 +333,12 @@ class PositionManager:
         position.last_order_id = fill.order_id
         position.last_order_status = "FILLED"
         position.last_order_time = fill.filled_at.isoformat(timespec="seconds")
-        return self.refresh_from_lots(fill.code, fill.price)
+        record_actual_fill_state(position, fill)
+        self.lot_manager.set_symbol_trade_state(fill.code, position.consecutive_sell_count)
+        updated = self.refresh_from_lots(fill.code, fill.price)
+        if getattr(self.config, "adaptive_lot_enabled", False):
+            self.lot_manager.recalculate_symbol_targets(fill.code, fill.price)
+        return updated
 
     def _lock_lot_sizing_for_new_cycle(self, position: PositionState, entry_price: int, locked_at: datetime) -> None:
         if self.config.lot_sizing_mode != "cycle_locked_by_entry_price":
@@ -366,8 +388,9 @@ def _parse_time(value: str) -> datetime | None:
     return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
 
 
-def _append_sell_price(raw: str, price: int) -> list[int]:
-    prices = [int(value) for value in raw.split(",") if value.strip()]
+def _append_sell_price(raw: str, price: int | float) -> list[int | float]:
+    prices = [float(value) for value in raw.split(",") if value.strip()]
+    prices = [int(value) if value.is_integer() else value for value in prices]
     prices.append(price)
     return prices
 
