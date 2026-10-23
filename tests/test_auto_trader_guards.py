@@ -883,8 +883,13 @@ def test_force_reentry_is_blocked_by_sync_risk_and_review_guards(tmp_path) -> No
     assert bot.pre_request_block_reason(PositionState(code="005930", position_state=PositionLifecycle.REVIEW_REQUIRED.value, needs_review=True), action) == "review_required"
 
 
-def test_force_reentry_strategy_blocks_lot_quantity_mismatch() -> None:
-    config = BotConfig(order=OrderConfig(price_sample_interval_seconds=0), strategy=StrategyConfig(cleanup_enabled=True, estimated_fee_tax_pct=0))
+def test_force_reentry_strategy_blocks_lot_quantity_mismatch(tmp_path) -> None:
+    config = BotConfig(
+        order=OrderConfig(price_sample_interval_seconds=0),
+        strategy=StrategyConfig(cleanup_enabled=True, estimated_fee_tax_pct=0),
+        storage_path=str(tmp_path / "state.sqlite3"),
+        log_path=str(tmp_path / "trader.log"),
+    )
     bot = AutoTrader(config, use_mock_client=True)
     snapshot = AccountSnapshot(1_000_000, 1_000_000, 0, 0, ())
     position = bot.position_manager.get("005930", "Test")

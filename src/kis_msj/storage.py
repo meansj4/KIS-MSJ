@@ -1492,7 +1492,7 @@ class StateStore:
                 SELECT COUNT(*) AS count
                 FROM orders
                 WHERE side = ?
-                  AND reason = 'initial_buy'
+                  AND reason IN ('initial_buy', 'adaptive_initial_buy')
                   AND substr(requested_at, 1, 10) = ?
                 """,
                 (OrderSide.BUY.value, today),
@@ -1507,7 +1507,7 @@ class StateStore:
                 SELECT COALESCE(SUM(quantity * limit_price), 0) AS amount
                 FROM orders
                 WHERE side = ?
-                  AND reason = 'initial_buy'
+                  AND reason IN ('initial_buy', 'adaptive_initial_buy')
                   AND substr(requested_at, 1, 10) = ?
                 """,
                 (OrderSide.BUY.value, today),

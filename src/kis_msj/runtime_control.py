@@ -11,9 +11,15 @@ from typing import Any
 
 from .config import PROJECT_ROOT
 from .models import OrderSide
+from .live_startup import FileMutex
 
 
 DEFAULT_RUNTIME_CONTROL_PATH = PROJECT_ROOT / "config" / "runtime_control.json"
+_ANY_RUNTIME_BYTES = object()
+
+
+class RuntimeControlChangedError(RuntimeError):
+    """A runtime update cannot overwrite a newer operator change."""
 
 
 @dataclass(frozen=True)
@@ -56,15 +62,26 @@ def load_runtime_control(path: str | Path = DEFAULT_RUNTIME_CONTROL_PATH, now: d
     return control
 
 
-def save_runtime_control(control: RuntimeControl, path: str | Path = DEFAULT_RUNTIME_CONTROL_PATH) -> None:
+def save_runtime_control(
+    control: RuntimeControl,
+    path: str | Path = DEFAULT_RUNTIME_CONTROL_PATH,
+    *,
+    expected_bytes: bytes | None | object = _ANY_RUNTIME_BYTES,
+) -> None:
     control_path = Path(path)
     control_path.parent.mkdir(parents=True, exist_ok=True)
     data = asdict(control)
     if not data.get("updated_at"):
         data["updated_at"] = datetime.now().isoformat(timespec="seconds")
-    temp_path = control_path.with_suffix(control_path.suffix + ".tmp")
-    temp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.replace(temp_path, control_path)
+    mutex_path = control_path.with_name(f".{control_path.name}.write.lock")
+    with FileMutex(mutex_path):
+        if expected_bytes is not _ANY_RUNTIME_BYTES:
+            current_bytes = control_path.read_bytes() if control_path.exists() else None
+            if current_bytes != expected_bytes:
+                raise RuntimeControlChangedError("runtime_control_changed_during_preflight")
+        temp_path = control_path.with_suffix(control_path.suffix + ".tmp")
+        temp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        os.replace(temp_path, control_path)
 
 
 def runtime_block_reason(control: RuntimeControl, action: Any) -> str:

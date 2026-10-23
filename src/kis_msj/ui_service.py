@@ -818,7 +818,7 @@ class UIService:
                 """
                 SELECT COUNT(*) AS count, COALESCE(SUM(quantity * limit_price), 0) AS amount
                 FROM orders
-                WHERE side = 'BUY' AND reason = 'initial_buy' AND requested_at LIKE ?
+                WHERE side = 'BUY' AND reason IN ('initial_buy', 'adaptive_initial_buy') AND requested_at LIKE ?
                 """,
                 (f"{today}%",),
             )
@@ -1157,10 +1157,10 @@ class UIService:
             "max_total_invested_amount": config.risk.max_total_invested_amount,
             "total_invested_amount": sum(int(lot.get("remaining_quantity", 0)) * _actual_price(lot.get("buy_price", 0)) for lot in open_lots),
             "max_new_buy_per_day": config.risk.max_new_buy_per_day,
-            "new_buy_count_today": sum(1 for order in orders if order.get("side") == "BUY" and order.get("reason") == "initial_buy" and str(order.get("requested_at", "")).startswith(today)),
+            "new_buy_count_today": sum(1 for order in orders if order.get("side") == "BUY" and order.get("reason") in {"initial_buy", "adaptive_initial_buy"} and str(order.get("requested_at", "")).startswith(today)),
             "max_new_buy_amount_per_day": config.risk.max_new_buy_amount_per_day,
             "max_total_initial_buy_amount_per_day": config.risk.max_total_initial_buy_amount_per_day,
-            "new_buy_amount_today": sum(int(order.get("quantity") or 0) * int(order.get("limit_price") or 0) for order in orders if order.get("side") == "BUY" and order.get("reason") == "initial_buy" and str(order.get("requested_at", "")).startswith(today)),
+            "new_buy_amount_today": sum(int(order.get("quantity") or 0) * int(order.get("limit_price") or 0) for order in orders if order.get("side") == "BUY" and order.get("reason") in {"initial_buy", "adaptive_initial_buy"} and str(order.get("requested_at", "")).startswith(today)),
             "risk_profile": config.risk.profile,
             "candidate_stock_count": len(config.stocks),
             "enabled_stock_count": sum(1 for stock in config.stocks if stock.enabled),
@@ -1761,7 +1761,7 @@ class UIService:
         holding_buy_amount: int,
         today: str,
     ) -> list[dict[str, Any]]:
-        today_initial_orders = [order for order in orders if order.get("side") == "BUY" and order.get("reason") == "initial_buy" and str(order.get("requested_at", "")).startswith(today)]
+        today_initial_orders = [order for order in orders if order.get("side") == "BUY" and order.get("reason") in {"initial_buy", "adaptive_initial_buy"} and str(order.get("requested_at", "")).startswith(today)]
         today_initial_amount = sum(_to_int(order.get("quantity")) * _to_int(order.get("limit_price")) for order in today_initial_orders)
         return [
             _usage("max_total_invested_amount", holding_buy_amount, config.risk.max_total_invested_amount, "KRW", "OPEN LOT remaining cost / risk.max_total_invested_amount"),

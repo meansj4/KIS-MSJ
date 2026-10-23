@@ -19,6 +19,7 @@ from .kis_client import KisApiError, KisClient, MockKisClient
 from .logger import configure_trade_logger, log_decision
 from .lot_manager import LotManager
 from .loop_profile import LoopProfile, key_value_line
+from .live_startup import TradingInstanceAlreadyRunning, TradingInstanceLock
 from .models import AccountSnapshot, OrderSide, PositionState, Quote, ReentryType, SellReason
 from .models import OrderResult, OrderStatus, PositionLifecycle, TradeFill
 from .notifier import LogNotifier
@@ -1577,7 +1578,7 @@ class AutoTrader:
             return "max_total_invested_amount_reached"
         if action is None:
             return ""
-        if action.reason == "initial_buy":
+        if action.reason in {"initial_buy", "adaptive_initial_buy"}:
             active_codes = self.active_symbol_codes()
             if position.code not in active_codes and len(active_codes) >= risk.max_active_symbols:
                 return "max_active_symbols_reached"
@@ -1660,13 +1661,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"created sample config: {args.config}")
         return 0
     config = load_config(args.config)
-    trader = AutoTrader(config, use_mock_client=args.mock)
+    try:
+        with TradingInstanceLock(config.storage_path):
+            trader = AutoTrader(config, use_mock_client=args.mock)
+            return run_trader(trader, config, args)
+    except TradingInstanceAlreadyRunning as error:
+        print(str(error), file=sys.stderr)
+        return 1
+
+
+def run_trader(trader: AutoTrader, config: BotConfig, args: argparse.Namespace) -> int:
+    """Run an initialized trader while the caller holds its instance lock."""
     loop_count = 0
     while True:
         try:
             runtime = load_runtime_control()
             if runtime.config_reload_requested:
-                config = load_config(args.config)
+                reloaded_config = load_config(args.config)
+                if Path(reloaded_config.storage_path).resolve() != Path(config.storage_path).resolve():
+                    raise RuntimeError("storage_path_changed_requires_restart")
+                config = reloaded_config
                 trader.reload_config(config, use_mock_client=args.mock)
                 save_runtime_control(
                     RuntimeControl(
