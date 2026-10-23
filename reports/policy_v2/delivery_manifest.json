@@ -1,0 +1,57 @@
+{
+  "created": "2026-10-23T15:51:35.660035",
+  "operating_files": {
+    "config/lot_auto_trader.json": {
+      "sha256": "f7bc7c559d6449432d38d760b5957a66c8ae76417d2d08f26f5fb79ae720b640",
+      "equals_prechange_snapshot": true
+    },
+    "config/runtime_control.json": {
+      "sha256": "d9157cebdad78a506bf480249a759ac644829818f09e629e17ff49f6be19807a",
+      "equals_prechange_snapshot": true
+    }
+  },
+  "production_database": "Not opened or modified by this implementation; running bot can continue its own writes.",
+  "broker_orders_submitted": 0,
+  "bot_restarted": false,
+  "markdown_files": [
+    "README.md",
+    "docs/adaptive_lot_policy_20261023.md",
+    "docs/addtime.md",
+    "docs/analysis_and_tuning.md",
+    "docs/cash_adaptive_v1.md",
+    "docs/cash_capacity_reentry.md",
+    "docs/cash_linear_policy_20261021.md",
+    "docs/cash_rotation_aggregate.md",
+    "docs/cash_shortfall_rotation.md",
+    "docs/cash_target_profit.md",
+    "docs/CURRENT_TRADING_POLICY.md",
+    "docs/expansion_100_config.md",
+    "docs/kis_api_update_20260922.md",
+    "docs/live_start_ready_20261023.md",
+    "docs/local_ui.md",
+    "docs/market_data_tuning_guide.md",
+    "docs/new_season_reset.md",
+    "docs/order_cancel_reconciliation.md",
+    "docs/order_intent_rejection_20261008.md",
+    "docs/performance_loop_tuning.md",
+    "docs/POLICY_V2_CHANGE_REPORT.md",
+    "docs/portfolio_dashboard.md",
+    "docs/project_audit_cleanup_report.md",
+    "docs/project_handoff_full.md",
+    "docs/project_handoff_summary.md",
+    "docs/project_handoff_thread_prompt.md",
+    "docs/strategy_lot_sizing.md",
+    "docs/today_bootstrap120_runbook.md"
+  ],
+  "source_files": {
+    "adaptive_policy.py": "883463dfb2da58f4a54fe8fbcc9a725dc9565941cfc42382f0942b919bfe4049",
+    "trading_calendar.py": "00e0056942c4f76f75d256209b5e2f36435dc771d9aea92173fd5d5800412c35",
+    "lot_manager.py": "e17d75520e73eca5ff8666cb0fdb263b4de56914f41e58127326d6244a49a7a4",
+    "position_manager.py": "cb2fcefabf3120529cf8cb0643f17e15c09218be5b2967291ad481075df20c85",
+    "strategy.py": "3506b74c2dee46732fc349a2c886056cfe4dfb9d2ea6473dd298bf994b91b79b",
+    "order_manager.py": "7ae316e2b508c7ba6ecf9743aef6f53e4d506906d3abe0505738bbf48404f395",
+    "main.py": "b882c18a25ca77e15431cae88dbe37337da745663135a3970ae71167d5a93ba3",
+    "ui_service.py": "b6948e66b0f3454fb9d06c42418b97c6325f925233dc95bdd9b1b3a4465f0c6a",
+    "ui_server.py": "a46e5981c0e85cb906219f6367d888d93b7ec7eede963e8790097a9c53983f9a"
+  }
+}

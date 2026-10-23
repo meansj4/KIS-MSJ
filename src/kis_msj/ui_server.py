@@ -349,7 +349,7 @@ Object.assign(LABELS, {
   adaptive_lot_enabled:'변동성·추세 LOT 전략', volatility_multiplier:'변동성 배수',
   consecutive_buy_count:'연속 매수 체결 수', consecutive_sell_count:'연속 매도 체결 수',
   rebuy_restriction_active:'매도 후 재매수 제한', buy_target_price:'최종 매수 목표가',
-  normal_buy_target:'최저 LOT 매수 기준가', reentry_target:'최근 매도가 재매수 기준가',
+  normal_buy_target:'평가PnL 매수 기준가', trend_score:'최근 5거래일 순점수', effective_buy_pnl_threshold:'평가PnL 매수 기준(%)', reentry_target:'최근 매도가 재매수 기준가',
   effective_buy_gap_pct:'유효 매수 간격(%)', effective_rebuy_gap_pct:'매도 후 재매수 하락률(%)',
   reentry_reserve_lots_per_symbol:'종목별 예비 LOT 수', reentry_cash_buffer_ratio:'재매수 안전 현금 비율',
   reentry_future_lot_reserve:'추가 LOT 예비 현금', reentry_safety_cash_buffer:'안전 예수금',
@@ -616,7 +616,7 @@ function table(rows, tableId='default', opts={}) {
   if (rows.some(row => row.adaptive_lot_enabled)) {
     visibleKeys = visibleKeys.filter(key => !key.startsWith('cash_buy_') && !key.startsWith('cash_target_') && !key.startsWith('low_cash_') && key !== 'negative_target_high_cost_sell');
     if (!columnPrefs[tableId]) {
-      for (const key of ['buy_target_price','effective_buy_gap_pct','volatility_multiplier','consecutive_buy_count','consecutive_sell_count','rebuy_restriction_active']) {
+      for (const key of ['buy_target_price','effective_buy_pnl_threshold','trend_score','volatility_multiplier','rebuy_restriction_active']) {
         if (keys.includes(key) && !visibleKeys.includes(key)) visibleKeys.push(key);
       }
     }
@@ -844,7 +844,7 @@ function adaptiveLotPanel(info, details) {
     total_asset_for_reserve:info.total_asset_for_reserve,
     cash_snapshot_status:info.cash_snapshot_status
   };
-  return `<section class="manualBox"><h3>변동성·추세 LOT 전략</h3><p>최저 매수가 LOT에서 기본 4% 하락 시 추가매수합니다. 개별 LOT의 기본 매도 목표는 3%이며, 변동성과 연속 체결 배수를 적용한 뒤 현재 LOT 수 × 0.1%p × 보유 주수의 decay를 마지막에 차감합니다. 최근 매도 후 재매수에는 별도 하락 조건과 예비 현금 조건을 함께 적용합니다. 변동성은 장 마감 후 갱신하며 장중에는 같은 값을 사용합니다.</p>${metrics(fields)}</section>`;
+  return `<section class="manualBox"><h3>변동성·추세 LOT 전략</h3><p>잔여 수량 가중 평균매수가 대비 평가손익률이 -(4+2×(현재 LOT 수-1))% 이하이면 추가매수를 검토합니다. 개별 LOT의 기본 매도 목표는 3%이며, 변동성과 최근 5거래일 매수·매도 순점수 배수를 적용한 뒤 현재 LOT 수 × 0.1%p × 완료 보유거래일/5의 decay를 마지막에 차감합니다. 최근 매도 후 재매수에는 별도 하락 조건과 예비 현금 조건을 함께 적용합니다. 변동성은 장 마감 후 갱신하며 장중에는 같은 값을 사용합니다.</p>${metrics(fields)}</section>`;
 }
 function cashTargetPanel(info) {
   if (!info || !info.cash_target_profit_enabled) return '';

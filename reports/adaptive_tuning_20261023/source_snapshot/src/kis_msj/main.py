@@ -1,0 +1,1739 @@
+"""Lot-based domestic stock auto-trader entry point."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+import copy
+from dataclasses import replace
+from contextlib import nullcontext
+from datetime import datetime, time as day_time, timedelta, timezone
+from pathlib import Path
+from typing import Sequence
+
+from .config import DEFAULT_CONFIG_PATH, BotConfig, config_hash, config_to_dict, load_config, write_default_config
+from .domestic_quote import is_rate_limit_error
+from .kis_client import KisApiError, KisClient, MockKisClient
+from .logger import configure_trade_logger, log_decision
+from .lot_manager import LotManager
+from .loop_profile import LoopProfile, key_value_line
+from .live_startup import TradingInstanceAlreadyRunning, TradingInstanceLock
+from .models import AccountSnapshot, OrderSide, PositionState, Quote, ReentryType, SellReason
+from .models import OrderResult, OrderStatus, PositionLifecycle, TradeFill
+from .notifier import LogNotifier
+from .order_manager import OrderManager
+from .position_manager import PositionManager
+from .price_provider import PriceSampler
+from .risk_manager import RiskManager
+from .runtime_control import DEFAULT_RUNTIME_CONTROL_PATH, RuntimeControl, load_runtime_control, runtime_block_reason, save_runtime_control
+from .storage import StateStore
+from .strategy import LotGridStrategy, StrategyAction
+from .upstream_watcher import UpstreamWatcher
+from .market_session import SessionMarketData, SessionUnavailable, RoutedQuotes, Route, candidates, extended_window
+from .shadow_state import ShadowStateStore
+from .volatility import DailyVolatilityCache, completed_close_cutoff, KST
+from .cash_rotation import (decide_with_cash_signal, handle_shortfall,
+                            buy_block_reason as cash_rotation_buy_block, abandon_invalid_target,
+                            process_rotation, target_record, remove_target,
+                            funding_enabled as cash_rotation_funding_enabled)
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_QUOTE_CSV = PROJECT_ROOT / "data" / "kospi_current_quotes.csv"
+
+
+def _null_stage():
+    return nullcontext()
+
+
+def ordered_stocks_for_reentry(stocks, positions):
+    """Evaluate existing positions first, then the oldest confirmed exits."""
+    ordinary = []
+    waiting = []
+    for stock in stocks:
+        position = positions.get(stock.code)
+        exited_position = position is not None and (
+            bool(position.exit_time) or position.last_fill_side == OrderSide.SELL.value
+            or position.position_state in {
+                PositionLifecycle.WAIT_REENTRY.value,
+                PositionLifecycle.COOLDOWN_AFTER_CLEANUP.value,
+            }
+        )
+        if position is None or position.quantity > 0 or not exited_position:
+            ordinary.append(stock)
+            continue
+        # Review clearance and legacy cleanup migration can turn a flat symbol
+        # into WAIT_REENTRY during evaluation. Queue it now using the same
+        # persisted exit fallback, so it cannot jump ahead of older exits.
+        wait_started = position.exit_time
+        if not wait_started and position.last_fill_side == OrderSide.SELL.value:
+            wait_started = position.cleanup_time or position.last_order_time
+        try:
+            exited = datetime.fromisoformat(str(wait_started).replace("Z", "+00:00"))
+            if exited.tzinfo is not None:
+                exited = exited.astimezone(timezone(timedelta(hours=9))).replace(tzinfo=None)
+        except (TypeError, ValueError, OverflowError):
+            exited = datetime.max
+        waiting.append((exited, stock.code, stock))
+    return ordinary + [stock for _, _, stock in sorted(waiting, key=lambda entry: entry[:2])]
+
+
+class AutoTrader:
+    def __init__(self, config: BotConfig, *, use_mock_client: bool = False) -> None:
+        self.config = config
+        self.logger = configure_trade_logger(config.log_path)
+        self.store = StateStore(config.storage_path)
+        self.config_hash = config_hash(config)
+        self.run_id = config.experiment.run_id or config.run_id or f"{config.risk.profile}_{self.config_hash}"
+        self.experiment_name = config.experiment.experiment_name or config.experiment_name or config.risk.profile
+        self.store.set_active_config(self.config_hash, run_id=self.run_id, experiment_name=self.experiment_name, profile_name=config.risk.profile)
+        self.store.record_config_snapshot(
+            self.config_hash,
+            config_to_dict(config),
+            source="bot_init",
+            operator_note=config.experiment.operator_note or config.operator_note,
+            run_id=self.run_id,
+            experiment_name=self.experiment_name,
+            profile_name=config.risk.profile,
+        )
+        self.lot_manager = LotManager(config.strategy, self.store.load_lots())
+        self.position_manager = PositionManager(config.strategy, self.lot_manager, self.store.load_positions())
+        self.risk_manager = RiskManager(config)
+        self.strategy = LotGridStrategy(config, self.lot_manager)
+        self.strategy.positions = self.position_manager.positions
+        self.volatility_cache = DailyVolatilityCache(Path(config.storage_path).with_suffix(".volatility.json"))
+        self._volatility_cache_cutoff = ""
+        self.notifier = LogNotifier(self.logger)
+        self.upstream_watcher = UpstreamWatcher(config.upstream_watch, self.notifier)
+        self.client = (
+            MockKisClient(DEFAULT_QUOTE_CSV)
+            if use_mock_client or not config.order.live_trading
+            else KisClient(
+                config.kis_account,
+                enable_execution_raw_log=config.order.enable_execution_raw_log,
+                min_request_interval_seconds=config.order.kis_min_request_interval_seconds,
+                balance_page_interval_seconds=config.order.kis_balance_page_interval_seconds,
+            )
+        )
+        if hasattr(self.client, "logger"):
+            self.client.logger = self.logger
+        self.price_sampler = PriceSampler(self.client, config.order.price_sample_count, config.order.price_sample_interval_seconds)
+        self.order_manager = OrderManager(config, self.client, self.store, self.logger)
+        self.session_market = SessionMarketData(self.client, config)
+        self.order_manager.session_market = self.session_market
+        if config.extended_hours.enabled:
+            self.client.execution_all_venues = True
+            self.client.session_order_validator = self.session_market.validate_request
+        # Remains enabled after switching OFF if extended orders need recovery.
+        self._session_audit_active = self.store.has_session_metadata()
+        if self._session_audit_active:
+            self.client.execution_all_venues = True
+        self._startup_recent_executions_reconciled = False
+        self._last_mismatch_execution_reconcile_at = 0.0
+        self._mismatch_execution_reconcile_interval_seconds = 300.0
+        self._last_account_snapshot: AccountSnapshot | None = None
+        self._last_account_snapshot_at = 0.0
+        self._account_snapshot_rate_limited_until = 0.0
+        self._loop_id = 0
+        self._cash_rotation_scanning = False
+        self._cash_rotation_scan_targets = {}
+        self._cash_rotation_last_full_scan_at = 0.0
+        self.last_loop_profile: dict[str, object] = {}
+        self._active_loop_profile: LoopProfile | None = None
+        self._last_loop_interval_warning_at = 0.0
+        self._completed_session_cache_date = ""
+        self._completed_session_prices: dict[str, tuple[str, int, str]] = {}
+        decision_interval = max(0.0, config.decision_record_interval_seconds)
+        decision_schedule_now = time.monotonic()
+        decision_schedule_count = max(1, len(config.stocks))
+        self._last_decision_record_at: dict[str, float] = {
+            stock.code: decision_schedule_now - decision_interval * (index / decision_schedule_count)
+            for index, stock in enumerate(config.stocks)
+        }
+
+    def reload_config(self, config: BotConfig, *, use_mock_client: bool = False) -> None:
+        self.__init__(config, use_mock_client=use_mock_client)
+
+    def startup_sync(self) -> AccountSnapshot:
+        now = time.monotonic()
+        if self.config.order.live_trading and now < self._account_snapshot_rate_limited_until:
+            retry_after = self._account_snapshot_rate_limited_until - now
+            raise RuntimeError(f"KIS account snapshot rate limited; retry_after_seconds={retry_after:.1f} msg_cd=EGW00201")
+        snapshot_age = time.monotonic() - self._last_account_snapshot_at if self._last_account_snapshot is not None else None
+        snapshot_from_rate_limit_cache = False
+        if (
+            self.config.order.live_trading
+            and snapshot_age is not None
+            and snapshot_age < self.config.order.account_snapshot_min_interval_seconds
+        ):
+            snapshot = self._last_account_snapshot
+            self.logger.info(
+                "account_snapshot_cached age_seconds=%.2f min_interval_seconds=%s",
+                snapshot_age,
+                self.config.order.account_snapshot_min_interval_seconds,
+            )
+        else:
+            try:
+                snapshot = self.client.account_snapshot()
+            except RuntimeError as error:
+                if is_rate_limit_error(error):
+                    self._account_snapshot_rate_limited_until = time.monotonic() + max(1, self.config.order.account_snapshot_rate_limit_cooldown_seconds)
+                if self._last_account_snapshot is not None and is_rate_limit_error(error):
+                    snapshot = self._last_account_snapshot
+                    snapshot_from_rate_limit_cache = True
+                    self.logger.warning(
+                        "account_snapshot_rate_limited_using_cache age_seconds=%.2f error=%s",
+                        time.monotonic() - self._last_account_snapshot_at,
+                        error,
+                    )
+                else:
+                    raise
+            else:
+                self._last_account_snapshot = snapshot
+                self._last_account_snapshot_at = time.monotonic()
+                self._account_snapshot_rate_limited_until = 0.0
+        if self.config.order.live_trading:
+            if snapshot_from_rate_limit_cache:
+                self.logger.warning("account_sync skipped reason=account_snapshot_rate_limited_using_cache")
+                self.logger.warning("open_orders skipped reason=account_snapshot_rate_limited_using_cache")
+            else:
+                self.position_manager.sync_account(snapshot)
+                if self.position_manager.account_mismatch_detected:
+                    self.reconcile_recent_executions_on_mismatch()
+                    self.position_manager.sync_account(snapshot)
+                if self.position_manager.account_mismatch_detected:
+                    self.auto_repair_sync_mismatch(snapshot)
+                    self.position_manager.sync_account(snapshot)
+                self.risk_manager.data_mismatch_detected = self.position_manager.account_mismatch_detected
+                if self.position_manager.account_mismatch_detected:
+                    self.notifier.notify("SYNC_REQUIRED", "Lot quantity differs from KIS account balance. Trading is paused for mismatched symbols.")
+                try:
+                    open_orders = self.client.open_orders()
+                except RuntimeError as error:
+                    if getattr(self.client, "is_demo", False) and "90000000" in str(error):
+                        self.logger.warning("open_orders skipped reason=demo_api_unsupported")
+                        open_orders = ()
+                    else:
+                        raise
+                if open_orders:
+                    self.logger.warning("open_orders count=%s buy_orders_blocked=true", len(open_orders))
+                    self.risk_manager.data_mismatch_detected = True
+        if self.config.strategy.cash_target_profit_active():
+            # All LOTs share the latest cash base, including symbols already
+            # evaluated before an order changed the account's available cash.
+            for lot in self.lot_manager.lots.values():
+                if lot.remaining_quantity <= 0:
+                    continue
+                position = self.position_manager.positions.get(lot.code)
+                price = position.current_price if position and position.current_price > 0 else lot.buy_price
+                base_rate, _, _ = self.lot_manager.current_target_profit_info(lot.code, cash_available=snapshot.cash_available)
+                self.lot_manager.update_lot_target_metadata(lot, price, current_base_target_profit_rate=base_rate)
+        self.store.save_positions(self.position_manager.positions.values())
+        self.store.save_lots(self.lot_manager.lots.values())
+        if (self.config.strategy.cash_target_profit_active()
+                or self.config.strategy.adaptive_lot_enabled
+                or self.config.strategy.cash_capacity_reentry_enabled()):
+            age = max(0.0, time.monotonic() - self._last_account_snapshot_at) if self._last_account_snapshot_at else 0.0
+            self.logger.info("cash_target_account_snapshot cash_available=%s snapshot_at=%s total_asset=%s",
+                             snapshot.cash_available,
+                             (datetime.now() - timedelta(seconds=age)).isoformat(timespec="seconds"),
+                             snapshot.total_asset)
+        return snapshot
+
+    def invalidate_account_snapshot_cache(self, reason: str) -> None:
+        if self._last_account_snapshot is None:
+            return
+        self._last_account_snapshot = None
+        self._last_account_snapshot_at = 0.0
+        self.logger.info("account_snapshot_cache_invalidated reason=%s", reason)
+
+    def stock_config_for_code(self, code: str):
+        code = str(code).zfill(6)
+        return next((stock for stock in self.config.stocks if stock.code == code), None)
+
+    def apply_stock_retirement_config(self, position: PositionState, stock) -> None:
+        if stock is None:
+            return
+        position.retire_after_exit = bool(getattr(stock, "retire_after_exit", False))
+        position.retire_reason = str(getattr(stock, "retire_reason", "") or "")
+
+    def automatic_symbol_is_retired(self, stock) -> bool:
+        """Return true once a retire-after-exit symbol has no more automatic work."""
+        if not bool(getattr(stock, "retire_after_exit", False)):
+            return False
+        position = self.position_manager.positions.get(stock.code)
+        return position is not None and position.position_state == PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value
+
+    def run_once(self) -> str:
+        self._loop_id += 1
+        profile = (
+            LoopProfile(
+                loop_id=self._loop_id,
+                symbols_total=len(self.config.stocks),
+                loop_interval_seconds=self.config.loop_interval_seconds,
+                run_id=self.run_id,
+                experiment_name=self.experiment_name,
+                active_profile=self.config.risk.profile,
+            )
+            if self.config.loop_profiling_enabled
+            else None
+        )
+        status = "ok"
+        try:
+            self._active_loop_profile = profile
+            with profile.stage("upstream_watch") if profile else _null_stage():
+                self.upstream_watcher.tick()
+            with profile.stage("runtime_control") if profile else _null_stage():
+                interrupt = self.runtime_interrupt_reason("after_upstream_tick")
+            if interrupt:
+                status = interrupt
+                return interrupt
+            with profile.stage("startup_reconciliation") if profile else _null_stage():
+                self.reconcile_recent_executions_on_startup()
+            with profile.stage("runtime_control") if profile else _null_stage():
+                interrupt = self.runtime_interrupt_reason("after_startup_reconciliation")
+            if interrupt:
+                status = interrupt
+                return interrupt
+            with profile.stage("open_order_reconciliation") if profile else _null_stage():
+                self.reconcile_open_orders()
+            with profile.stage("runtime_control") if profile else _null_stage():
+                interrupt = self.runtime_interrupt_reason("after_open_order_reconciliation")
+            if interrupt:
+                status = interrupt
+                return interrupt
+            with profile.stage("account_sync") if profile else _null_stage():
+                try:
+                    snapshot = self.startup_sync()
+                except RuntimeError as error:
+                    if is_rate_limit_error(error):
+                        status = "account_sync_rate_limited"
+                        self.risk_manager.data_mismatch_detected = True
+                        self.logger.warning("account_sync_rate_limited skip_loop=true error=%s", error)
+                        return status
+                    raise
+            with profile.stage("risk_summary") if profile else _null_stage():
+                account_risk = self.risk_manager.account_buy_allowed(snapshot, self.position_manager.positions)
+            with profile.stage("daily_volatility") if profile else _null_stage():
+                self.refresh_daily_volatility()
+            with profile.stage("manual_request") if profile else _null_stage():
+                self.process_manual_order_requests(snapshot, account_risk)
+            if not in_trade_window(self.config) and not extended_window(self.config):
+                # Reconciliation, account sync, and manual-request handling above still
+                # run outside market hours. Avoid walking and repeatedly writing the
+                # entire symbol/lot universe when no automatic decision can trade.
+                for stock in self.config.stocks:
+                    position = self.position_manager.positions.get(stock.code)
+                    if position is not None:
+                        self.apply_stock_retirement_config(position, stock)
+                with profile.stage("db") if profile else _null_stage():
+                    self.store.save_positions(self.position_manager.positions.values())
+                self.logger.info(
+                    "market_idle_loop symbols_skipped=%s reason=outside_trade_window reconciliation_completed=true",
+                    len(self.config.stocks),
+                )
+                if profile:
+                    profile.symbols_skipped += len(self.config.stocks)
+                return ""
+            with profile.stage("deep_loss_price_cache") if profile else _null_stage():
+                self.refresh_completed_session_price_cache()
+            stocks = list(self.config.stocks)
+            if self.config.strategy.cash_capacity_reentry_enabled():
+                stocks = ordered_stocks_for_reentry(stocks, self.position_manager.positions)
+            rotation_window = in_trade_window(self.config) or (
+                self.config.extended_hours.mode == "live" and extended_window(self.config))
+            if cash_rotation_funding_enabled(self) and rotation_window:
+                plan = self.store.load_cash_rotation_plan()
+                if plan and plan.get("targets") and time.monotonic()-self._cash_rotation_last_full_scan_at < 300:
+                    process_rotation(self, snapshot)
+                    return ""
+                self._cash_rotation_scan_targets = {}
+                self._cash_rotation_scanning = True
+            rotation_scanned_codes = set()
+            rotation_checkpoint_at = time.monotonic()
+            for stock in stocks:
+                with profile.stage("runtime_control") if profile else _null_stage():
+                    interrupt = self.runtime_interrupt_reason(f"before_symbol_{stock.code}")
+                if interrupt:
+                    status = interrupt
+                    return interrupt
+                if self._cash_rotation_scanning and time.monotonic()-rotation_checkpoint_at >= 30:
+                    # Keep funding active while discovering fresh BUY signals.
+                    # A full universe scan takes minutes on the REST client.
+                    plan = self.store.load_cash_rotation_plan()
+                    targets = dict(plan.get("targets", {})) if plan else {}
+                    for code in rotation_scanned_codes:
+                        targets.pop(code, None)
+                        if code in self._cash_rotation_scan_targets:
+                            targets[code] = self._cash_rotation_scan_targets[code]
+                    funding_snapshot = self._last_account_snapshot or snapshot
+                    self.store.set_cash_rotation_targets(targets, funding_snapshot.cash_available)
+                    self.logger.info("cash_rotation_scan_checkpoint scanned=%s targets=%s",
+                                     len(rotation_scanned_codes), len(targets))
+                    if targets:
+                        self._cash_rotation_scanning = False
+                        try:
+                            snapshot = process_rotation(self, funding_snapshot)
+                        finally:
+                            self._cash_rotation_scanning = True
+                        account_risk = self.risk_manager.account_buy_allowed(snapshot, self.position_manager.positions)
+                    rotation_scanned_codes.clear()
+                    rotation_checkpoint_at = time.monotonic()
+                symbol_start = time.perf_counter()
+                try:
+                    if not stock.enabled or stock.manual_only or self.automatic_symbol_is_retired(stock):
+                        rotation_scanned_codes.add(stock.code)
+                        if profile:
+                            profile.symbols_skipped += 1
+                        continue
+                    position = self.position_manager.get(stock.code, stock.name)
+                    self.apply_stock_retirement_config(position, stock)
+                    if stock.danger_state:
+                        position.danger_state = True
+                        position.position_state = PositionLifecycle.RISK_BLOCKED.value
+                        position.auto_buy_enabled = False
+                    self.evaluate(position, snapshot, account_risk)
+                    rotation_scanned_codes.add(stock.code)
+                    if profile:
+                        profile.add_symbol(stock.code, (time.perf_counter() - symbol_start) * 1000.0)
+                except Exception as error:  # noqa: BLE001
+                    if profile:
+                        profile.add_symbol(stock.code, (time.perf_counter() - symbol_start) * 1000.0)
+                    if self._mark_symbol_blocked_for_kis_order_error(stock.code, stock.name, error):
+                        continue
+                    self.logger.exception(
+                        "symbol_evaluate_failed code=%s name=%s error_type=%s error=%s continue_next_symbol=true",
+                        stock.code,
+                        stock.name,
+                        type(error).__name__,
+                        error,
+                    )
+                    continue
+                with profile.stage("runtime_control") if profile else _null_stage():
+                    interrupt = self.runtime_interrupt_reason(f"after_symbol_{stock.code}")
+                if interrupt:
+                    status = interrupt
+                    return interrupt
+            if cash_rotation_funding_enabled(self) and self._cash_rotation_scanning:
+                self._cash_rotation_scanning = False
+                self._cash_rotation_last_full_scan_at = time.monotonic()
+                funding_snapshot = self._last_account_snapshot or snapshot
+                self.store.set_cash_rotation_targets(self._cash_rotation_scan_targets, funding_snapshot.cash_available)
+                process_rotation(self, funding_snapshot)
+            with profile.stage("db") if profile else _null_stage():
+                self.store.save_positions(self.position_manager.positions.values())
+                self.store.save_lots(self.lot_manager.lots.values())
+            return ""
+        finally:
+            self._cash_rotation_scanning = False
+            self._active_loop_profile = None
+            if profile is not None:
+                summary = profile.finish(status)
+                self.last_loop_profile = summary
+                self.logger.info(key_value_line("loop_profile", summary))
+            else:
+                summary = {}
+            if summary.get("loop_over_interval") and self._should_log_loop_interval_warning():
+                self.logger.warning(
+                    "loop_duration_exceeded_interval loop_id=%s loop_duration_ms=%s loop_interval_seconds=%s",
+                    summary["loop_id"],
+                    summary["loop_duration_ms"],
+                    summary["loop_interval_seconds"],
+                )
+
+    def _should_log_loop_interval_warning(self) -> bool:
+        now = time.monotonic()
+        minimum = max(0.0, self.config.loop_interval_warning_min_seconds)
+        if self._last_loop_interval_warning_at and now - self._last_loop_interval_warning_at < minimum:
+            return False
+        self._last_loop_interval_warning_at = now
+        return True
+
+    def refresh_daily_volatility(self) -> None:
+        if not getattr(self.config.strategy, "adaptive_lot_enabled", False):
+            return
+        now = datetime.now(KST)
+        cutoff = completed_close_cutoff(now, self.config.market_hours.close_time).isoformat()
+        if self._volatility_cache_cutoff == cutoff:
+            return
+        for stock in self.config.stocks:
+            if not stock.enabled or stock.manual_only or self.automatic_symbol_is_retired(stock):
+                continue
+            estimate = self.volatility_cache.refresh(stock.code, self.client, now, self.config.market_hours.close_time)
+            self.lot_manager.set_volatility_multiplier(stock.code, estimate.multiplier)
+            self.logger.info(
+                "adaptive_volatility code=%s requested_through=%s as_of=%s closes=%s vol20=%s vol60=%s weighted=%s multiplier=%.6f reason=%s",
+                stock.code, cutoff, estimate.as_of, estimate.close_count, estimate.vol20,
+                estimate.vol60, estimate.weighted_volatility, estimate.multiplier, estimate.reason,
+            )
+        self._volatility_cache_cutoff = cutoff
+
+    def refresh_completed_session_price_cache(self) -> None:
+        if not self.config.strategy.deep_loss_recovery_enabled:
+            self._completed_session_cache_date = ""
+            self._completed_session_prices = {}
+            return
+        before_date = datetime.now().date().isoformat()
+        if self._completed_session_cache_date == before_date:
+            return
+        started = time.perf_counter()
+        codes = tuple(
+            stock.code
+            for stock in self.config.stocks
+            if stock.enabled and not stock.manual_only and not self.automatic_symbol_is_retired(stock)
+        )
+        self._completed_session_prices = self.store.latest_completed_session_prices(codes, before_date)
+        self._completed_session_cache_date = before_date
+        self.logger.info(
+            "deep_loss_price_cache_loaded before_date=%s requested_codes=%s loaded_codes=%s duration_ms=%.2f",
+            before_date,
+            len(codes),
+            len(self._completed_session_prices),
+            (time.perf_counter() - started) * 1000.0,
+        )
+
+    def _mark_symbol_blocked_for_kis_order_error(self, code: str, name: str, error: Exception) -> bool:
+        message = str(error)
+        if not isinstance(error, KisApiError) or "APBK0066" not in message:
+            return False
+        position = self.position_manager.get(code, name)
+        position.danger_state = True
+        position.position_state = PositionLifecycle.RISK_BLOCKED.value
+        position.auto_buy_enabled = False
+        position.trading_paused = True
+        position.skip_reason = "kis_trading_halted"
+        position.review_reason = "kis_trading_halted: APBK0066 거래정지종목"
+        position.last_order_status = "REJECTED"
+        position.last_update_time = datetime.now().isoformat(timespec="seconds")
+        self.store.save_position(position)
+        self.logger.warning(
+            "symbol_blocked_by_kis_order_error code=%s name=%s reason=kis_trading_halted kis_msg=APBK0066 continue_next_symbol=true error=%s",
+            code,
+            name,
+            error,
+        )
+        return True
+
+    def runtime_interrupt_reason(self, stage: str) -> str:
+        runtime = load_runtime_control()
+        if runtime.config_reload_requested:
+            self.logger.info("loop_interrupted stage=%s reason=config_reload_requested", stage)
+            return "config_reload_requested"
+        if runtime.bot_paused:
+            self.logger.info("loop_interrupted stage=%s reason=bot_paused", stage)
+            return "bot_paused"
+        return ""
+
+    def process_manual_order_requests(self, snapshot: AccountSnapshot, account_risk) -> None:
+        for manual in self.store.manual_order_requests("REQUESTED"):
+            request_id = str(manual["request_id"])
+            claimed = self.store.claim_manual_order_request(request_id)
+            if claimed is None:
+                self.logger.info("manual_order_request_claim_skipped request_id=%s reason=already_claimed_or_linked", request_id)
+                continue
+            manual = claimed
+            code = str(manual["code"]).zfill(6)
+            side = OrderSide(str(manual["side"]))
+            position = self.position_manager.get(code)
+            self.apply_stock_retirement_config(position, self.stock_config_for_code(code))
+            try:
+                block_reason = self.manual_request_block_reason(manual, position, account_risk)
+                if block_reason:
+                    self.store.update_manual_order_request(request_id, status="BLOCKED", block_reason=block_reason)
+                    self.logger.warning(
+                        "manual_order_request_blocked request_id=%s code=%s side=%s reason=%s",
+                        request_id,
+                        code,
+                        side.value,
+                        block_reason,
+                    )
+                    continue
+                samples = self.price_sampler.sample(position.code, position.name)
+                stable, stable_reason = self.price_sampler.stable(samples, self.config.risk.max_price_sample_volatility_pct)
+                current_price = samples[-1].price if samples else 0
+                if not stable or current_price <= 0:
+                    reason = stable_reason or "current_price_missing"
+                    self.store.update_manual_order_request(request_id, status="BLOCKED", block_reason=reason)
+                    self.logger.warning("manual_order_request_blocked request_id=%s code=%s side=%s reason=%s", request_id, code, side.value, reason)
+                    continue
+                position = self.position_manager.refresh_from_lots(code, current_price)
+                action = self.manual_action_from_request(manual, current_price)
+                sizing_block_reason = self.manual_lot_sizing_block_reason(manual, position, current_price, action)
+                if sizing_block_reason:
+                    self.store.update_manual_order_request(request_id, status="BLOCKED", block_reason=sizing_block_reason)
+                    self.logger.warning("manual_order_request_blocked request_id=%s code=%s side=%s reason=%s", request_id, code, side.value, sizing_block_reason)
+                    continue
+                final_block_reason = self.pre_request_block_reason(position, action)
+                if final_block_reason == "recent_order_request" and self.is_market_sell_all_request(manual):
+                    # A stock-level liquidation is represented as one request per LOT so
+                    # fills remain attributable to their original LOTs. Treat those
+                    # requests as one operator-confirmed batch instead of blocking every
+                    # request after the first with the normal per-symbol anti-spam gap.
+                    final_block_reason = ""
+                if final_block_reason:
+                    self.store.update_manual_order_request(request_id, status="BLOCKED", block_reason=final_block_reason)
+                    self.logger.warning("manual_order_request_blocked request_id=%s code=%s side=%s reason=%s", request_id, code, side.value, final_block_reason)
+                    continue
+                interrupt = self.runtime_interrupt_reason(f"before_manual_submit_{request_id}")
+                if interrupt:
+                    self.store.update_manual_order_request(request_id, status="BLOCKED", block_reason=interrupt)
+                    return
+                order_request = self.order_manager.build_request(
+                    position,
+                    action,
+                    current_price,
+                    market_order=str(manual.get("order_type") or "LIMIT_POLICY").upper() == "MARKET",
+                )
+                if order_request is None:
+                    self.store.update_manual_order_request(request_id, status="BLOCKED", block_reason="quantity_below_one")
+                    continue
+                try:
+                    result, fill = self.order_manager.submit_and_confirm(order_request)
+                finally:
+                    if self.config.strategy.cash_target_profit_active() or self.config.strategy.cash_capacity_reentry_enabled():
+                        self.invalidate_account_snapshot_cache("manual_order_submitted")
+                self.store.update_manual_order_request(request_id, status="SUBMITTED", linked_order_id=result.order_id)
+                self.logger.info(
+                    "manual_order_request_submitted_to_order_manager request_id=%s code=%s side=%s order_id=%s status=%s",
+                    request_id,
+                    code,
+                    side.value,
+                    result.order_id,
+                    result.status.value,
+                )
+                if fill is None:
+                    continue
+                self.invalidate_account_snapshot_cache("manual_fill_applied")
+                updated = self._apply_fill_with_session_audit(fill)
+                self.store.save_position(updated)
+                self.store.save_lots(self.lot_manager.lots.values())
+                self.store.update_manual_order_request(request_id, status="FILLED", linked_order_id=result.order_id)
+            except Exception as error:  # noqa: BLE001
+                self.store.update_manual_order_request(request_id, status="FAILED", block_reason=type(error).__name__, last_processing_error=str(error))
+                self.logger.exception("manual_order_request_failed request_id=%s code=%s side=%s error=%s", request_id, code, side.value, error)
+
+    @staticmethod
+    def is_market_sell_all_request(manual: dict[str, object]) -> bool:
+        return (
+            str(manual.get("requested_by") or "") == "local_ui_market_sell_all"
+            and str(manual.get("side") or "") == OrderSide.SELL.value
+            and str(manual.get("order_type") or "").upper() == "MARKET"
+        )
+
+    def manual_request_block_reason(self, manual: dict[str, object], position: PositionState, account_risk) -> str:
+        # Manual UI orders retain their original regular-hours route. They must
+        # not bypass the extended shadow switch or send market orders after hours.
+        if self.config.extended_hours.enabled and not in_trade_window(self.config):
+            return "manual_orders_regular_hours_only"
+        if self.config.extended_hours.enabled:
+            try:
+                route, _ = self.session_market.select(position.code, position.name)
+                if route.session != "REGULAR":
+                    return "manual_orders_regular_hours_only"
+            except SessionUnavailable as error:
+                return str(error)
+        if not self.config.ui_manual_trading_enabled:
+            return "ui_manual_trading_disabled"
+        if not bool(manual.get("confirm_text_verified")):
+            return "confirm_text_required"
+        if position.sync_status == PositionLifecycle.SYNC_REQUIRED.value or position.position_state == PositionLifecycle.SYNC_REQUIRED.value:
+            return "sync_required"
+        stock_config = next((stock for stock in self.config.stocks if stock.code == position.code), None)
+        if position.danger_state or position.position_state == PositionLifecycle.RISK_BLOCKED.value or (stock_config is not None and stock_config.danger_state):
+            return "risk_blocked_buy_sell_blocked"
+        side = OrderSide(str(manual["side"]))
+        if side is OrderSide.BUY and stock_config is not None and stock_config.buy_blocked:
+            return "BUY_BLOCKED_BY_STOCK_FLAG"
+        if side is OrderSide.BUY and not account_risk.allowed:
+            return "|".join(account_risk.reasons) or "account_risk_blocked"
+        if side is OrderSide.BUY and self.config.strategy.lot_sizing_mode == "cycle_locked_by_entry_price":
+            requested_price = int(manual.get("current_price") or position.current_price or 0)
+            if requested_price <= 0:
+                requested_price = 0
+            if requested_price <= 0:
+                return ""
+            if self.lot_manager.open_lots(position.code):
+                sizing = self.strategy.ensure_lot_sizing(position, requested_price)
+                open_lot_count = len(self.lot_manager.open_lots(position.code))
+            else:
+                sizing = self.strategy.lot_sizing_for_new_cycle(requested_price)
+                open_lot_count = 0
+            amount = int(manual.get("amount") or 0)
+            quantity = int(manual.get("quantity") or 0)
+            next_amount = amount or (quantity * requested_price if quantity > 0 else int(sizing.get("lot_unit_amount") or 0))
+            sizing_block = self.strategy.lot_sizing_buy_block_reason(position, requested_price, sizing, next_buy_amount=next_amount, open_lot_count=open_lot_count)
+            if sizing_block:
+                return sizing_block
+        if side is OrderSide.BUY and self.store.has_open_order(position.code, OrderSide.BUY):
+            return "open_buy_order_exists"
+        if side is OrderSide.SELL:
+            lot_id = str(manual.get("lot_id") or "")
+            lot = self.lot_manager.lots.get(lot_id)
+            if lot is None:
+                return "lot_not_found"
+            if lot.remaining_quantity <= 0 or lot.status == "CLOSED":
+                return "closed_lot"
+            if int(manual.get("quantity") or 0) > lot.remaining_quantity:
+                return "quantity_exceeds_remaining"
+            if self.store.has_open_order(position.code, OrderSide.SELL, lot_id):
+                return "open_sell_order_exists"
+        return ""
+
+    def manual_lot_sizing_block_reason(self, manual: dict[str, object], position: PositionState, current_price: int, action: StrategyAction) -> str:
+        if action.side is not OrderSide.BUY or self.config.strategy.lot_sizing_mode != "cycle_locked_by_entry_price":
+            return ""
+        open_lots = self.lot_manager.open_lots(position.code)
+        if open_lots:
+            sizing = self.strategy.ensure_lot_sizing(position, current_price)
+            open_lot_count = len(open_lots)
+        else:
+            sizing = self.strategy.lot_sizing_for_new_cycle(current_price)
+            open_lot_count = 0
+        amount = int(action.amount or manual.get("amount") or 0)
+        quantity = int(manual.get("quantity") or 0)
+        next_amount = amount or (quantity * current_price if quantity > 0 else int(sizing.get("lot_unit_amount") or 0))
+        changed = self.manual_lot_sizing_changed_after_preview(manual, sizing)
+        if changed:
+            return changed
+        return self.strategy.lot_sizing_buy_block_reason(position, current_price, sizing, next_buy_amount=next_amount, open_lot_count=open_lot_count)
+
+    def manual_lot_sizing_changed_after_preview(self, manual: dict[str, object], actual_sizing: dict[str, object]) -> str:
+        preview_raw = str(manual.get("preview_json") or "")
+        if not preview_raw:
+            return ""
+        try:
+            preview = json.loads(preview_raw)
+        except json.JSONDecodeError:
+            return ""
+        preview_bucket = str(preview.get("price_lot_band") or preview.get("lot_sizing_bucket") or "")
+        if not preview_bucket:
+            return ""
+        actual_bucket = str(actual_sizing.get("lot_sizing_bucket") or "")
+        preview_lot_unit = int(preview.get("lot_unit_amount") or 0)
+        actual_lot_unit = int(actual_sizing.get("lot_unit_amount") or 0)
+        preview_max_amount = int(preview.get("max_symbol_amount") or 0)
+        actual_max_amount = int(actual_sizing.get("max_symbol_amount") or 0)
+        if preview_bucket != actual_bucket or preview_lot_unit != actual_lot_unit or preview_max_amount != actual_max_amount:
+            return "lot_sizing_changed_after_preview"
+        return ""
+
+    def manual_action_from_request(self, manual: dict[str, object], current_price: int) -> StrategyAction:
+        side = OrderSide(str(manual["side"]))
+        if side is OrderSide.BUY:
+            amount = int(manual.get("amount") or 0)
+            quantity = int(manual.get("quantity") or 0)
+            if amount <= 0 and quantity > 0:
+                amount = quantity * current_price
+            if amount <= 0 and self.config.strategy.lot_sizing_mode == "cycle_locked_by_entry_price":
+                if self.lot_manager.open_lots(str(manual["code"]).zfill(6)):
+                    sizing = self.strategy.ensure_lot_sizing(self.position_manager.get(str(manual["code"]).zfill(6)), current_price)
+                else:
+                    sizing = self.strategy.lot_sizing_for_new_cycle(current_price)
+                amount = int(sizing.get("lot_unit_amount") or 0)
+            return StrategyAction(OrderSide.BUY, amount, None, "local_ui_manual")
+        lot_id = str(manual.get("lot_id") or "")
+        quantity = int(manual.get("quantity") or 0)
+        lot = self.lot_manager.lots.get(lot_id)
+        if lot is not None and quantity <= 0:
+            quantity = lot.remaining_quantity
+        return StrategyAction(OrderSide.SELL, 0, quantity, "local_ui_manual", lot_id=lot_id, target_lot=lot, sell_reason=SellReason.MANUAL_SYNC.value)
+
+    def reconcile_open_orders(self) -> None:
+        for fill in self.order_manager.reconcile_open_orders():
+            self.apply_reconciled_fill(fill)
+
+    def reconcile_recent_executions_on_startup(self) -> None:
+        if self._startup_recent_executions_reconciled:
+            return
+        self._startup_recent_executions_reconciled = True
+        if not self.config.order.live_trading or not self.config.order.reconcile_recent_executions_on_startup:
+            return
+        for fill in self.order_manager.reconcile_recent_executions():
+            self.apply_reconciled_fill(fill)
+
+    def reconcile_recent_executions_on_mismatch(self) -> int:
+        """Recheck late aggregate executions before leaving the account globally blocked."""
+        now = time.monotonic()
+        if now - self._last_mismatch_execution_reconcile_at < self._mismatch_execution_reconcile_interval_seconds:
+            return 0
+        self._last_mismatch_execution_reconcile_at = now
+        applied = 0
+        for fill in self.order_manager.reconcile_recent_executions():
+            self.apply_reconciled_fill(fill)
+            applied += 1
+        if applied:
+            self.logger.warning("mismatch_execution_reconcile_applied fill_count=%s", applied)
+        return applied
+
+    def apply_reconciled_fill(self, fill) -> None:
+        self.invalidate_account_snapshot_cache("reconciled_fill_applied")
+        updated = self._apply_fill_with_session_audit(fill)
+        self.store.save_position(updated)
+        self.store.save_lots(self.lot_manager.lots.values())
+        self.logger.info(
+            "reconcile_fill_applied code=%s side=%s qty=%s price=%s lot_id=%s order_id=%s execution_id=%s",
+            fill.code,
+            fill.side.value,
+            fill.quantity,
+            fill.price,
+            fill.lot_id,
+            fill.order_id,
+            fill.execution_id,
+        )
+
+    def auto_repair_sync_mismatch(self, snapshot: AccountSnapshot) -> int:
+        repaired = 0
+        for item in snapshot.positions:
+            code = str(item.code).zfill(6)
+            position = self.position_manager.positions.get(code)
+            if position is None or not (position.lot_quantity_mismatch or position.sync_status == PositionLifecycle.SYNC_REQUIRED.value):
+                continue
+            actual_quantity = int(item.quantity)
+            open_quantity = sum(lot.remaining_quantity for lot in self.lot_manager.open_lots(code))
+            gap = actual_quantity - open_quantity
+            if gap <= 0:
+                continue
+            candidate = self._single_safe_missing_buy_candidate(code, gap)
+            if candidate is None:
+                self.logger.warning(
+                    "auto_sync_repair_skipped code=%s name=%s gap=%s reason=no_single_safe_missing_buy_candidate",
+                    code,
+                    item.name,
+                    gap,
+                )
+                continue
+            fill = self._missing_buy_fill_from_order(candidate, item.name or position.name, gap)
+            if not self.store.record_fill(fill):
+                self.logger.warning(
+                    "auto_sync_repair_skipped code=%s order_id=%s gap=%s reason=duplicate_or_existing_fill execution_id=%s",
+                    code,
+                    candidate.order_id,
+                    gap,
+                    fill.execution_id,
+                )
+                continue
+            updated = self.position_manager.apply_fill(fill)
+            self.store.save_position(updated)
+            self.store.save_lots(self.lot_manager.lots.values())
+            self._mark_auto_repaired_order(candidate)
+            repaired += 1
+            self.logger.warning(
+                "auto_sync_repair_applied code=%s name=%s order_id=%s qty=%s price=%s execution_id=%s source=closed_partial_buy_gap",
+                code,
+                fill.name,
+                fill.order_id,
+                fill.quantity,
+                fill.price,
+                fill.execution_id,
+            )
+            self.notifier.notify("SYNC_AUTO_REPAIRED", f"{code} {fill.name}: missing BUY fill auto-repaired qty={fill.quantity} order={fill.order_id}.")
+        return repaired
+
+    def _single_safe_missing_buy_candidate(self, code: str, gap: int) -> OrderResult | None:
+        if self.store.has_any_open_order(code):
+            return None
+        candidates = []
+        for order in self.store.closed_partial_buy_orders(code):
+            filled_quantity = self.store.filled_quantity_for_order(order.order_id, code=code, side=OrderSide.BUY)
+            missing_quantity = order.request.quantity - filled_quantity
+            if filled_quantity <= 0:
+                continue
+            if missing_quantity == gap:
+                candidates.append(order)
+        return candidates[0] if len(candidates) == 1 else None
+
+    def _missing_buy_fill_from_order(self, order: OrderResult, name: str, quantity: int) -> TradeFill:
+        filled_quantity = self.store.filled_quantity_for_order(order.order_id, code=order.request.code, side=OrderSide.BUY)
+        filled_at = _parse_datetime(order.requested_at) + timedelta(microseconds=max(1, filled_quantity))
+        return TradeFill(
+            order.request.code,
+            name,
+            OrderSide.BUY,
+            quantity,
+            order.request.limit_price,
+            order.order_id,
+            filled_at,
+            "",
+            f"AUTO_SYNC_REPAIR:{order.order_id}:{order.request.code}:{filled_quantity}->{filled_quantity + quantity}",
+            order.request.sell_reason,
+            order.request.reentry_type,
+        )
+
+    def _mark_auto_repaired_order(self, order: OrderResult) -> None:
+        filled_quantity = self.store.filled_quantity_for_order(order.order_id, code=order.request.code, side=OrderSide.BUY)
+        status = OrderStatus.FILLED_AFTER_CANCEL_REQUEST if filled_quantity >= order.request.quantity else OrderStatus.CANCELED_AFTER_PARTIAL_FILL
+        self.store.record_order(OrderResult(order.request, order.order_id, status, "auto_sync_missing_fill_repair", order.requested_at))
+        self.store.mark_order_cancel_check(order.order_id, filled_after_cancel_request=filled_quantity > 0, post_cancel_execution_checked=True)
+
+    def evaluate(self, position: PositionState, snapshot: AccountSnapshot, account_risk, profile: LoopProfile | None = None) -> None:
+        if not self.config.extended_hours.enabled:
+            return self._evaluate_strategy(position, snapshot, account_risk, profile)
+        try:
+            active_profile = profile or self._active_loop_profile
+            with active_profile.stage("quote_fetch") if active_profile else _null_stage():
+                route, scan_quote = self.session_market.select(position.code, position.name)
+            if route.session != "REGULAR" and self.config.extended_hours.mode == "shadow":
+                return self._evaluate_shadow(position, snapshot, account_risk, route, scan_quote)
+            return self._evaluate_strategy(position, snapshot, account_risk, profile, route=route, scan_quote=scan_quote)
+        except SessionUnavailable as error:
+            self.logger.info("session_trade_blocked code=%s reason=%s", position.code, error)
+        except KisApiError as error:
+            # A venue-specific quote/order failure must not permanently mark the
+            # underlying stock halted in every other session.
+            self.logger.warning("session_api_unavailable code=%s error=%s", position.code, error)
+
+    def _evaluate_shadow(self, position, snapshot, account_risk, route: Route, scan_quote: Quote) -> None:
+        # The strategy mutates targets/reentry tracking while deciding. Run the
+        # *same* evaluator against detached managers and a read-only ledger.
+        # Do not use paper trading: it invents fills and changes the portfolio.
+        shadow = copy.copy(self)
+        shadow.store = ShadowStateStore(self.store)
+        shadow.lot_manager, shadow.position_manager, shadow.strategy = copy.deepcopy(
+            (self.lot_manager, self.position_manager, self.strategy))
+        shadow.risk_manager = copy.deepcopy(self.risk_manager)
+        shadow._last_decision_record_at = dict(self._last_decision_record_at)
+        shadow._active_loop_profile = None
+        shadow.order_manager = OrderManager(self.config, self.client, shadow.store, self.logger)
+        shadow._evaluate_strategy(copy.deepcopy(position), snapshot, account_risk, route=route, shadow=True, scan_quote=scan_quote)
+
+    def _evaluate_strategy(self, position: PositionState, snapshot: AccountSnapshot, account_risk,
+                           profile: LoopProfile | None = None, *, route: Route | None = None, shadow: bool = False,
+                           scan_quote: Quote | None = None) -> None:
+        self._decision_route, self._decision_shadow = route, shadow
+        self.strategy.positions = self.position_manager.positions
+        if (self.config.risk.cash_shortfall_rotation_enabled or self.config.strategy.cash_target_profit_active()
+                or self.config.strategy.adaptive_lot_enabled
+                or self.config.strategy.cash_capacity_reentry_enabled()) and self.config.order.live_trading and not shadow:
+            # A previous symbol's fill invalidated the loop's cash. Fetch again
+            # before evaluating another real order; do not reuse the old object.
+            if self._last_account_snapshot is None:
+                snapshot = self.startup_sync()
+            else:
+                snapshot = self._last_account_snapshot
+            account_risk = self.risk_manager.account_buy_allowed(snapshot, self.position_manager.positions)
+        profile = profile or self._active_loop_profile
+        if route is None and not in_trade_window(self.config):
+            self.logger.info("trade_blocked code=%s name=%s reason=outside_trade_window", position.code, position.name)
+            return
+        quote_client = RoutedQuotes(self.session_market, route) if route else self.client
+        sampler = PriceSampler(quote_client, self.config.order.price_sample_count, self.config.order.price_sample_interval_seconds) if route else self.price_sampler
+        if scan_quote is None:
+            with profile.stage("quote_fetch") if profile else _null_stage():
+                scan_quote = quote_client.quote(position.code, name=position.name)
+        current_price = scan_quote.price
+        scan_samples = (scan_quote,)
+        if current_price <= 0:
+            self.logger.info("trade_blocked code=%s price=%s reason=current_price_lookup_failed", position.code, current_price)
+            return
+        previous_position_state = position.position_state
+        if profile:
+            with profile.stage("lot_manager"):
+                position = self.position_manager.refresh_from_lots(position.code, current_price)
+        else:
+            position = self.position_manager.refresh_from_lots(position.code, current_price)
+        completed_session = self._completed_session_prices.get(position.code)
+        if completed_session is not None:
+            session_date, close_price, close_source = completed_session
+            if self.strategy.observe_completed_session(position.code, session_date, close_price):
+                self.store.save_lots(self.lot_manager.open_lots(position.code))
+                self.logger.info(
+                    "deep_loss_session_observed code=%s session_date=%s close_price=%s source=%s",
+                    position.code,
+                    session_date,
+                    close_price,
+                    close_source,
+                )
+        position = self.auto_recheck_review_required(position, current_price)
+        if self.strategy.update_reentry_tracking(position, current_price):
+            if profile:
+                with profile.stage("db"):
+                    self.store.save_position(position)
+            else:
+                self.store.save_position(position)
+        with profile.stage("strategy_decision") if profile else _null_stage():
+            symbol_risk = self.risk_manager.symbol_buy_allowed(position)
+            action = decide_with_cash_signal(self, position, current_price, snapshot, account_risk, symbol_risk)
+        if not shadow and getattr(self, "_cash_rotation_scanning", False) and action and action.side is OrderSide.BUY:
+            guard = self.pre_request_block_reason(position, action)
+            request = self.order_manager.build_request(position, action, current_price) if not guard else None
+            if request:
+                self._cash_rotation_scan_targets[position.code] = target_record(request)
+            position.skip_reason = guard or "cash_rotation_demand_queued"
+            self.store.save_position(position)
+            if self.should_record_symbol_decision(position, previous_position_state, True, position.skip_reason):
+                self.log_symbol_decision(position, current_price, snapshot, account_risk, symbol_risk,
+                                         action.reason, "", position.skip_reason, True,
+                                         samples=scan_samples, previous_position_state=previous_position_state)
+                self._last_decision_record_at[position.code] = time.monotonic()
+            return
+        if not shadow:
+            abandon_invalid_target(self, position, action)
+        portfolio_preview = ""
+        final_block_reason = ""
+        action_created = bool(action)
+        final_samples = scan_samples
+        if action is not None:
+            with profile.stage("quote_fetch") if profile else _null_stage():
+                stable_samples = sampler.sample(position.code, position.name)
+                stable, stable_reason = self.price_sampler.stable(stable_samples, self.config.risk.max_price_sample_volatility_pct)
+            final_samples = stable_samples
+            stable_price = stable_samples[-1].price if stable_samples else current_price
+            if not stable:
+                final_block_reason = stable_reason
+                current_price = stable_price
+            else:
+                with profile.stage("quote_fetch") if profile else _null_stage():
+                    final_quote = quote_client.quote(position.code, name=position.name)
+                final_samples = (*stable_samples, final_quote)
+                current_price = final_quote.price
+                if current_price <= 0:
+                    final_block_reason = "final_quote_missing"
+                else:
+                    if (not shadow and self.config.order.live_trading
+                            and (action.reentry_type == ReentryType.CASH_CAPACITY_REENTRY.value
+                                 or self.config.strategy.adaptive_lot_enabled
+                                 or self.config.strategy.cash_buy_drop_enabled)):
+                        # Both cash-priced BUY thresholds and SELL targets must
+                        # use confirmed cash after quote sampling. Re-evaluate
+                        # the entire action below, including price and side.
+                        self.invalidate_account_snapshot_cache("cash_policy_final_check")
+                        snapshot = self.startup_sync()
+                    with profile.stage("lot_manager") if profile else _null_stage():
+                        position = self.position_manager.refresh_from_lots(position.code, current_price)
+                    with profile.stage("strategy_decision") if profile else _null_stage():
+                        final_account_risk = self.risk_manager.account_buy_allowed(snapshot, self.position_manager.positions)
+                        final_symbol_risk = self.risk_manager.symbol_buy_allowed(position)
+                        final_action = decide_with_cash_signal(self, position, current_price, snapshot, final_account_risk, final_symbol_risk)
+                    if final_action is None:
+                        final_block_reason = "final_quote_action_cleared"
+                        if not shadow and self.config.risk.cash_shortfall_rotation_enabled:
+                            remove_target(self, position.code)
+                    elif final_action.side is not action.side:
+                        final_block_reason = "final_quote_action_changed"
+                        if not shadow and self.config.risk.cash_shortfall_rotation_enabled:
+                            remove_target(self, position.code)
+                    else:
+                        action = final_action
+                        account_risk = final_account_risk
+                        symbol_risk = final_symbol_risk
+            with profile.stage("order_guard") if profile else _null_stage():
+                portfolio_preview = self.portfolio_buy_block_reason(position, action) if action and not final_block_reason else ""
+                guard_reason = self.pre_request_block_reason(position, action, portfolio_preview) if action and not final_block_reason else ""
+                final_block_reason = final_block_reason or guard_reason
+        next_skip_reason = final_block_reason or portfolio_preview
+        if position.skip_reason != next_skip_reason:
+            position.skip_reason = next_skip_reason
+            if profile:
+                with profile.stage("db"):
+                    self.store.save_position(position)
+            else:
+                self.store.save_position(position)
+        if self.should_record_symbol_decision(position, previous_position_state, action_created, final_block_reason):
+            with profile.stage("decision_logging") if profile else _null_stage():
+                self.log_symbol_decision(
+                    position,
+                    current_price,
+                    snapshot,
+                    account_risk,
+                    symbol_risk,
+                    action.reason if action else "NONE",
+                    portfolio_preview,
+                    final_block_reason,
+                    action_created,
+                    samples=final_samples,
+                    previous_position_state=previous_position_state,
+                )
+            self._last_decision_record_at[position.code] = time.monotonic()
+        if action is None:
+            return
+        if final_block_reason:
+            self.log_pre_request_block(position, final_block_reason)
+            return
+        interrupt = self.runtime_interrupt_reason(f"before_auto_submit_{position.code}")
+        if interrupt:
+            self.log_pre_request_block(position, interrupt)
+            return
+        request = self.order_manager.build_request(position, action, current_price)
+        if request is None:
+            self.logger.info("trade_blocked code=%s reason=quantity_below_one", position.code)
+            return
+        if request.side is OrderSide.BUY:
+            if action.reentry_type == ReentryType.CASH_CAPACITY_REENTRY.value:
+                required_cash = max(action.amount, request.quantity * request.limit_price) * self.config.strategy.reentry_cash_lot_multiple
+                if snapshot.cash_available < required_cash:
+                    position.skip_reason = "cash_capacity_reentry_cash_insufficient"
+                    self.store.save_position(position)
+                    self.log_pre_request_block(position, position.skip_reason)
+                    return
+            if self.config.risk.cash_shortfall_rotation_enabled and not self.config.strategy.adaptive_lot_enabled:
+                if handle_shortfall(self, position, action, request, snapshot, shadow=shadow):
+                    return
+            elif snapshot.cash_available < request.quantity * request.limit_price:
+                self.logger.info("trade_blocked code=%s reason=insufficient_cash", position.code)
+                return
+        if route:
+            request = replace(request, session=route.session, venue=route.venue,
+                              quote_market=route.quote_market, order_division=route.order_division)
+            if route not in candidates(self.config, self.session_market.clock()):
+                raise SessionUnavailable("session_changed_before_submission")
+        if shadow:
+            self.logger.info("extended_shadow_signal code=%s side=%s qty=%s limit=%s lot_id=%s venue=%s session=%s quote_market=%s reason=%s submitted=false",
+                             request.code, request.side.value, request.quantity, request.limit_price, request.lot_id,
+                             request.venue, request.session, request.quote_market, request.reason)
+            return
+        try:
+            result, fill = self.order_manager.submit_and_confirm(request)
+        finally:
+            if (self.config.risk.cash_shortfall_rotation_enabled or self.config.strategy.cash_target_profit_active()
+                    or self.config.strategy.adaptive_lot_enabled
+                    or self.config.strategy.cash_capacity_reentry_enabled()):
+                self.invalidate_account_snapshot_cache("auto_order_submitted")
+        if fill is None:
+            self.logger.info("order_not_filled code=%s order_id=%s status=%s", position.code, result.order_id, result.status.value)
+            return
+        self.invalidate_account_snapshot_cache("auto_fill_applied")
+        updated = self._apply_fill_with_session_audit(fill)
+        self.store.save_position(updated)
+        self.store.save_lots(self.lot_manager.lots.values())
+        if self.config.risk.cash_shortfall_rotation_enabled and request.side is OrderSide.BUY:
+            remove_target(self, position.code)
+        self.logger.info("fill_applied code=%s side=%s qty=%s price=%s lot_id=%s order_id=%s", fill.code, fill.side.value, fill.quantity, fill.price, fill.lot_id, fill.order_id)
+
+    def _apply_fill_with_session_audit(self, fill):
+        if not (self.config.extended_hours.enabled or self._session_audit_active):
+            return self.position_manager.apply_fill(fill)
+        before = {key: (lot.remaining_quantity, lot.realized_profit_loss, lot.estimated_fee_tax, lot.buy_quantity)
+                  for key, lot in self.lot_manager.lots.items()}
+        updated = self.position_manager.apply_fill(fill)
+        try:
+            for key, lot in self.lot_manager.lots.items():
+                if fill.side is OrderSide.BUY:
+                    bought = lot.buy_quantity - (before[key][3] if key in before else 0)
+                    if bought > 0:
+                        self.store.record_session_lot_application(fill, key, bought)
+                elif fill.side is OrderSide.SELL and key == fill.lot_id and key in before:
+                    qty, pnl, fee, _ = before[key]
+                    self.store.record_session_lot_application(fill, key, qty - lot.remaining_quantity,
+                                                             lot.realized_profit_loss - pnl, lot.estimated_fee_tax - fee)
+        except Exception:
+            # Optional attribution must not prevent the caller from persisting
+            # the already-applied real fill. Reports expose unattributed sells.
+            self.logger.exception("session_lot_audit_failed order_id=%s lot_id=%s", fill.order_id, fill.lot_id)
+        return updated
+
+    def should_record_symbol_decision(
+        self,
+        position: PositionState,
+        previous_position_state: str,
+        action_created: bool,
+        final_block_reason: str,
+    ) -> bool:
+        if action_created or final_block_reason or position.position_state != previous_position_state:
+            return True
+        interval = max(0.0, self.config.decision_record_interval_seconds)
+        last_recorded = self._last_decision_record_at.get(position.code)
+        return interval == 0 or last_recorded is None or time.monotonic() - last_recorded >= interval
+
+    def auto_recheck_review_required(self, position: PositionState, current_price: int) -> PositionState:
+        if not (position.needs_review or position.position_state == PositionLifecycle.REVIEW_REQUIRED.value):
+            return position
+        updated, triggers, event = self.position_manager.recheck_review_required(position, current_price)
+        self.store.save_position(updated)
+        # review_triggers() refreshes metadata only for this symbol's open lots.
+        # Persisting every lot in the portfolio here makes each review recheck
+        # perform hundreds of unnecessary SQLite transactions.
+        self.store.save_lots(self.lot_manager.open_lots(updated.code))
+        self.logger.info(
+            "review_required_auto_recheck code=%s name=%s event=%s active_reasons=%s trigger_values=%s",
+            updated.code,
+            updated.name,
+            event,
+            ",".join(triggers["reasons"]) or "NONE",
+            json.dumps(triggers["values"], ensure_ascii=False),
+        )
+        if event == "review_required_cleared":
+            self.notifier.notify("REVIEW_REQUIRED_CLEARED", f"{updated.code} {updated.name}: review triggers resolved; trading resumed.")
+        return updated
+
+    def log_symbol_decision(
+        self,
+        position: PositionState,
+        current_price: int,
+        snapshot: AccountSnapshot | None,
+        account_risk,
+        symbol_risk,
+        action: str,
+        portfolio_risk_block_reason: str = "",
+        final_block_reason: str = "",
+        action_created: bool = False,
+        *,
+        samples: Sequence[Quote] = (),
+        previous_position_state: str = "",
+    ) -> None:
+        last_lot = self.lot_manager.last_buy_lot(position.code)
+        last_lot_drop = (current_price - last_lot.buy_price) / last_lot.buy_price * 100.0 if last_lot else 0.0
+        lots = self.lot_manager.open_lots(position.code)
+        context = self.strategy.context(position, current_price, snapshot)
+        lot_summary = ";".join(
+            f"{lot.lot_id}:{lot.buy_price}->{lot.target_sell_price}:{lot.profit_pct_at(current_price):.2f}%:{lot.remaining_quantity}"
+            for lot in lots
+        )
+        avg_profit_pct = (current_price - position.average_price) / position.average_price * 100.0 if position.average_price else 0.0
+        price_context = self.price_context(position, current_price, samples)
+        decision_route = getattr(self, "_decision_route", None)
+        if decision_route is not None:
+            price_context["source"] = f"KIS_REST:{decision_route.quote_market}:{decision_route.session}:{'shadow' if self._decision_shadow else 'live'}"
+        decision_data = dict(
+            config_hash=self.config_hash,
+            run_id=self.run_id,
+            experiment_name=self.experiment_name,
+            risk_profile=self.config.risk.profile,
+            lot_sizing_mode=self.config.strategy.lot_sizing_mode,
+            code=position.code,
+            name=position.name,
+            current_price=current_price,
+            sampled_price_source=price_context["source"],
+            sampled_at=price_context["sampled_at"],
+            previous_close=price_context["previous_close"] or "",
+            day_open=price_context["day_open"] or "",
+            day_high=price_context["day_high"] or "",
+            day_low=price_context["day_low"] or "",
+            volume=price_context["volume"] or "",
+            trading_value=price_context["trading_value"] or "",
+            bid_price=price_context["bid_price"] or "",
+            ask_price=price_context["ask_price"] or "",
+            spread=price_context["spread"] or "",
+            spread_rate=price_context["spread_rate"] or "",
+            price_context_available=price_context["available"],
+            price_context_source=price_context["source"],
+            price_context_missing_fields=",".join(price_context["missing_fields"]),
+            price_context_error=price_context["error"],
+            price_context_collected_at=price_context["collected_at"],
+            position_state=context.position_state,
+            previous_position_state=previous_position_state,
+            new_position_state=context.position_state,
+            transitioned_to_trade_stopped_after_exit=previous_position_state != PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value
+            and context.position_state == PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value,
+            retire_after_exit=context.retire_after_exit,
+            retire_reason=context.retire_reason,
+            trade_stop_after_exit_eligible=context.trade_stop_after_exit_eligible,
+            trade_stop_after_exit_state=context.trade_stop_after_exit_state,
+            buy_blocked_by_retire_after_exit=context.buy_blocked_by_retire_after_exit,
+            reentry_blocked_by_retire_after_exit=context.reentry_blocked_by_retire_after_exit,
+            open_lot_count=context.current_open_lot_count,
+            position_pnl_rate=f"{context.position_pnl_rate:.4f}",
+            pnl_mode=context.pnl_mode,
+            average_price=f"{position.average_price:.2f}",
+            exposure=position.cumulative_invested_amount,
+            accumulated_invested_amount=position.cumulative_invested_amount,
+            lowest_open_buy_lot_price=context.lowest_open_buy_lot_price,
+            highest_open_buy_lot_price=context.highest_open_buy_lot_price,
+            open_lot_vwap_buy_price=context.open_lot_vwap_buy_price,
+            median_open_buy_price=context.median_open_buy_price,
+            reference_buy_price=context.reference_buy_price,
+            reference_buy_source=context.reference_buy_source,
+            reference_exclusion_enabled=context.reference_exclusion_enabled,
+            entry_price_for_lot_sizing=context.entry_price_for_lot_sizing,
+            lot_unit_amount=context.lot_unit_amount,
+            max_symbol_amount=context.max_symbol_amount,
+            max_lots_per_symbol=context.max_lots_per_symbol,
+            max_lots_reached=context.max_lots_reached,
+            max_lots_buy_blocked=context.max_lots_buy_blocked,
+            position_state_after_max_lots_check=context.position_state_after_max_lots_check,
+            lot_sizing_bucket=context.lot_sizing_bucket,
+            lot_sizing_locked=context.lot_sizing_locked,
+            lot_sizing_locked_at=context.lot_sizing_locked_at,
+            lot_sizing_skip_reason=context.lot_sizing_skip_reason,
+            add_buy_lot_band=context.add_buy_lot_band,
+            active_add_buy_lot_band=context.add_buy_lot_band,
+            add_buy_drop_rate=f"{context.target_buy_drop_rate:.4f}",
+            base_add_buy_drop_rate=f"{context.target_buy_drop_rate:.4f}",
+            current_open_lot_count=context.current_open_lot_count,
+            original_lot_base_target_profit_rate=f"{context.original_lot_base_target_profit_rate:.4f}",
+            current_base_target_profit_rate=f"{context.current_base_target_profit_rate:.4f}",
+            cash_target_profit_active=context.cash_target_profit_active,
+            cash_available_for_target=context.cash_available_for_target,
+            low_cash_high_cost_sell=context.low_cash_high_cost_sell,
+            low_cash_oldest_lot_sell=context.low_cash_oldest_lot_sell,
+            negative_target_high_cost_sell=context.negative_target_high_cost_sell,
+            cash_buy_drop_enabled=context.cash_buy_drop_enabled,
+            cash_buy_reference_price=context.cash_buy_reference_price,
+            cash_buy_reference_source=context.cash_buy_reference_source,
+            cash_buy_drop_rate=context.cash_buy_drop_rate,
+            cash_buy_limit_price=context.cash_buy_limit_price,
+            cash_buy_price_condition_met=context.cash_buy_price_condition_met,
+            cash_buy_skip_reason=context.cash_buy_skip_reason,
+            pre_exit_average_price=context.pre_exit_average_price,
+            pre_exit_average_captured_at=context.pre_exit_average_captured_at,
+            reentry_price_condition_met=context.reentry_price_condition_met,
+            adaptive_lot_enabled=self.config.strategy.adaptive_lot_enabled,
+            volatility_multiplier=context.volatility_multiplier,
+            consecutive_buy_count=context.consecutive_buy_count,
+            consecutive_sell_count=context.consecutive_sell_count,
+            rebuy_restriction_active=context.rebuy_restriction_active,
+            adaptive_buy_target_price=context.adaptive_buy_target_price,
+            sell_trigger_lot_id=context.sell_trigger_lot_id,
+            sell_trigger_price=context.sell_trigger_price,
+            sell_limit_price=context.sell_limit_price,
+            target_profit_source=context.target_profit_source,
+            target_profit_lot_band=context.target_profit_lot_band,
+            active_target_profit_lot_band=context.target_profit_lot_band,
+            active_lot_count_band=context.active_lot_count_band,
+            effective_target_profit_rate=f"{context.effective_target_profit_rate:.4f}",
+            base_target_profit_rate=f"{context.base_target_profit_rate:.4f}",
+            age_decay_applied=f"{context.age_decay_applied:.4f}",
+            lot_unrealized_pnl_rate=f"{context.lot_unrealized_pnl_rate:.4f}",
+            decay_cleanup_eligible=context.decay_cleanup_eligible,
+            lot_age_weeks=f"{context.lot_age_weeks:.2f}",
+            age_decay_rate=f"{context.age_decay_rate:.4f}",
+            reference_sell_price=context.reference_sell_price,
+            target_buy_drop_rate=f"{context.target_buy_drop_rate:.4f}",
+            target_profit_rate=f"{context.target_profit_rate:.4f}",
+            buy_condition_met=context.buy_condition_met,
+            sell_signal_met=context.sell_signal_met,
+            profitable_lots=context.profitable_lots,
+            selected_sell_lot_id=context.selected_sell_lot_id,
+            lot_id=context.selected_sell_lot_id,
+            last_buy_lot_price=last_lot.buy_price if last_lot else 0,
+            last_buy_lot_drop_pct=f"{last_lot_drop:.2f}",
+            lot_profit_targets=lot_summary or "NONE",
+            avg_profit_pct=f"{avg_profit_pct:.2f}",
+            buy_risk="OK" if account_risk.allowed and symbol_risk.allowed else "|".join(account_risk.reasons + symbol_risk.reasons),
+            sellable_lot_count=context.profit_take_lot_count,
+            needs_review=position.needs_review,
+            realized_pnl=position.realized_profit_loss,
+            unrealized_pnl=position.unrealized_profit_loss,
+            total_pnl=position.total_profit_loss,
+            last_sell_price=position.last_sell_price,
+            reentry_anchor_price=position.reentry_anchor_price,
+            reentry_condition_met=context.reentry_condition_met,
+            reentry_type=context.reentry_type,
+            reentry_mode=context.reentry_mode,
+            reentry_policy=context.reentry_policy,
+            reentry_cash_lot_multiple=self.config.strategy.reentry_cash_lot_multiple,
+            reentry_lot_unit_amount=context.reentry_lot_unit_amount,
+            reentry_required_cash=context.reentry_required_cash,
+            reentry_cash_available=context.reentry_cash_available,
+            reentry_cash_condition_met=context.reentry_cash_condition_met,
+            wait_reentry_started_at=context.wait_reentry_started_at,
+            days_since_wait_reentry_started=context.days_since_wait_reentry_started,
+            base_reentry_rate=f"{context.base_reentry_rate:.4f}",
+            daily_reentry_decay_rate=f"{context.daily_reentry_decay_rate:.4f}",
+            decay_duration_days=context.decay_duration_days,
+            effective_reentry_rate=f"{context.effective_reentry_rate:.4f}",
+            reentry_trigger_price=context.reentry_trigger_price,
+            force_reentry_timeout_days=context.force_reentry_timeout_days,
+            force_reentry_eligible=context.force_reentry_eligible,
+            force_reentry_reason=context.force_reentry_reason,
+            force_reentry_starts_new_cycle=context.force_reentry_starts_new_cycle,
+            old_cycle_id=context.old_cycle_id,
+            new_cycle_id=context.new_cycle_id,
+            exit_anchor_price=context.exit_anchor_price,
+            cycle_highest_sell_price=context.cycle_highest_sell_price,
+            cycle_last_sell_price=context.cycle_last_sell_price,
+            cycle_sell_vwap_price=context.cycle_sell_vwap_price,
+            cycle_sell_median_price=context.cycle_sell_median_price,
+            normal_exit_anchor_price=context.normal_exit_anchor_price,
+            trailing_exit_anchor_price=context.trailing_exit_anchor_price,
+            normal_reentry_drop_rate=f"{self.config.strategy.normal_reentry_drop_rate:.4f}",
+            trailing_activation_gain=f"{self.config.strategy.trailing_activation_gain:.4f}",
+            trailing_reentry_drop_rate=f"{self.config.strategy.trailing_reentry_drop_rate:.4f}",
+            cycle_sell_fill_count=context.cycle_sell_fill_count,
+            anchor_single_fill=context.anchor_single_fill,
+            anchor_confidence=context.anchor_confidence,
+            post_exit_high_price=context.post_exit_high_price,
+            normal_reentry_condition_met=context.normal_reentry_condition_met,
+            trailing_reentry_condition_met=context.trailing_reentry_condition_met,
+            sell_reason=context.sell_reason,
+            realized_pnl_rate=f"{context.realized_pnl_rate:.4f}",
+            net_realized_pnl=context.net_realized_pnl,
+            expected_realized_pnl=context.net_realized_pnl,
+            cleanup_candidate=context.cleanup_candidate,
+            cleanup_loss_budget=context.cleanup_loss_budget,
+            expected_cleanup_loss=context.expected_cleanup_loss,
+            cleanup_allowed=context.cleanup_allowed,
+            cleanup_enabled=self.config.strategy.cleanup_enabled,
+            stale_lot_loss_rate=f"{self.config.strategy.stale_lot_loss_rate:.4f}",
+            stale_lot_min_age_weeks=self.config.strategy.stale_lot_min_age_weeks,
+            review_symbol_loss_rate=f"{self.config.strategy.review_symbol_loss_rate:.4f}",
+            cleanup_buy_cooldown_until=context.cleanup_buy_cooldown_until,
+            cleanup_reentry_cooldown_until=context.cleanup_reentry_cooldown_until,
+            profit_take_lot_count=context.profit_take_lot_count,
+            cleanup_candidate_lot_count=context.cleanup_candidate_lot_count,
+            cleanup_signal_met=context.cleanup_candidate,
+            stale_lot_count=context.stale_lot_count,
+            stale_lot_ids=context.stale_lot_ids,
+            cleanup_candidate_count=context.cleanup_candidate_lot_count,
+            review_required_condition_met=context.review_required_condition_met,
+            review_reason=context.review_reason,
+            skip_reason=context.skip_reason,
+            open_order_exists=self.store.has_any_open_order(position.code),
+            open_order_count=self.store.open_order_count(position.code),
+            active_symbol_count=self.active_symbol_count(),
+            new_buy_count_today=self.store.count_today_initial_buy_orders(),
+            total_open_lot_count=self.total_open_lot_count(),
+            total_invested_amount=self.total_invested_amount(),
+            max_active_symbols=self.config.risk.max_active_symbols,
+            max_new_buy_per_day=self.config.risk.max_new_buy_per_day,
+            max_new_buy_amount_per_day=self.config.risk.max_new_buy_amount_per_day,
+            max_total_open_lots=self.config.risk.max_total_open_lots,
+            max_total_invested_amount=self.config.risk.max_total_invested_amount,
+            portfolio_risk_block_reason=portfolio_risk_block_reason or self.portfolio_buy_block_reason(position, None),
+            final_block_reason=final_block_reason,
+            action_created=action_created,
+            action_blocked_before_request=bool(final_block_reason),
+            action_execution_state="blocked_before_request" if final_block_reason else ("pending_request" if action_created else "no_action"),
+            risk_block_reasons=self.risk_block_reasons(position),
+            sync_status=position.sync_status,
+            action=action,
+            candidate_action_type=action,
+            block_reason=final_block_reason or portfolio_risk_block_reason or context.skip_reason,
+        )
+        log_decision(self.logger, **decision_data)
+        price_context.update(
+            {
+                "code": position.code,
+                "current_price": current_price,
+                "run_id": self.run_id,
+                "config_hash": self.config_hash,
+            }
+        )
+        self.store.record_decision_context(decision_data, price_context)
+
+    def price_context(self, position: PositionState, current_price: int, samples: Sequence[Quote]) -> dict[str, object]:
+        sampled_at = samples[-1].timestamp.isoformat(timespec="seconds") if samples else datetime.now().isoformat(timespec="seconds")
+        missing = [
+            "previous_close",
+            "day_open",
+            "day_high",
+            "day_low",
+            "volume",
+            "trading_value",
+            "bid_price",
+            "ask_price",
+            "spread",
+            "spread_rate",
+        ]
+        return {
+            "sampled_at": sampled_at,
+            "current_price": current_price,
+            "previous_close": None,
+            "day_open": None,
+            "day_high": None,
+            "day_low": None,
+            "volume": None,
+            "trading_value": None,
+            "bid_price": None,
+            "ask_price": None,
+            "spread": None,
+            "spread_rate": None,
+            "source": type(self.client).__name__,
+            "available": current_price > 0,
+            "missing_fields": missing,
+            "error": "" if current_price > 0 else "current_price_missing",
+            "collected_at": datetime.now().isoformat(timespec="seconds"),
+            "raw_json": {"sample_count": len(samples), "name": position.name},
+        }
+
+    def pre_request_block_reason(self, position: PositionState, action, portfolio_preview: str = "") -> str:
+        """Return the final guard reason that blocks an action before any order request."""
+        sync_block = self.sync_required_block_reason(position)
+        if sync_block:
+            return sync_block
+        if position.position_state == PositionLifecycle.RISK_BLOCKED.value or position.danger_state:
+            return "risk_blocked"
+        if self.review_required_block_reason(position, action):
+            return "review_required"
+        if position.position_state == PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value and action.side is OrderSide.BUY:
+            return "TRADE_STOPPED_AFTER_EXIT"
+        stock_buy_block = self.stock_buy_block_reason(position, action)
+        if stock_buy_block:
+            return stock_buy_block
+        retire_block = self.retire_after_exit_block_reason(position, action)
+        if retire_block:
+            return retire_block
+        partial = self.partial_order_block_reason(position)
+        if partial:
+            return partial
+        duplicate = self.open_order_block_reason(position, action)
+        if duplicate:
+            return duplicate
+        runtime_block = runtime_block_reason(load_runtime_control(), action)
+        if runtime_block:
+            return runtime_block
+        if (action.side is OrderSide.BUY and action.reentry_type != ReentryType.NONE.value
+                and self.config.strategy.cash_capacity_reentry_enabled()
+                and not self.config.strategy.cash_capacity_reentry_active()):
+            return "reentry_not_started_until_start_date"
+        portfolio_block = portfolio_preview or self.portfolio_buy_block_reason(position, action)
+        if portfolio_block:
+            return portfolio_block
+        request_gap = self.recent_order_request_block_reason(position)
+        if request_gap:
+            return request_gap
+        if action.side is OrderSide.BUY:
+            if (action.reentry_type == ReentryType.CASH_CAPACITY_REENTRY.value
+                    and self.store.open_orders()):
+                return "cash_capacity_reentry_wait_open_orders"
+            rotation_block = cash_rotation_buy_block(self, position)
+            if rotation_block:
+                return rotation_block
+            cooldown = self.order_cooldown_reason(position)
+            if cooldown:
+                return cooldown
+        return ""
+
+    def stock_buy_block_reason(self, position: PositionState, action) -> str:
+        if action.side is not OrderSide.BUY:
+            return ""
+        stock = self.stock_config_for_code(position.code)
+        if stock is not None and stock.buy_blocked:
+            return "BUY_BLOCKED_BY_STOCK_FLAG"
+        return ""
+
+    def review_required_block_reason(self, position: PositionState, action) -> str:
+        if not (position.position_state == PositionLifecycle.REVIEW_REQUIRED.value or position.needs_review):
+            return ""
+        if action.side is OrderSide.BUY:
+            return "review_required"
+        if action.side is OrderSide.SELL and action.sell_reason == SellReason.CLEANUP_SELL.value:
+            return "review_required"
+        return ""
+
+    def retire_after_exit_block_reason(self, position: PositionState, action) -> str:
+        if not position.retire_after_exit or action.side is not OrderSide.BUY:
+            return ""
+        if position.position_state == PositionLifecycle.TRADE_STOPPED_AFTER_EXIT.value:
+            return "TRADE_STOPPED_AFTER_EXIT"
+        if self.lot_manager.open_lots(position.code):
+            return ""
+        if action.reentry_type == ReentryType.FORCE_REENTRY_TIMEOUT_NEW_CYCLE.value:
+            return "FORCE_REENTRY_BLOCKED_RETIRE_AFTER_EXIT"
+        if action.reentry_type != ReentryType.NONE.value:
+            return "REENTRY_BLOCKED_RETIRE_AFTER_EXIT"
+        return "BUY_BLOCKED_RETIRE_AFTER_EXIT"
+
+    def log_pre_request_block(self, position: PositionState, reason: str) -> None:
+        self.logger.info("trade_blocked code=%s name=%s reason=%s", position.code, position.name, reason)
+        if reason in {"sync_required", "trading_paused"}:
+            self.notifier.notify("SYNC_REQUIRED", f"{position.code} {position.name}: manual reconciliation required before trading resumes.")
+
+    def order_cooldown_reason(self, position: PositionState) -> str:
+        elapsed = self.store.seconds_since_recent_fill(position.code, OrderSide.BUY)
+        if elapsed is not None and elapsed < self.config.order.order_cooldown_seconds:
+            return "buy_fill_cooldown"
+        return ""
+
+    def sync_required_block_reason(self, position: PositionState) -> str:
+        if position.trading_paused:
+            return "trading_paused"
+        if position.sync_status == "SYNC_REQUIRED":
+            return "sync_required"
+        return ""
+
+    def partial_order_block_reason(self, position: PositionState) -> str:
+        if not self.store.has_partial_order(position.code):
+            return ""
+        elapsed = self.store.seconds_since_oldest_partial_order(position.code)
+        if elapsed is not None and elapsed >= self.config.order.limit_order_timeout_seconds:
+            return "partial_order_cancel_or_requery"
+        return "partial_order_exists"
+
+    def open_order_block_reason(self, position: PositionState, action) -> str:
+        cleanup_reasons = {
+            SellReason.CLEANUP_SELL.value,
+            SellReason.AUTO_DECAY_CLEANUP_SELL.value,
+            SellReason.DEEP_LOSS_RECOVERY_SELL.value,
+            SellReason.LOW_CASH_HIGH_COST_SELL.value,
+            SellReason.LOW_CASH_OLDEST_LOT_SELL.value,
+            SellReason.NEGATIVE_TARGET_HIGH_COST_SELL.value,
+        }
+        if action.side is OrderSide.SELL and action.sell_reason in cleanup_reasons and self.store.has_any_open_order(position.code):
+            position.skip_reason = "open_order_exists_for_cleanup"
+            return "open_order_exists_for_cleanup"
+        if action.side is OrderSide.BUY and self.store.has_open_order(position.code, OrderSide.BUY):
+            return "open_buy_order_exists"
+        if action.side is OrderSide.SELL and self.store.has_open_order(position.code, OrderSide.SELL, action.lot_id):
+            return "open_sell_order_exists"
+        return ""
+
+    def recent_order_request_block_reason(self, position: PositionState) -> str:
+        elapsed = self.store.seconds_since_recent_order_request(position.code)
+        minimum = self.config.order.min_order_request_interval_seconds
+        if elapsed is not None and elapsed < minimum:
+            return "recent_order_request"
+        return ""
+
+    def portfolio_buy_block_reason(self, position: PositionState, action) -> str:
+        if action is not None and action.side is not OrderSide.BUY:
+            return ""
+        risk = self.config.risk
+        total_open_lots = self.total_open_lot_count()
+        if total_open_lots >= risk.max_total_open_lots:
+            return "max_total_open_lots_reached"
+        total_invested = self.total_invested_amount()
+        if total_invested >= risk.max_total_invested_amount:
+            return "max_total_invested_amount_reached"
+        if action is None:
+            return ""
+        if action.reason in {"initial_buy", "adaptive_initial_buy"}:
+            active_codes = self.active_symbol_codes()
+            if position.code not in active_codes and len(active_codes) >= risk.max_active_symbols:
+                return "max_active_symbols_reached"
+            if self.store.count_today_initial_buy_orders() >= risk.max_new_buy_per_day:
+                return "max_new_buy_per_day_reached"
+            day_amount_limit = risk.max_total_initial_buy_amount_per_day or risk.max_new_buy_amount_per_day
+            if day_amount_limit and self.store.sum_today_initial_buy_order_amount() + action.amount > day_amount_limit:
+                return "max_new_buy_amount_per_day_reached"
+        return ""
+
+    def active_symbol_codes(self) -> set[str]:
+        active_states = {
+            PositionLifecycle.HOLDING.value,
+            PositionLifecycle.WAIT_REENTRY.value,
+            PositionLifecycle.COOLDOWN_AFTER_CLEANUP.value,
+            PositionLifecycle.REVIEW_REQUIRED.value,
+            PositionLifecycle.RISK_BLOCKED.value,
+            PositionLifecycle.SYNC_REQUIRED.value,
+        }
+        codes = {lot.code for lot in self.lot_manager.lots.values() if lot.remaining_quantity > 0}
+        codes.update(self.store.open_order_codes())
+        codes.update(code for code, position in self.position_manager.positions.items() if position.position_state in active_states)
+        return codes
+
+    def active_symbol_count(self) -> int:
+        return len(self.active_symbol_codes())
+
+    def total_open_lot_count(self) -> int:
+        return sum(1 for lot in self.lot_manager.lots.values() if lot.remaining_quantity > 0)
+
+    def total_invested_amount(self) -> int:
+        return sum(lot.open_amount for lot in self.lot_manager.lots.values() if lot.remaining_quantity > 0)
+
+    def risk_block_reasons(self, position: PositionState) -> str:
+        flag_names = (
+            "trading_halted",
+            "administrative_issue",
+            "investment_alert",
+            "audit_opinion_issue",
+            "delisting_risk",
+            "accounting_issue",
+            "liquidity_warning",
+        )
+        for stock in self.config.stocks:
+            if stock.code == position.code:
+                reasons = [name for name in flag_names if getattr(stock, name)]
+                return ",".join(reasons) or ("danger_state" if position.danger_state else "")
+        return "danger_state" if position.danger_state else ""
+
+
+def _parse_datetime(value: str) -> datetime:
+    try:
+        return datetime.fromisoformat(str(value).strip())
+    except (TypeError, ValueError):
+        return datetime.now()
+
+
+def in_trade_window(config: BotConfig) -> bool:
+    open_hour, open_minute = [int(part) for part in config.market_hours.open_time.split(":", 1)]
+    close_hour, close_minute = [int(part) for part in config.market_hours.close_time.split(":", 1)]
+    today = datetime.today()
+    start = datetime.combine(today, day_time(open_hour, open_minute)).timestamp() + config.market_hours.block_after_open_minutes * 60
+    end = datetime.combine(today, day_time(close_hour, close_minute)).timestamp() - config.market_hours.block_before_close_minutes * 60
+    return start <= datetime.now().timestamp() <= end
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Run the KIS lot-based domestic stock auto-trader.")
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
+    parser.add_argument("--init-config", action="store_true")
+    parser.add_argument("--once", action="store_true")
+    parser.add_argument("--mock", action="store_true")
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    if args.init_config:
+        write_default_config(args.config)
+        print(f"created sample config: {args.config}")
+        return 0
+    config = load_config(args.config)
+    try:
+        with TradingInstanceLock(config.storage_path):
+            trader = AutoTrader(config, use_mock_client=args.mock)
+            return run_trader(trader, config, args)
+    except TradingInstanceAlreadyRunning as error:
+        print(str(error), file=sys.stderr)
+        return 1
+
+
+def run_trader(trader: AutoTrader, config: BotConfig, args: argparse.Namespace) -> int:
+    """Run an initialized trader while the caller holds its instance lock."""
+    loop_count = 0
+    while True:
+        try:
+            runtime = load_runtime_control()
+            if runtime.config_reload_requested:
+                reloaded_config = load_config(args.config)
+                if Path(reloaded_config.storage_path).resolve() != Path(config.storage_path).resolve():
+                    raise RuntimeError("storage_path_changed_requires_restart")
+                config = reloaded_config
+                trader.reload_config(config, use_mock_client=args.mock)
+                save_runtime_control(
+                    RuntimeControl(
+                        bot_paused=runtime.bot_paused,
+                        all_orders_paused=runtime.all_orders_paused,
+                        buy_paused=runtime.buy_paused,
+                        sell_paused=runtime.sell_paused,
+                        cleanup_paused=runtime.cleanup_paused,
+                        reentry_paused=runtime.reentry_paused,
+                        reentry_resume_on=runtime.reentry_resume_on,
+                        reason="config_reloaded",
+                        updated_by=runtime.updated_by,
+                        expires_at=runtime.expires_at,
+                    ),
+                    DEFAULT_RUNTIME_CONTROL_PATH,
+                )
+                trader.logger.info("runtime_config_reloaded config=%s", args.config)
+                runtime = load_runtime_control()
+            if runtime.bot_paused:
+                trader.logger.info("bot_loop_paused reason=%s", runtime.reason)
+            else:
+                run_status = trader.run_once()
+                if run_status == "config_reload_requested":
+                    continue
+        except Exception as error:  # noqa: BLE001
+            trader.risk_manager.data_mismatch_detected = True
+            trader.logger.exception("auto_trader_loop_failed error_type=%s error=%s", type(error).__name__, error)
+            trader.notifier.notify("auto-trader error", f"{type(error).__name__}: {error}")
+        loop_count += 1
+        if args.once or (config.max_loop_count is not None and loop_count >= config.max_loop_count):
+            break
+        responsive_sleep(trader, config.loop_interval_seconds)
+    return 0
+
+
+def responsive_sleep(trader: AutoTrader, seconds: int) -> None:
+    """Sleep in short slices so runtime controls and manual requests wake the loop promptly."""
+    deadline = time.monotonic() + max(0, seconds)
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        runtime = load_runtime_control()
+        if runtime.config_reload_requested:
+            return
+        if runtime.bot_paused:
+            time.sleep(min(1.0, remaining))
+            continue
+        if trader.store.manual_order_requests("REQUESTED"):
+            trader.logger.info("loop_wakeup reason=manual_order_request")
+            return
+        time.sleep(min(1.0, remaining))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

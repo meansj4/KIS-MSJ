@@ -350,11 +350,19 @@ class OrderManager:
         if request.market_order:
             raise SessionUnavailable("adaptive_market_buy_has_no_price_ceiling")
         lots = LotManager(self.config.strategy, self.store.load_lots())
+        from .trading_calendar import TradingCalendar
+        lots.symbol_positions = positions
+        lots.calendar = TradingCalendar(client=self.client, path=self.store.path.with_suffix('.krx_calendar.json'),
+                                        close_time=self.config.market_hours.close_time)
         cache = DailyVolatilityCache(self.store.path.with_suffix(".volatility.json"))
         lots.set_volatility_multiplier(request.code, cache.multiplier(request.code))
         strategy = LotGridStrategy(self.config, lots)
         strategy.positions = positions
-        details = strategy.adaptive_buy_details(position, request.limit_price, snapshot)
+        from .trading_calendar import CalendarUnavailable
+        try:
+            details = strategy.adaptive_buy_details(position, request.limit_price, snapshot)
+        except CalendarUnavailable as error:
+            raise SessionUnavailable(str(error)) from error
         target = details.get("buy_target_price")
         if (not _positive_finite(target) or request.limit_price > target
                 or not details.get("buy_condition_met")):

@@ -1,0 +1,271 @@
+"""Shared models for lot-based domestic stock automation."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+from enum import Enum
+
+
+class OrderSide(str, Enum):
+    BUY = "BUY"
+    SELL = "SELL"
+
+
+class OrderStatus(str, Enum):
+    NONE = "NONE"
+    REQUESTED = "REQUESTED"
+    FILLED = "FILLED"
+    PARTIAL = "PARTIAL"
+    PARTIAL_CANCELED = "PARTIAL_CANCELED"
+    CANCELED = "CANCELED"
+    CANCEL_REJECTED = "CANCEL_REJECTED"
+    CANCELED_NO_FILL = "CANCELED_NO_FILL"
+    CANCELED_AFTER_PARTIAL_FILL = "CANCELED_AFTER_PARTIAL_FILL"
+    FILLED_AFTER_CANCEL_REQUEST = "FILLED_AFTER_CANCEL_REQUEST"
+    REJECTED = "REJECTED"
+
+
+class LotStatus(str, Enum):
+    OPEN = "OPEN"
+    PARTIAL_SOLD = "PARTIAL_SOLD"
+    CLOSED = "CLOSED"
+
+
+class PositionLifecycle(str, Enum):
+    NEVER_BOUGHT = "NEVER_BOUGHT"
+    HOLDING = "HOLDING"
+    WAIT_REENTRY = "WAIT_REENTRY"
+    COOLDOWN_AFTER_CLEANUP = "COOLDOWN_AFTER_CLEANUP"
+    TRADE_STOPPED_AFTER_EXIT = "TRADE_STOPPED_AFTER_EXIT"
+    REVIEW_REQUIRED = "REVIEW_REQUIRED"
+    RISK_BLOCKED = "RISK_BLOCKED"
+    SYNC_REQUIRED = "SYNC_REQUIRED"
+
+
+class SellReason(str, Enum):
+    NEGATIVE_TARGET_HIGH_COST_SELL = "NEGATIVE_TARGET_HIGH_COST_SELL"
+    LOW_CASH_HIGH_COST_SELL = "LOW_CASH_HIGH_COST_SELL"
+    LOW_CASH_OLDEST_LOT_SELL = "LOW_CASH_OLDEST_LOT_SELL"
+    CASH_SHORTFALL_ROTATION = "CASH_SHORTFALL_ROTATION"
+    PROFIT_TAKE = "PROFIT_TAKE"
+    CLEANUP_SELL = "CLEANUP_SELL"
+    AUTO_DECAY_CLEANUP_SELL = "AUTO_DECAY_CLEANUP_SELL"
+    DEEP_LOSS_RECOVERY_SELL = "DEEP_LOSS_RECOVERY_SELL"
+    MANUAL_SYNC = "MANUAL_SYNC"
+    RISK_EXIT = "RISK_EXIT"
+    UNKNOWN = "UNKNOWN"
+
+
+class ReentryType(str, Enum):
+    CASH_CAPACITY_REENTRY = "CASH_CAPACITY_REENTRY"
+    NONE = "NONE"
+    NORMAL_REENTRY = "NORMAL_REENTRY"
+    TRAILING_REENTRY = "TRAILING_REENTRY"
+    FORCE_REENTRY_TIMEOUT_NEW_CYCLE = "FORCE_REENTRY_TIMEOUT_NEW_CYCLE"
+
+
+@dataclass(frozen=True)
+class Quote:
+    code: str
+    price: int
+    timestamp: datetime
+    name: str = ""
+
+
+@dataclass(frozen=True)
+class BalanceItem:
+    code: str
+    name: str
+    quantity: int
+    average_price: float
+    current_price: int
+
+
+@dataclass(frozen=True)
+class AccountSnapshot:
+    cash_available: int
+    total_asset: int
+    total_profit_loss: int
+    daily_profit_loss: int
+    positions: tuple[BalanceItem, ...] = ()
+
+    @property
+    def total_profit_loss_pct(self) -> float:
+        base = self.total_asset - self.total_profit_loss
+        return self.total_profit_loss / base * 100.0 if base else 0.0
+
+    @property
+    def daily_profit_loss_pct(self) -> float:
+        base = self.total_asset - self.daily_profit_loss
+        return self.daily_profit_loss / base * 100.0 if base else 0.0
+
+
+@dataclass
+class PositionState:
+    code: str
+    name: str = ""
+    quantity: int = 0
+    average_price: float = 0.0
+    current_price: int = 0
+    cumulative_invested_amount: int = 0
+    auto_buy_limit: int = 3_000_000
+    absolute_max_investment: int = 5_000_000
+    realized_profit_loss: int = 0
+    unrealized_profit_loss: int = 0
+    total_profit_loss: int = 0
+    profit_loss_pct: float = 0.0
+    last_buy_lot_id: str = ""
+    last_fill_price: int = 0
+    last_fill_side: str = "NONE"
+    last_order_id: str = ""
+    last_order_status: str = "NONE"
+    add_buy_stage: int = 0
+    needs_review: bool = False
+    auto_buy_enabled: bool = True
+    danger_state: bool = False
+    daily_buy_amount: int = 0
+    daily_sell_amount: int = 0
+    last_update_time: str = ""
+    last_order_time: str = ""
+    lot_quantity_mismatch: bool = False
+    sync_status: str = "OK"
+    trading_paused: bool = False
+    position_state: str = PositionLifecycle.NEVER_BOUGHT.value
+    retire_after_exit: bool = False
+    retire_reason: str = ""
+    trade_stop_after_exit_at: str = ""
+    last_sell_price: int | float = 0
+    reentry_anchor_price: int = 0
+    exit_anchor_price: int = 0
+    cycle_highest_sell_price: int = 0
+    cycle_last_sell_price: int = 0
+    cycle_sell_vwap_price: int = 0
+    cycle_sell_median_price: int = 0
+    normal_exit_anchor_price: int = 0
+    trailing_exit_anchor_price: int = 0
+    cycle_sell_fill_count: int = 0
+    cycle_sell_quantity: int = 0
+    cycle_sell_value_amount: int = 0
+    cycle_sell_prices: str = ""
+    anchor_single_fill: bool = False
+    anchor_confidence: str = ""
+    post_exit_high_price: int = 0
+    exit_time: str = ""
+    pre_exit_average_price: float = 0.0
+    pre_exit_average_captured_at: str = ""
+    cleanup_sell_price: int = 0
+    cleanup_time: str = ""
+    cleanup_reentry_cooldown_until: str = ""
+    cleanup_buy_cooldown_until: str = ""
+    last_reentry_type: str = ReentryType.NONE.value
+    trailing_reentry_count_today: int = 0
+    trailing_reentry_count_date: str = ""
+    review_reason: str = ""
+    review_created_at: str = ""
+    review_trigger_values: str = ""
+    review_acknowledged_at: str = ""
+    review_acknowledged_by: str = ""
+    review_note: str = ""
+    skip_reason: str = ""
+    entry_price_for_lot_sizing: int = 0
+    lot_unit_amount: int = 0
+    max_symbol_amount: int = 0
+    max_lots_per_symbol: int = 0
+    lot_sizing_bucket: str = ""
+    lot_sizing_locked_at: str = ""
+    lot_sizing_mode: str = ""
+    consecutive_buy_count: int = 0
+    consecutive_sell_count: int = 0
+    rebuy_restriction_active: bool = False
+    # Applied executions retain order identity across restarts and split fills.
+    actual_fill_events: str = ""
+
+
+@dataclass
+class LotState:
+    lot_id: str
+    code: str
+    buy_filled_at: str
+    buy_price: int | float
+    buy_quantity: int
+    buy_amount: int
+    remaining_quantity: int
+    target_profit_pct: float
+    target_sell_price: int
+    sell_completed: bool = False
+    partial_sold: bool = False
+    realized_profit_loss: int = 0
+    estimated_fee_tax: int = 0
+    status: str = LotStatus.OPEN.value
+    cleanup_candidate: bool = False
+    age_weeks: float = 0.0
+    base_target_profit_rate: float = 0.0
+    effective_target_profit_rate: float = 0.0
+    last_sell_reason: str = SellReason.UNKNOWN.value
+    deep_loss_started_on: str = ""
+    deep_loss_last_observed_on: str = ""
+    deep_loss_observation_count: int = 0
+    deep_loss_last_close: int = 0
+    deep_loss_low_price: int = 0
+    buy_order_key: str = ""
+
+    @property
+    def open_amount(self) -> int | float:
+        return self.remaining_quantity * self.buy_price
+
+    def profit_pct_at(self, price: int) -> float:
+        return (price - self.buy_price) / self.buy_price * 100.0 if self.buy_price else 0.0
+
+
+@dataclass(frozen=True)
+class OrderRequest:
+    code: str
+    name: str
+    side: OrderSide
+    quantity: int
+    limit_price: int
+    reason: str
+    lot_id: str = ""
+    market_order: bool = False
+    sell_reason: str = SellReason.UNKNOWN.value
+    reentry_type: str = ReentryType.NONE.value
+    cleanup_flag: bool = False
+    session: str = ""
+    venue: str = "KRX"
+    order_division: str = "00"
+    quote_market: str = "J"
+
+
+@dataclass(frozen=True)
+class OrderResult:
+    request: OrderRequest
+    order_id: str
+    status: OrderStatus
+    message: str = ""
+    requested_at: str = ""
+    cancel_retry_count: int = 0
+    cancel_checked_at: str = ""
+    order_orgno: str = ""
+
+
+@dataclass(frozen=True)
+class TradeFill:
+    code: str
+    name: str
+    side: OrderSide
+    quantity: int
+    price: int | float
+    order_id: str
+    filled_at: datetime
+    lot_id: str = ""
+    execution_id: str = ""
+    sell_reason: str = SellReason.UNKNOWN.value
+    reentry_type: str = ReentryType.NONE.value
+    # Order-level inquiry does not necessarily identify the execution venue.
+    reported_order_venue: str = ""
+    timestamp_source: str = "provided"
+    # Exact KRW notional: cumulative on raw AGG broker rows; incremental after
+    # OrderManager normalization and in persisted/application fills. Zero means
+    # unavailable, so legacy fills use quantity * price.
+    filled_amount: int = 0

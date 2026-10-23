@@ -502,9 +502,13 @@ class UIService:
 
     def _configured_lot_manager(self, lots=None) -> LotManager:
         manager = LotManager(self.config.strategy, lots)
+        from .trading_calendar import TradingCalendar
+        manager.calendar = TradingCalendar(path=Path(self.config.storage_path).with_suffix('.krx_calendar.json'),
+                                           close_time=self.config.market_hours.close_time)
         if self.config.strategy.adaptive_lot_enabled:
             cache = DailyVolatilityCache(Path(self.config.storage_path).with_suffix(".volatility.json"))
             positions = self.positions()
+            manager.symbol_positions = {row['code']: _position_state_from_row(row) for row in positions}
             codes = {lot.code for lot in manager.lots.values()} | {str(row["code"]) for row in positions} | {stock.code for stock in self.config.stocks}
             for code in codes:
                 manager.set_volatility_multiplier(code, cache.multiplier(code))

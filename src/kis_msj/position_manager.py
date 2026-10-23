@@ -22,6 +22,7 @@ class PositionManager:
         self.config = config
         self.lot_manager = lot_manager
         self.positions = positions or {}
+        self.lot_manager.symbol_positions = self.positions
         self.account_mismatch_detected = False
         for position in self.positions.values():
             self.lot_manager.set_symbol_trade_state(position.code, position.consecutive_sell_count)
@@ -337,7 +338,13 @@ class PositionManager:
         self.lot_manager.set_symbol_trade_state(fill.code, position.consecutive_sell_count)
         updated = self.refresh_from_lots(fill.code, fill.price)
         if getattr(self.config, "adaptive_lot_enabled", False):
-            self.lot_manager.recalculate_symbol_targets(fill.code, fill.price)
+            from .trading_calendar import CalendarUnavailable
+            try:
+                self.lot_manager.recalculate_symbol_targets(fill.code, fill.price)
+            except CalendarUnavailable as error:
+                updated.skip_reason = str(error)
+                for remaining in self.lot_manager.open_lots(fill.code):
+                    remaining.target_sell_price = 0
         return updated
 
     def _lock_lot_sizing_for_new_cycle(self, position: PositionState, entry_price: int, locked_at: datetime) -> None:

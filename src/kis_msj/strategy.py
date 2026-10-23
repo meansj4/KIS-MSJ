@@ -177,6 +177,8 @@ class StrategyContext:
     volatility_multiplier: float = 1.0
     consecutive_buy_count: int = 0
     consecutive_sell_count: int = 0
+    trend_score: int = 0
+    effective_buy_pnl_threshold: float | None = None
     rebuy_restriction_active: bool = False
     adaptive_buy_target_price: int = 0
 
@@ -252,8 +254,13 @@ class LotGridStrategy:
         lots = self.lot_manager.open_lots(position.code)
         self.lot_manager.set_symbol_trade_state(position.code, position.consecutive_sell_count)
         multiplier = self.lot_manager.volatility_multiplier_for(position.code)
-        gap = 4.0 * multiplier * trend_multiplier(position.consecutive_buy_count)
-        normal = lowest_lot_buy_target(lots, gap)
+        score = self.lot_manager.trend_score_for(position.code)
+        gap = (4.0 + 2.0 * (len(lots) - 1)) * multiplier * trend_multiplier(score) if lots else 0.0
+        quantity = sum(lot.remaining_quantity for lot in lots)
+        cost = sum(lot.buy_price * lot.remaining_quantity for lot in lots)
+        vwap = cost / quantity if quantity > 0 else 0.0
+        valid_position = not lots or (quantity > 0 and math.isfinite(vwap) and vwap > 0 and current_price > 0)
+        normal = vwap * (1.0 - gap / 100.0) if lots and valid_position and gap < 100 else 0.0
         restricted = position.rebuy_restriction_active
         rebuy = reentry_buy_target(position.last_sell_price, 4.0 * multiplier) if restricted else 0.0
         ceilings = ([normal] if lots else []) + ([rebuy] if restricted else [])
@@ -262,6 +269,8 @@ class LotGridStrategy:
                   self.lot_sizing_for_new_cycle(current_price)) if self._lot_sizing_enabled() else {}
         amount = int(sizing.get("lot_unit_amount", 0)) if self._lot_sizing_enabled() else self.config.strategy.initial_buy_amount
         block = self._retire_buy_block_reason(position, self._position_state(position), current_price)
+        block = block or ("adaptive_invalid_position_pnl" if not valid_position else
+                          "adaptive_pnl_threshold_unreachable" if lots and gap >= 100 else "")
         block = block or self._buy_block_reason(position)
         if self._lot_sizing_enabled():
             block = block or self.lot_sizing_buy_block_reason(position, current_price, sizing,
@@ -285,11 +294,22 @@ class LotGridStrategy:
         if not condition:
             block = block or "adaptive_buy_price_not_reached"
         return {**reserve, "buy_amount": amount, "buy_target_price": target,
+                "position_vwap": vwap, "position_pnl_pct": (current_price / vwap - 1) * 100 if valid_position and vwap else None,
+                "active_lot_count": len(lots), "trend_score": score,
+                "effective_buy_pnl_threshold": -gap if lots else None,
                 "normal_buy_target": normal, "reentry_target": rebuy,
                 "effective_buy_gap_pct": gap, "effective_rebuy_gap_pct": 4.0 * multiplier,
                 "buy_condition_met": condition, "skip_reason": block}
 
     def _adaptive_decide(self, position, current_price, snapshot, account_risk, symbol_risk):
+        from .trading_calendar import CalendarUnavailable
+        try:
+            self.lot_manager.trend_score_for(position.code)
+            for lot in self.lot_manager.open_lots(position.code):
+                self.lot_manager.calendar.completed_since(lot.buy_filled_at, datetime.now())
+        except CalendarUnavailable as error:
+            position.skip_reason = str(error)
+            return None
         self.lot_manager.set_symbol_trade_state(position.code, position.consecutive_sell_count)
         lifecycle = self._position_state(position)
         if lifecycle in {PositionLifecycle.SYNC_REQUIRED.value, PositionLifecycle.RISK_BLOCKED.value}:
@@ -769,7 +789,13 @@ class LotGridStrategy:
 
     def context(self, position: PositionState, current_price: int, snapshot: AccountSnapshot | None = None) -> StrategyContext:
         if self.config.strategy.adaptive_lot_enabled:
-            return self._adaptive_context(position, current_price, snapshot)
+            from .trading_calendar import CalendarUnavailable
+            try:
+                return self._adaptive_context(position, current_price, snapshot)
+            except CalendarUnavailable as error:
+                return StrategyContext(position_state=self._position_state(position), pnl_mode=self._pnl_mode(position),
+                    position_pnl_rate=position.profit_loss_pct/100, skip_reason=str(error),
+                    buy_condition_met=False, sell_signal_met=False)
         cash_buy = self.cash_buy_details(position, current_price, snapshot)
         snapshot = snapshot or AccountSnapshot(0, 0, 0, 0, ())
         exposure = position.cumulative_invested_amount
@@ -973,12 +999,13 @@ class LotGridStrategy:
         base, _, source = self.lot_manager.current_target_profit_info(position.code)
         effective = selected.effective_target_profit_rate if selected else 0.0
         return StrategyContext(
+            trend_score=details['trend_score'], effective_buy_pnl_threshold=details['effective_buy_pnl_threshold'],
             position_state=self._position_state(position), pnl_mode=self._pnl_mode(position),
             position_pnl_rate=position.profit_loss_pct / 100.0,
             lowest_open_buy_lot_price=min((lot.buy_price for lot in lots), default=0),
             highest_open_buy_lot_price=max((lot.buy_price for lot in lots), default=0),
-            reference_buy_price=min((lot.buy_price for lot in lots), default=0),
-            reference_buy_source="lowest_open_buy_lot", target_buy_drop_rate=details["effective_buy_gap_pct"] / 100.0,
+            reference_buy_price=details['position_vwap'],
+            reference_buy_source="position_quantity_weighted_vwap", target_buy_drop_rate=details["effective_buy_gap_pct"] / 100.0,
             target_profit_rate=base, buy_condition_met=bool(details["buy_condition_met"]),
             sell_signal_met=bool(candidate), selected_sell_lot_id=candidate.lot.lot_id if candidate else "",
             sell_reason=candidate.reason if candidate else SellReason.UNKNOWN.value,

@@ -1,0 +1,11 @@
+{
+  "scope": "Adaptive LOT V2 implementation, documentation, runtime dependencies and regression tests",
+  "workspace_suite": {"passed": 1323, "report": "reports/policy_v2_final_tests.xml"},
+  "isolated_staged_checkout_suite": {"passed": 730, "report": "reports/policy_v2_commit_tests.xml"},
+  "frozen_policy_sources_sha256_verified": 37,
+  "operating_config_unchanged": true,
+  "runtime_pause_file_unchanged": true,
+  "production_database_opened_for_commit": false,
+  "excluded": ["operating databases", "logs", "large research datasets", "unrelated earlier experiments"],
+  "archive_note": "Historical policy sources are required by the isolated experiment regression tests. Git attributes preserve their original bytes."
+}

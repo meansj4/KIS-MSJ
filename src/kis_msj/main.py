@@ -122,6 +122,10 @@ class AutoTrader:
         self.price_sampler = PriceSampler(self.client, config.order.price_sample_count, config.order.price_sample_interval_seconds)
         self.order_manager = OrderManager(config, self.client, self.store, self.logger)
         self.session_market = SessionMarketData(self.client, config)
+        from .trading_calendar import TradingCalendar
+        self.lot_manager.calendar = TradingCalendar(client=self.client,
+            path=Path(config.storage_path).with_suffix('.krx_calendar.json'),
+            close_time=config.market_hours.close_time)
         self.order_manager.session_market = self.session_market
         if config.extended_hours.enabled:
             self.client.execution_all_venues = True
@@ -1176,6 +1180,11 @@ class AutoTrader:
         last_lot_drop = (current_price - last_lot.buy_price) / last_lot.buy_price * 100.0 if last_lot else 0.0
         lots = self.lot_manager.open_lots(position.code)
         context = self.strategy.context(position, current_price, snapshot)
+        if self.config.strategy.adaptive_lot_enabled:
+            self.logger.info("adaptive_v2 code=%s lots=%s pnl_pct=%s trend_score_5sessions=%s buy_pnl_threshold_pct=%s buy_target=%s skip_reason=%s",
+                position.code, context.current_open_lot_count, position.profit_loss_pct,
+                context.trend_score, context.effective_buy_pnl_threshold,
+                context.adaptive_buy_target_price, context.skip_reason or position.skip_reason)
         lot_summary = ";".join(
             f"{lot.lot_id}:{lot.buy_price}->{lot.target_sell_price}:{lot.profit_pct_at(current_price):.2f}%:{lot.remaining_quantity}"
             for lot in lots

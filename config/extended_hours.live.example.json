@@ -1,0 +1,8 @@
+{
+  "extended_hours": {
+    "enabled": true,
+    "mode": "live",
+    "max_quote_age_seconds": 90,
+    "calendar_overrides": {}
+  }
+}

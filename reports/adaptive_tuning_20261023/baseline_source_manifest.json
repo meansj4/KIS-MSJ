@@ -1,0 +1,162 @@
+{
+  "created": "2026-10-23T10:29:39.488315",
+  "files": {
+    "src/kis_msj/adaptive_policy.py": {
+      "sha256": "5dbbb9935365726a60321f6b46f304001df8f0814cc938b20d5d1ac99d2b680a",
+      "bytes": 1814
+    },
+    "src/kis_msj/arcg.py": {
+      "sha256": "a2022e606925aed9ef31b3ad405214ce206e3487ea927ed8db58335d10936de4",
+      "bytes": 36744
+    },
+    "src/kis_msj/arcg_adapter.py": {
+      "sha256": "fe68adf7a24bac7d8c7c32a04d3fbfb9a42b9334027eece75b204bebb43055e1",
+      "bytes": 6223
+    },
+    "src/kis_msj/arcg_backtest.py": {
+      "sha256": "93226e2378d420d2d345808b80987e9d7e5c7956fbc6ea0c55388af13d8381a3",
+      "bytes": 43308
+    },
+    "src/kis_msj/arcg_state.py": {
+      "sha256": "9debc60711c7f7d3e73721933d7db43d06291b2881df1a4c0f30cfeaf8c32971",
+      "bytes": 19556
+    },
+    "src/kis_msj/cash_rotation.py": {
+      "sha256": "d4359de8955381864319d5396466e3ab920e618742cd2a2376d7325750fb6bc0",
+      "bytes": 22492
+    },
+    "src/kis_msj/config.py": {
+      "sha256": "85ca06eeaafe504009a7752d5af83e6db6d198c85aedbd1aa199ab0d5dd6e5cc",
+      "bytes": 22956
+    },
+    "src/kis_msj/domestic_quote.py": {
+      "sha256": "62ed3c308dd8516f43da7b8bd7f4b8aa11d9401d58248f8322fa698a4cd1ea7a",
+      "bytes": 14844
+    },
+    "src/kis_msj/fill_state.py": {
+      "sha256": "5a5719ca669ce413f069b2ec6e8190bdc134602644e387721a0fe35074e13954",
+      "bytes": 3501
+    },
+    "src/kis_msj/kis_client.py": {
+      "sha256": "3ff6c08bb910ffad8b062157f82ba47b1a9d825dd0e4157ef807b7c119e4501a",
+      "bytes": 37038
+    },
+    "src/kis_msj/kospi_master.py": {
+      "sha256": "2cd76d91a074d9f5ed61a409bd3aa0e994d0631d4e9245c4ffdd25556ff5a7b1",
+      "bytes": 9591
+    },
+    "src/kis_msj/live_startup.py": {
+      "sha256": "eab9732e28bab6f3e5d4cdbb16c0797ac2783359972946e2c7ac2f907032e592",
+      "bytes": 8861
+    },
+    "src/kis_msj/logger.py": {
+      "sha256": "714a1b3d4bec0fa1ed77f9581586c7fb2f57bdd7041a7182bf7c071fdd745119",
+      "bytes": 4636
+    },
+    "src/kis_msj/loop_profile.py": {
+      "sha256": "f554b2a2e8f3ede597e537c39324c00d687d4980e00aa481c1603f906382ae89",
+      "bytes": 5220
+    },
+    "src/kis_msj/lot_manager.py": {
+      "sha256": "85132786eb2fb995164d9435e67d8475ad19d9d87b3946dbbeec8284e09cbc3d",
+      "bytes": 17091
+    },
+    "src/kis_msj/main.py": {
+      "sha256": "88dfbc54766668f1b2684acd2b3e463138509f970b7782b968ce887685b14e30",
+      "bytes": 100274
+    },
+    "src/kis_msj/market_session.py": {
+      "sha256": "0ce0d6a095e77b396a371e2e17e04921da5c9080b5ad794aa0e154ad96b7d555",
+      "bytes": 10373
+    },
+    "src/kis_msj/models.py": {
+      "sha256": "32e949a90e151f6c7d3aca80329c68c6e0f468323327bf2cc1b85f8fde518952",
+      "bytes": 8162
+    },
+    "src/kis_msj/notifier.py": {
+      "sha256": "b18d2ed2ee9cba1e376bd44bbb524188286778746ce270dcf6e18707440bff93",
+      "bytes": 443
+    },
+    "src/kis_msj/order_identity.py": {
+      "sha256": "bb99d843b6486bf3ded13e241977dccc434c2d78c0e1f3ad9a653d9c95601c30",
+      "bytes": 971
+    },
+    "src/kis_msj/order_manager.py": {
+      "sha256": "2008f9fdb977143e2eb6e489395db4763ef66294efe623b344584b1db6972351",
+      "bytes": 48818
+    },
+    "src/kis_msj/position_manager.py": {
+      "sha256": "1dbf1ec4ddd995f9a87163d2092b9d602248225d80e8d096f49e777f6c479b97",
+      "bytes": 22472
+    },
+    "src/kis_msj/price_provider.py": {
+      "sha256": "72c8c3a4b6006c85a809dc8aacf4e752630703eaf45cf3561d8f06d35b3717df",
+      "bytes": 1397
+    },
+    "src/kis_msj/readiness.py": {
+      "sha256": "9760e97a2a3c62a75c10297f8ecc027fb87d6fbcf9f6a7fde8ec6cfc695159d5",
+      "bytes": 9435
+    },
+    "src/kis_msj/risk_manager.py": {
+      "sha256": "5a1a9036cfaba950805ee0c90546cca1b6a6559fd664ce389383c51f17a05b2e",
+      "bytes": 3101
+    },
+    "src/kis_msj/runtime_control.py": {
+      "sha256": "dc0f7336e6f701be8da391ca01445114a937fe63a57589b6cded9544e27d58f0",
+      "bytes": 4690
+    },
+    "src/kis_msj/session_audit.py": {
+      "sha256": "cbbca55cf38187f20bad275d7e6276c6de69661f39541071a380e90fe5136150",
+      "bytes": 766
+    },
+    "src/kis_msj/session_ui.py": {
+      "sha256": "3930babcfbaa7a3e3cf5d689e8dd9a6d2e6a3a983779fb696acae319eede0db0",
+      "bytes": 3896
+    },
+    "src/kis_msj/shadow_state.py": {
+      "sha256": "aca2a19772a3f2d8bbb8ab39376c7c8f1b862a118905632dffd89c0f299caf73",
+      "bytes": 1152
+    },
+    "src/kis_msj/storage.py": {
+      "sha256": "1fd3a33f4aac0f755d058f8b1c0ec8c74729a99240bb31c5ee7f1c3498863444",
+      "bytes": 107394
+    },
+    "src/kis_msj/strategy.py": {
+      "sha256": "e3eddacebb13b2679ef43d83959a1c0434b27f108b0fa9de630538616ee7231e",
+      "bytes": 92215
+    },
+    "src/kis_msj/ui_server.py": {
+      "sha256": "9fb5bacb1471e7c7b948ae765287658449bd1ca15169c5ce5da787a801477a00",
+      "bytes": 144875
+    },
+    "src/kis_msj/ui_service.py": {
+      "sha256": "d05dde499a1cd771f4e46e4c4acfe639799c1c2b2f62c9ea36050ba614dcc86f",
+      "bytes": 274483
+    },
+    "src/kis_msj/upstream.py": {
+      "sha256": "7241c66b4f269169917020230120575f6e59f40727556a8dd6af12d95734f9ec",
+      "bytes": 3795
+    },
+    "src/kis_msj/upstream_watcher.py": {
+      "sha256": "f690392a7d2c1902f0deec3f0beb09ee4db5549387713ccb9afb28b4df962ccb",
+      "bytes": 1467
+    },
+    "src/kis_msj/volatility.py": {
+      "sha256": "f66375c1d193d3667fc2eb0b5ab1f6b7fd0070728cb5187408f9f3a9fdae4c73",
+      "bytes": 5719
+    },
+    "src/kis_msj/__init__.py": {
+      "sha256": "31a6acab7b5030a4d33bdcb1e4aa80bb7e9f9570e5715f81017a4b86a31991c4",
+      "bytes": 115
+    },
+    "config/lot_auto_trader.json": {
+      "sha256": "f7bc7c559d6449432d38d760b5957a66c8ae76417d2d08f26f5fb79ae720b640",
+      "bytes": 211690
+    },
+    "config/runtime_control.json": {
+      "sha256": "d9157cebdad78a506bf480249a759ac644829818f09e629e17ff49f6be19807a",
+      "bytes": 404
+    }
+  },
+  "note": "Read-only source/control capture. No operational files modified; active DB excluded."
+}

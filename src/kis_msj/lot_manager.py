@@ -8,6 +8,7 @@ from statistics import median
 
 from .config import StrategyConfig
 from .adaptive_policy import trend_multiplier
+from .trading_calendar import TradingCalendar, CalendarUnavailable, trend_score
 from .fill_state import fill_order_key
 from .models import LotState, LotStatus, SellReason, TradeFill
 
@@ -25,6 +26,14 @@ class LotManager:
         self.lots = lots or {}
         self.volatility_multipliers: dict[str, float] = {}
         self.consecutive_sell_counts: dict[str, int] = {}
+        self.symbol_positions = {}
+        self.calendar = TradingCalendar()
+
+    def trend_score_for(self, code: str, now=None) -> int:
+        from .fill_state import actual_fill_events
+        position = self.symbol_positions.get(code)
+        events = actual_fill_events(position) if position is not None else []
+        return trend_score(events, self.calendar, now or datetime.now())
 
     def set_symbol_trade_state(self, code: str, consecutive_sell_count: int) -> None:
         self.consecutive_sell_counts[code] = max(0, consecutive_sell_count)
@@ -86,7 +95,7 @@ class LotManager:
     def current_target_profit_info(self, code: str, exposure: int | None = None, cash_available: int | None = None) -> tuple[float, str, str]:
         """Return the active base target rate as a decimal plus source metadata."""
         if getattr(self.config, "adaptive_lot_enabled", False):
-            rate = 0.03 * self.volatility_multipliers.get(code, 1.0) * trend_multiplier(self.consecutive_sell_counts.get(code, 0))
+            rate = 0.03 * self.volatility_multipliers.get(code, 1.0) * trend_multiplier(-self.trend_score_for(code))
             return rate, "", "adaptive_volatility_trend"
         if self.config.cash_target_profit_active():
             if cash_available is None:
@@ -175,7 +184,12 @@ class LotManager:
         buy_price = int(average) if average.is_integer() else average
         exposure_after = self.cumulative_invested_amount(fill.code) + filled_amount
         adaptive = getattr(self.config, "adaptive_lot_enabled", False)
-        target_pct = self.current_target_profit_info(fill.code)[0] * 100.0 if adaptive else self.target_profit_pct(exposure_after)
+        # Actual executions must be booked even if calendar data is offline.
+        # A placeholder is never used to authorize a new order.
+        try:
+            target_pct = self.current_target_profit_info(fill.code)[0] * 100.0 if adaptive else self.target_profit_pct(exposure_after)
+        except CalendarUnavailable:
+            target_pct = 0.0
         order_key = fill_order_key(fill)
         existing = self.lots.get(fill.lot_id) if fill.lot_id else None
         if existing is None and adaptive:
@@ -250,6 +264,8 @@ class LotManager:
 
     def age_weeks(self, lot: LotState, now: datetime | None = None) -> float:
         now = now or datetime.now()
+        if getattr(self.config, "adaptive_lot_enabled", False):
+            return self.calendar.completed_since(lot.buy_filled_at, now) / 5.0
         bought_at = datetime.fromisoformat(lot.buy_filled_at.replace("Z", "+00:00"))
         return max(0.0, (_local_datetime(now) - _local_datetime(bought_at)).total_seconds() / (7 * 24 * 60 * 60))
 
