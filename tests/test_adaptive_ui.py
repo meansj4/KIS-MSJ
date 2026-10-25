@@ -68,16 +68,16 @@ def make_service(tmp_path, *, current_price=9_000, restricted=False):
 
 
 def cash_log(monkeypatch, *, include_assets=True):
-    suffix = " total_asset=2000000" if include_assets else ""
+    suffix = " total_asset=200000000" if include_assets else ""
     stamp = NOW.isoformat(timespec="seconds")
     monkeypatch.setattr("kis_msj.ui_service.tail_hourly_logs", lambda *_: [
-        f"{stamp} INFO cash_target_account_snapshot cash_available=1000000 snapshot_at={stamp}{suffix}",
+        f"{stamp} INFO cash_target_account_snapshot cash_available=100000000 snapshot_at={stamp}{suffix}",
     ])
 
 
 def test_adaptive_lot_and_portfolio_targets_use_cached_volatility_streak_decay(tmp_path, monkeypatch):
     service, store = make_service(tmp_path)
-    monkeypatch.setattr("kis_msj.ui_service.tail_hourly_logs", lambda *_: [])
+    cash_log(monkeypatch)
     stored_before = {key: asdict(value) for key, value in store.load_lots().items()}
     rows = service.lots()
     expected = 0.03 * 2 - 2 * 0.001 * 4 / 5
@@ -110,14 +110,13 @@ def test_stock_context_and_list_use_lowest_lot_with_cached_multiplier(tmp_path, 
     assert service.stocks()[0]["buy_target_price"] == 9_240
 
 
-def test_unknown_cash_does_not_hide_adaptive_sell_preview(tmp_path, monkeypatch):
+def test_unknown_cash_hides_adaptive_sell_preview(tmp_path, monkeypatch):
     service, _ = make_service(tmp_path, current_price=12_000)
     monkeypatch.setattr("kis_msj.ui_service.tail_hourly_logs", lambda *_: [])
     preview = service.decision_preview("005930")["previews"][0]
-    assert preview["action_created"]
-    assert preview["side"] == "SELL"
-    assert preview["final_block_reason"] == ""
-    assert service.stock_detail("005930")["strategy_context"]
+    assert not preview["action_created"]
+    assert preview["final_block_reason"] == "cash_snapshot_unavailable"
+    assert service.stock_detail("005930")["strategy_context"] == {}
 
 
 def test_reentry_preview_reads_asset_buffer_and_uses_reserve_conditions(tmp_path, monkeypatch):
@@ -127,11 +126,11 @@ def test_reentry_preview_reads_asset_buffer_and_uses_reserve_conditions(tmp_path
     assert policy["adaptive_lot_enabled"]
     assert not policy["cash_buy_drop_enabled"]
     assert not policy["cash_target_profit_enabled"]
-    assert policy["total_asset_for_reserve"] == 2_000_000
+    assert policy["total_asset_for_reserve"] == 200_000_000
     details = service.stock_detail("005930")["adaptive_buy_details"]
-    assert details["reentry_safety_cash_buffer"] == 200_000
+    assert details["reentry_safety_cash_buffer"] == 20_000_000
     assert details["reentry_future_lot_reserve"] == 60_000
-    assert details["reentry_required_cash"] == 290_000
+    assert details["reentry_required_cash"] == 20_090_000
     assert details["reentry_cash_condition_met"]
     assert service.decision_preview("005930")["previews"][0]["side"] == "BUY"
 
@@ -184,4 +183,4 @@ def test_unknown_cash_does_not_create_a_synthetic_adaptive_buy_preview(tmp_path,
     monkeypatch.setattr("kis_msj.ui_service.tail_hourly_logs", lambda *_: [])
     preview = service.decision_preview("005930")["previews"][0]
     assert not preview["action_created"]
-    assert preview["skip_reason"] == "cash_not_enough"
+    assert preview["final_block_reason"] == "cash_snapshot_unavailable"

@@ -23,7 +23,7 @@ CODE = "005930"
 
 
 class Broker:
-    def __init__(self, *, cash=1_000_000, total=1_000_000, error=None, order_id="123456"):
+    def __init__(self, *, cash=100_000_000, total=200_000_000, error=None, order_id="123456"):
         self.cash = cash
         self.total = total
         self.error = error
@@ -212,19 +212,19 @@ def test_final_guard_rejects_executable_notional_over_current_lot_budget(tmp_pat
 
 
 def test_final_guard_reserves_other_symbols_future_lots(tmp_path):
-    orders = manager(tmp_path, broker=Broker(cash=590_000))
+    orders = manager(tmp_path, broker=Broker(cash=590_000, total=1_000_000))
     persist_position(orders, lots=(lot(code="000660"),), restricted=True)
     with pytest.raises(SessionUnavailable, match="adaptive_reentry_cash_insufficient"):
-        orders.submit_and_confirm(buy(reason="adaptive_reentry_buy"))
+        orders.submit_and_confirm(buy(price=9_200, reason="adaptive_reentry_buy"))
     assert not orders.client.placed
 
 
 def test_fresh_buying_power_is_not_charged_for_pending_sells_twice(tmp_path):
-    orders = manager(tmp_path, broker=Broker(cash=600_000))
+    orders = manager(tmp_path, broker=Broker(cash=600_000, total=1_000_000))
     persist_position(orders, lots=(lot(code="000660"),), restricted=True)
     pending_sell = OrderRequest("000660", "Other", OrderSide.SELL, 10, 11_000, "profit_take_lot", "L1")
     orders.store.record_order(OrderResult(pending_sell, "PENDING-SELL", OrderStatus.REQUESTED))
-    result, _ = orders.submit_and_confirm(buy(reason="adaptive_reentry_buy"))
+    result, _ = orders.submit_and_confirm(buy(price=9_200, reason="adaptive_reentry_buy"))
     assert result.status is OrderStatus.REJECTED
     assert len(orders.client.placed) == 1
 

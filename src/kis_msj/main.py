@@ -224,7 +224,7 @@ class AutoTrader:
                 if open_orders:
                     self.logger.warning("open_orders count=%s buy_orders_blocked=true", len(open_orders))
                     self.risk_manager.data_mismatch_detected = True
-        if self.config.strategy.cash_target_profit_active():
+        if self.config.strategy.cash_target_profit_active() or self.config.strategy.adaptive_lot_enabled:
             # All LOTs share the latest cash base, including symbols already
             # evaluated before an order changed the account's available cash.
             for lot in self.lot_manager.lots.values():
@@ -232,8 +232,18 @@ class AutoTrader:
                     continue
                 position = self.position_manager.positions.get(lot.code)
                 price = position.current_price if position and position.current_price > 0 else lot.buy_price
-                base_rate, _, _ = self.lot_manager.current_target_profit_info(lot.code, cash_available=snapshot.cash_available)
-                self.lot_manager.update_lot_target_metadata(lot, price, current_base_target_profit_rate=base_rate)
+                try:
+                    base_rate, _, _ = self.lot_manager.current_target_profit_info(lot.code, cash_available=snapshot.cash_available)
+                    self.lot_manager.update_lot_target_metadata(lot, price, current_base_target_profit_rate=base_rate)
+                except (ValueError, RuntimeError) as error:
+                    from .trading_calendar import CalendarUnavailable
+                    if not self.config.strategy.adaptive_lot_enabled or not (
+                        isinstance(error, CalendarUnavailable) or str(error) == "adaptive_cash_snapshot_unavailable"
+                    ):
+                        raise
+                    # Account/fill synchronization must not fail just because
+                    # a target cannot yet be computed. The decision path blocks.
+                    self.logger.warning("adaptive_target_refresh_deferred code=%s reason=%s", lot.code, error)
         self.store.save_positions(self.position_manager.positions.values())
         self.store.save_lots(self.lot_manager.lots.values())
         if (self.config.strategy.cash_target_profit_active()
@@ -1326,6 +1336,11 @@ class AutoTrader:
             reentry_required_cash=context.reentry_required_cash,
             reentry_cash_available=context.reentry_cash_available,
             reentry_cash_condition_met=context.reentry_cash_condition_met,
+            cash_buy_multiplier=context.cash_buy_multiplier,
+            cash_sell_multiplier=context.cash_sell_multiplier,
+            cash_adjustment_known=context.cash_adjustment_known,
+            pre_cash_buy_gap_pct=context.pre_cash_buy_gap_pct,
+            pre_cash_sell_target_rate=context.pre_cash_sell_target_rate,
             wait_reentry_started_at=context.wait_reentry_started_at,
             days_since_wait_reentry_started=context.days_since_wait_reentry_started,
             base_reentry_rate=f"{context.base_reentry_rate:.4f}",

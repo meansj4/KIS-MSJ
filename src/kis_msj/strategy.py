@@ -12,7 +12,7 @@ from .config import BotConfig
 from .lot_manager import LotManager, ceil_price, lot_buy_timestamp, round_price
 from .models import AccountSnapshot, LotState, OrderSide, PositionLifecycle, PositionState, ReentryType, SellReason
 from .risk_manager import RiskDecision
-from .adaptive_policy import trend_multiplier, lowest_lot_buy_target, reentry_buy_target, floor_order_price
+from .adaptive_policy import cash_multipliers, trend_multiplier, lowest_lot_buy_target, reentry_buy_target, floor_order_price
 
 
 EPSILON = 1e-9
@@ -181,6 +181,11 @@ class StrategyContext:
     effective_buy_pnl_threshold: float | None = None
     rebuy_restriction_active: bool = False
     adaptive_buy_target_price: int = 0
+    cash_buy_multiplier: float | None = None
+    cash_sell_multiplier: float | None = None
+    cash_adjustment_known: bool = False
+    pre_cash_buy_gap_pct: float = 0.0
+    pre_cash_sell_target_rate: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -251,20 +256,28 @@ class LotGridStrategy:
 
     def adaptive_buy_details(self, position: PositionState, current_price: int,
                              snapshot: AccountSnapshot | None) -> dict[str, object]:
+        cash = snapshot.cash_available if snapshot else None
+        try:
+            buy_cash_multiplier, sell_cash_multiplier = cash_multipliers(cash)
+        except ValueError:
+            buy_cash_multiplier = sell_cash_multiplier = None
+        valid_cash = buy_cash_multiplier is not None
         lots = self.lot_manager.open_lots(position.code)
         self.lot_manager.set_symbol_trade_state(position.code, position.consecutive_sell_count)
         multiplier = self.lot_manager.volatility_multiplier_for(position.code)
         score = self.lot_manager.trend_score_for(position.code)
-        gap = (4.0 + 2.0 * (len(lots) - 1)) * multiplier * trend_multiplier(score) if lots else 0.0
+        pre_cash_gap = (4.0 + 2.0 * (len(lots) - 1)) * multiplier * trend_multiplier(score) if lots else 0.0
+        gap = pre_cash_gap * buy_cash_multiplier if valid_cash else 0.0
         quantity = sum(lot.remaining_quantity for lot in lots)
         cost = sum(lot.buy_price * lot.remaining_quantity for lot in lots)
         vwap = cost / quantity if quantity > 0 else 0.0
         valid_position = not lots or (quantity > 0 and math.isfinite(vwap) and vwap > 0 and current_price > 0)
         normal = vwap * (1.0 - gap / 100.0) if lots and valid_position and gap < 100 else 0.0
         restricted = position.rebuy_restriction_active
-        rebuy = reentry_buy_target(position.last_sell_price, 4.0 * multiplier) if restricted else 0.0
+        rebuy_gap = 4.0 * multiplier * buy_cash_multiplier if valid_cash else 0.0
+        rebuy = reentry_buy_target(position.last_sell_price, rebuy_gap) if restricted and valid_cash else 0.0
         ceilings = ([normal] if lots else []) + ([rebuy] if restricted else [])
-        target = floor_order_price(min(ceilings) if ceilings else current_price)
+        target = floor_order_price(min(ceilings) if ceilings else current_price) if valid_cash else 0
         sizing = (self.ensure_lot_sizing(position, current_price) if lots else
                   self.lot_sizing_for_new_cycle(current_price)) if self._lot_sizing_enabled() else {}
         amount = int(sizing.get("lot_unit_amount", 0)) if self._lot_sizing_enabled() else self.config.strategy.initial_buy_amount
@@ -280,9 +293,9 @@ class LotGridStrategy:
         elif (position.cumulative_invested_amount + amount > self.config.strategy.absolute_max_investment
               or position.cumulative_invested_amount + amount > self.config.strategy.auto_buy_limit):
             block = block or "max_symbol_amount_reached"
-        cash = snapshot.cash_available if snapshot else None
-        valid_cash = type(cash) in (int, float) and math.isfinite(cash) and cash >= 0
-        if not valid_cash or cash < amount:
+        if not valid_cash:
+            block = block or "adaptive_cash_snapshot_unavailable"
+        elif cash < amount:
             block = block or "cash_not_enough"
         condition = current_price > 0 and target > 0 and current_price <= target
         if not lots and not self._lot_sizing_enabled() and current_price > self.config.strategy.initial_buy_amount:
@@ -298,10 +311,18 @@ class LotGridStrategy:
                 "active_lot_count": len(lots), "trend_score": score,
                 "effective_buy_pnl_threshold": -gap if lots else None,
                 "normal_buy_target": normal, "reentry_target": rebuy,
-                "effective_buy_gap_pct": gap, "effective_rebuy_gap_pct": 4.0 * multiplier,
+                "effective_buy_gap_pct": gap, "effective_rebuy_gap_pct": rebuy_gap,
+                "pre_cash_buy_gap_pct": pre_cash_gap,
+                "cash_buy_multiplier": buy_cash_multiplier, "cash_sell_multiplier": sell_cash_multiplier,
+                "cash_adjustment_known": valid_cash,
                 "buy_condition_met": condition, "skip_reason": block}
 
     def _adaptive_decide(self, position, current_price, snapshot, account_risk, symbol_risk):
+        try:
+            cash_multipliers(snapshot.cash_available if snapshot else None)
+        except ValueError:
+            position.skip_reason = "adaptive_cash_snapshot_unavailable"
+            return None
         from .trading_calendar import CalendarUnavailable
         try:
             self.lot_manager.trend_score_for(position.code)
@@ -583,8 +604,13 @@ class LotGridStrategy:
         return SellCandidate(lot, reason, loss, allowed, trigger_lot, limit_price)
 
     def _adaptive_sell_candidate(self, position, current_price, snapshot):
+        try:
+            cash_multipliers(snapshot.cash_available if snapshot else None)
+        except ValueError:
+            position.skip_reason = "adaptive_cash_snapshot_unavailable"
+            return None
         self.lot_manager.set_symbol_trade_state(position.code, position.consecutive_sell_count)
-        base, _, _ = self.lot_manager.current_target_profit_info(position.code)
+        base, _, _ = self.lot_manager.current_target_profit_info(position.code, cash_available=snapshot.cash_available)
         profits, recoveries, decayed = [], [], []
         for lot in self.lot_manager.open_lots(position.code):
             self.lot_manager.update_lot_target_metadata(lot, current_price,
@@ -996,8 +1022,13 @@ class LotGridStrategy:
         lots = self.lot_manager.open_lots(position.code)
         candidate = self._adaptive_sell_candidate(position, current_price, snapshot)
         selected = candidate.lot if candidate else (self._sort_sell_lots(lots, current_price)[0] if lots else None)
-        base, _, source = self.lot_manager.current_target_profit_info(position.code)
-        effective = selected.effective_target_profit_rate if selected else 0.0
+        known = bool(details["cash_adjustment_known"])
+        base, _, source = self.lot_manager.current_target_profit_info(position.code, cash_available=snapshot.cash_available if known else None)
+        if not known:
+            base = 0.0
+        elif selected is not None and candidate is None:
+            self.lot_manager.update_lot_target_metadata(selected, current_price, current_base_target_profit_rate=base)
+        effective = selected.effective_target_profit_rate if selected and known else 0.0
         return StrategyContext(
             trend_score=details['trend_score'], effective_buy_pnl_threshold=details['effective_buy_pnl_threshold'],
             position_state=self._position_state(position), pnl_mode=self._pnl_mode(position),
@@ -1010,7 +1041,7 @@ class LotGridStrategy:
             sell_signal_met=bool(candidate), selected_sell_lot_id=candidate.lot.lot_id if candidate else "",
             sell_reason=candidate.reason if candidate else SellReason.UNKNOWN.value,
             sell_trigger_lot_id=candidate.lot.lot_id if candidate else "",
-            sell_trigger_price=candidate.limit_price if candidate else (self._target_sell_price(selected) if selected else 0),
+            sell_trigger_price=candidate.limit_price if candidate else (self._target_sell_price(selected) if selected and known else 0),
             sell_limit_price=current_price if candidate and candidate.limit_price > 0 else 0,
             current_open_lot_count=len(lots), current_base_target_profit_rate=base,
             base_target_profit_rate=base, effective_target_profit_rate=effective, target_profit_source=source,
@@ -1034,6 +1065,11 @@ class LotGridStrategy:
             consecutive_buy_count=position.consecutive_buy_count, consecutive_sell_count=position.consecutive_sell_count,
             rebuy_restriction_active=position.rebuy_restriction_active,
             adaptive_buy_target_price=int(details["buy_target_price"]),
+            cash_available_for_target=snapshot.cash_available if known else 0,
+            cash_buy_multiplier=details["cash_buy_multiplier"],
+            cash_sell_multiplier=details["cash_sell_multiplier"], cash_adjustment_known=known,
+            pre_cash_buy_gap_pct=details["pre_cash_buy_gap_pct"],
+            pre_cash_sell_target_rate=(base / details["cash_sell_multiplier"]) if known else 0.0,
         )
 
     def _position_state(self, position: PositionState) -> str:

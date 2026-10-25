@@ -48,7 +48,7 @@ def add(positions, price=10_000, days=0, code=CODE, quantity=2):
     return positions.lot_manager.lots[f"lot{index}"]
 
 
-def cash(value=10_000_000, total=20_000_000):
+def cash(value=100_000_000, total=200_000_000):
     return AccountSnapshot(value, total, 0, 0)
 
 
@@ -142,9 +142,9 @@ def test_decay_negative_sells_same_lot_without_cash_priority_override():
     position = positions.refresh_from_lots(CODE, 9_900)
     position.consecutive_sell_count = 2
     action = decide(strategy, position, 9_900, cash(0))
-    assert old.effective_target_profit_rate == pytest.approx(-.0196)
+    assert old.effective_target_profit_rate == pytest.approx(-.0346)
     assert action.side is OrderSide.SELL and action.lot_id == old.lot_id
-    assert action.limit_price >= 9_810
+    assert action.limit_price >= 9_660
     assert expensive.remaining_quantity == 2
 
 

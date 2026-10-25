@@ -7,7 +7,7 @@ import math
 from statistics import median
 
 from .config import StrategyConfig
-from .adaptive_policy import trend_multiplier
+from .adaptive_policy import trend_multiplier, cash_multipliers
 from .trading_calendar import TradingCalendar, CalendarUnavailable, trend_score
 from .fill_state import fill_order_key
 from .models import LotState, LotStatus, SellReason, TradeFill
@@ -96,7 +96,12 @@ class LotManager:
         """Return the active base target rate as a decimal plus source metadata."""
         if getattr(self.config, "adaptive_lot_enabled", False):
             rate = 0.03 * self.volatility_multipliers.get(code, 1.0) * trend_multiplier(-self.trend_score_for(code))
-            return rate, "", "adaptive_volatility_trend"
+            if cash_available is None:
+                # Fill booking/calendar metadata must remain possible without an
+                # account query. This unadjusted placeholder never authorizes an
+                # Adaptive decision: strategy callers require and pass cash.
+                return rate, "", "adaptive_cash_snapshot_unavailable"
+            return rate * cash_multipliers(cash_available)[1], "", "adaptive_volatility_trend_cash"
         if self.config.cash_target_profit_active():
             if cash_available is None:
                 raise ValueError("cash target requires an actual account cash snapshot")
@@ -279,7 +284,8 @@ class LotManager:
 
     def effective_target_profit_rate(self, lot: LotState, now: datetime | None = None, current_base_target_profit_rate: float | None = None) -> float:
         if getattr(self.config, "adaptive_lot_enabled", False):
-            base = self.current_target_profit_info(lot.code)[0]
+            base = (current_base_target_profit_rate if current_base_target_profit_rate is not None
+                    else self.current_target_profit_info(lot.code)[0])
             return base - self.age_weeks(lot, now) * self.age_decay_rate_for(lot.code, now)
         base = current_base_target_profit_rate if current_base_target_profit_rate is not None else (lot.base_target_profit_rate or lot.target_profit_pct / 100.0)
         return base - self.age_weeks(lot, now) * self.age_decay_rate_for(lot.code, now)
@@ -287,8 +293,9 @@ class LotManager:
     def update_lot_target_metadata(self, lot: LotState, current_price: int, now: datetime | None = None, current_base_target_profit_rate: float | None = None) -> None:
         lot.age_weeks = self.age_weeks(lot, now)
         if getattr(self.config, "adaptive_lot_enabled", False):
-            lot.base_target_profit_rate = self.current_target_profit_info(lot.code)[0]
-            lot.effective_target_profit_rate = self.effective_target_profit_rate(lot, now)
+            lot.base_target_profit_rate = (current_base_target_profit_rate if current_base_target_profit_rate is not None
+                                          else self.current_target_profit_info(lot.code)[0])
+            lot.effective_target_profit_rate = self.effective_target_profit_rate(lot, now, lot.base_target_profit_rate)
             lot.target_profit_pct = lot.effective_target_profit_rate * 100.0
             raw_target = lot.buy_price * (1.0 + lot.effective_target_profit_rate)
             lot.target_sell_price = ceil_price(raw_target) if math.isfinite(raw_target) and raw_target > 0 else 0

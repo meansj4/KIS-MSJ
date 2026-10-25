@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Adaptive LOT V2 조건 비교</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f3f5f8;color:#1b2636;font:15px/1.6 system-ui,sans-serif}main{max-width:1100px;margin:32px auto;padding:0 20px}h1{font-size:28px;line-height:1.3}h2{font-size:18px;margin:0 0 16px}.sub{color:#5b6879}.grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}.card{background:white;padding:24px;border-radius:16px;border:1px solid #dde3eb;margin-bottom:20px}label{display:block;margin:16px 0 4px;font-weight:600}input[type=range]{width:100%;accent-color:#2463b9}input[type=number],select{padding:8px;border:1px solid #ccd5e1;border-radius:6px;font:inherit;max-width:100%}button{background:#eaf1fa;border:0;border-radius:6px;padding:7px 14px;color:#164f99;cursor:pointer;margin:4px}output{float:right;color:#164f99}.result{font-size:30px;font-weight:700;color:#164f99}.sell{color:#ad4b12}.formula{padding:12px;background:#f6f8fb;border-radius:8px;overflow-wrap:anywhere}.warn{background:#fff3de;padding:12px;border-radius:8px;color:#775014}table{border-collapse:collapse;width:100%}td,th{padding:8px;border-bottom:1px solid #e2e8ef;text-align:right}td:first-child,th:first-child{text-align:left}svg{width:100%;height:180px}.small{font-size:13px}.badge{font-size:12px;color:#376345;background:#e8f4e9;padding:4px 9px;border-radius:20px}a{color:#164f99}@media(max-width:700px){.grid{grid-template-columns:1fr}main{margin:20px auto}.card{padding:18px}}
+</style></head><body><main>
+<span class="badge">오프라인 설명 도구</span><h1>예수금이 달라지면 매수·매도 문턱은?</h1>
+<p class="sub">현재 Adaptive LOT V2의 수식을 직접 비교합니다. 가격은 가상 입력이며 실제 주문·시세 조회 기능은 없습니다.</p>
+<div class="grid"><section class="card"><h2>조건을 바꿔 보세요</h2>
+<label for="symbol">종목 예시</label><select id="symbol"><option value="10000">JB금융지주 · 가상 매수가 10,000원</option><option value="20000">기업은행 · 가상 매수가 20,000원</option><option value="25000">강원랜드 · 가상 매수가 25,000원</option></select>
+<label for="cash">주문가능현금 <output id="cashOut"></output></label><input id="cash" type="range" min="0" max="30000" step="100" value="10000">
+<div><button type="button" data-cash="0">0원</button><button type="button" data-cash="10000">1억 원</button><button type="button" data-cash="20000">2억 원</button></div>
+<label for="n">현재 LOT 수 <output id="nOut"></output></label><input id="n" type="range" min="1" max="12" value="6">
+<label for="v">변동성 배율 m <output id="vOut"></output></label><input id="v" type="range" min="0.75" max="2.5" step="0.05" value="1">
+<label for="s">최근 5거래일 순점수 s <output id="sOut"></output></label><input id="s" type="range" min="-12" max="12" value="0">
+<label for="d">대표 LOT 완료 보유거래일 D <output id="dOut"></output></label><input id="d" type="range" min="0" max="120" value="20">
+<label><input id="reentry" type="checkbox"> 최근 매도 후 재진입 제한 상태</label>
+<label for="lastSale">최근 실제 매도가(가상, 원)</label><input id="lastSale" type="number" min="1" step="10" value="9000">
+</section><div><section class="card"><h2>예수금 배율</h2>
+<svg viewBox="0 0 420 180" role="img" aria-label="현금 0, 1억, 2억 원에서 구간별 선형으로 변하는 매수와 매도 배율">
+<path d="M40 25V145H390" stroke="#9caabd" fill="none"/><path d="M40 35L210 90L380 117.5" stroke="#2463b9" fill="none" stroke-width="3"/><path d="M40 117.5L210 90L380 35" stroke="#b4541e" fill="none" stroke-width="3"/>
+<g fill="#627187" font-size="11"><text x="40" y="165">0원</text><text x="195" y="165">1억 원</text><text x="355" y="165">2억 원</text><text x="10" y="39">2배</text><text x="10" y="94">1배</text><text x="2" y="122">0.5배</text></g>
+<circle id="buyDot" r="6" fill="#2463b9"/><circle id="sellDot" r="6" fill="#b4541e"/>
+</svg><p><strong id="multipliers"></strong></p><p class="sub small">파랑: 매수 하락폭 · 갈색: 매도 목표. 0~1억과 1억~2억은 각각 직선이며, 2억 원 초과는 끝점 배율을 유지합니다.</p>
+</section><section class="card"><h2>일반 추가매수 상한</h2><div class="result" id="buyPrice"></div><p class="formula" id="buyFormula"></p><p id="reentryText"></p></section>
+<section class="card"><h2>대표 LOT 매도 발동가</h2><div class="result sell" id="sellPrice"></div><p class="formula" id="sellFormula"></p><p id="sellRate"></p></section></div></div>
+<section class="card"><h2>이 계산을 볼 때 함께 확인할 점</h2><p class="warn" id="warning"></p><p>매수 상한은 종목 가중평단, 매도 발동가는 대표 LOT 매수가가 같다는 가정입니다. LOT별 매수가·나이가 다르면 매도 목표도 달라집니다. 신규 0LOT 진입은 하락폭을 요구하지 않습니다.</p><p>실제 주문은 현금·LOT/투자 한도·위험·거래시간·가격 안정성·미해결 주문 검사를 추가로 통과해야 합니다. 재진입에는 기존 2LOT 예비금과 총자산 10% 조건이 남습니다. 이 도구는 가격 문턱 계산기이며 주문 허용이나 수익률을 판정하지 않습니다.</p><p><a href="ADAPTIVE_CASH_SCENARIOS.md">78개 실제 전략 함수 사례와 설명</a> · <a href="ADAPTIVE_CASH_SCENARIO_MATRIX.csv">1,620개 조합 CSV</a></p></section>
+</main><script>
+const $=id=>document.getElementById(id);
+const money=x=>new Intl.NumberFormat('ko-KR',{maximumFractionDigits:0}).format(x)+'원';
+const num=x=>Number(x.toFixed(4)).toLocaleString('ko-KR',{maximumFractionDigits:4});
+function cashMultipliers(c){const x=Math.min(c,200000000)/100000000;return x<=1?[2-x,.5+.5*x]:[1-.5*(x-1),x];}
+function trend(s){return 1+.2*Math.max(0,Math.min(s,12)-1);}
+function tick(p){return p<1000?1:p<5000?5:p<10000?10:p<50000?50:p<100000?100:p<500000?500:1000;}
+function floorPrice(p){return p>0?Math.floor((p+1e-9)/tick(p))*tick(p):0;}
+function ceilPrice(p){return p>0?Math.max(tick(Math.max(1,p)),Math.ceil((Math.max(1,p)-1e-9)/tick(Math.max(1,p)))*tick(Math.max(1,p))):0;}
+function update(){
+ const cash=Number($('cash').value)*10000,n=Number($('n').value),v=Number($('v').value),s=Number($('s').value),d=Number($('d').value),price=Number($('symbol').value);
+ const [cb,cs]=cashMultipliers(cash),tb=trend(s),ts=trend(-s),gap=(4+2*(n-1))*v*tb*cb,decay=n*.1*d/5,sell=3*v*ts*cs-decay;
+ const normal=gap<100?floorPrice(price*(1-gap/100)):0;
+ const sale=Number($('lastSale').value),rebuy=Number.isFinite(sale)&&sale>0?floorPrice(sale*(1-4*v*cb/100)):0;
+ const target=$('reentry').checked?Math.min(normal,rebuy):normal;
+ $('cashOut').textContent=money(cash);$('nOut').textContent=n+'개';$('vOut').textContent=num(v)+'배';$('sOut').textContent=(s>0?'+':'')+s;$('dOut').textContent=d+'거래일';
+ $('multipliers').textContent='매수 '+num(cb)+'배 / 매도 '+num(cs)+'배';
+ for(const [id,m] of [['buyDot',cb],['sellDot',cs]]){$(id).setAttribute('cx',40+340*Math.min(cash/200000000,1));$(id).setAttribute('cy',145-55*m);}
+ $('buyPrice').textContent=target>0?money(target):'가격 문턱 도달 불가';
+ $('buyFormula').textContent='하락폭 = (4 + 2 × ('+n+' − 1)) × '+num(v)+' × '+num(tb)+' × '+num(cb)+' = '+num(gap)+'%';
+ $('reentryText').textContent=$('reentry').checked?'재진입 상한 '+money(rebuy)+'과 일반 상한 '+money(normal)+' 중 낮은 가격입니다.':'종목의 가중평단을 '+money(price)+'으로 가정한 상한입니다.';
+ $('sellPrice').textContent=sell>-100?money(ceilPrice(price*(1+sell/100))):'유효한 매도 목표 없음';
+ $('sellFormula').textContent='목표 = 3 × '+num(v)+' × '+num(ts)+' × '+num(cs)+' − '+n+' × 0.1 × '+d+' / 5 = '+num(sell)+'%';
+ $('sellRate').textContent='예수금 반영 후 '+num(3*v*ts*cs)+'%에서 Decay '+num(decay)+'%p를 마지막에 차감합니다.';
+ let warning='계산된 문턱에 도달해도 실제 주문 검사를 통과해야 합니다.';
+ if(cash===0)warning='현금 0원이므로 매수는 차단됩니다. 매도 목표는 0.5배로 조정한 뒤 Decay를 차감합니다.';
+ if(n===12)warning+=' 기본 최대 12LOT에 도달했으므로 추가매수할 수 없습니다.';
+ if(gap>=100)warning+=' 요구 하락폭이 100% 이상이므로 매수 상한을 완화하지 않습니다.';
+ $('warning').textContent=warning;
+}
+document.querySelectorAll('input,select').forEach(e=>e.addEventListener('input',update));
+document.querySelectorAll('[data-cash]').forEach(e=>e.addEventListener('click',()=>{$('cash').value=e.dataset.cash;update();}));
+update();
+</script></body></html>

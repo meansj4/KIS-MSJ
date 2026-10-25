@@ -347,6 +347,11 @@ const VALUE_LABELS = {
 };
 Object.assign(LABELS, {
   adaptive_lot_enabled:'변동성·추세 LOT 전략', volatility_multiplier:'변동성 배수',
+  adaptive_cash_adjustment_enabled:'Adaptive 예수금 배율 적용', cash_buy_multiplier:'예수금 매수 하락폭 배율',
+  adaptive_cash_snapshot_unavailable:'주문가능현금 미확인으로 매매 보류',
+  adaptive_volatility_trend_cash:'변동성·추세·예수금 적용 목표',
+  cash_sell_multiplier:'예수금 매도 목표 배율', cash_adjustment_known:'예수금 배율 근거 확인',
+  pre_cash_buy_gap_pct:'예수금 반영 전 매수 간격(%)', pre_cash_sell_target_rate:'예수금 반영 전 매도 목표',
   consecutive_buy_count:'연속 매수 체결 수', consecutive_sell_count:'연속 매도 체결 수',
   rebuy_restriction_active:'매도 후 재매수 제한', buy_target_price:'최종 매수 목표가',
   normal_buy_target:'평가PnL 매수 기준가', trend_score:'최근 5거래일 순점수', effective_buy_pnl_threshold:'평가PnL 매수 기준(%)', reentry_target:'최근 매도가 재매수 기준가',
@@ -614,7 +619,7 @@ function table(rows, tableId='default', opts={}) {
   const keys = Object.keys(rows[0]);
   let visibleKeys = visibleColumns(tableId, keys);
   if (rows.some(row => row.adaptive_lot_enabled)) {
-    visibleKeys = visibleKeys.filter(key => !key.startsWith('cash_buy_') && !key.startsWith('cash_target_') && !key.startsWith('low_cash_') && key !== 'negative_target_high_cost_sell');
+    visibleKeys = visibleKeys.filter(key => (!key.startsWith('cash_buy_') || key === 'cash_buy_multiplier') && !key.startsWith('cash_target_') && !key.startsWith('low_cash_') && key !== 'negative_target_high_cost_sell');
     if (!columnPrefs[tableId]) {
       for (const key of ['buy_target_price','effective_buy_pnl_threshold','trend_score','volatility_multiplier','rebuy_restriction_active']) {
         if (keys.includes(key) && !visibleKeys.includes(key)) visibleKeys.push(key);
@@ -841,10 +846,13 @@ function adaptiveLotPanel(info, details) {
     reentry_reserve_lots_per_symbol:info.reentry_reserve_lots_per_symbol,
     reentry_cash_buffer_ratio:info.reentry_cash_buffer_ratio,
     cash_available_for_target:info.cash_available_for_target,
+    cash_buy_multiplier:info.cash_buy_multiplier,
+    cash_sell_multiplier:info.cash_sell_multiplier,
     total_asset_for_reserve:info.total_asset_for_reserve,
     cash_snapshot_status:info.cash_snapshot_status
   };
-  return `<section class="manualBox"><h3>변동성·추세 LOT 전략</h3><p>잔여 수량 가중 평균매수가 대비 평가손익률이 -(4+2×(현재 LOT 수-1))% 이하이면 추가매수를 검토합니다. 개별 LOT의 기본 매도 목표는 3%이며, 변동성과 최근 5거래일 매수·매도 순점수 배수를 적용한 뒤 현재 LOT 수 × 0.1%p × 완료 보유거래일/5의 decay를 마지막에 차감합니다. 최근 매도 후 재매수에는 별도 하락 조건과 예비 현금 조건을 함께 적용합니다. 변동성은 장 마감 후 갱신하며 장중에는 같은 값을 사용합니다.</p>${metrics(fields)}</section>`;
+  const missing = info.cash_available_for_target === null ? '<p class="warn">최근 주문가능현금이 없어 목표 표시와 자동 매매 판단을 보류합니다.</p>' : '';
+  return `<section class="manualBox"><h3>변동성·추세·예수금 LOT 전략</h3><p>추가매수 하락폭 -(4+2×(현재 LOT 수-1))%와 개별 LOT 매도 목표 3%에 변동성·최근 5거래일 순점수 배율을 적용한 뒤 예수금 배율을 곱합니다. 주문가능현금 0원은 매수 2배·매도 0.5배, 1억 원은 각각 1배, 2억 원 이상은 매수 0.5배·매도 2배이며 두 구간을 각각 선형으로 연결합니다. 매도에는 그 다음 현재 LOT 수 × 0.1%p × 완료 보유거래일/5의 Decay를 마지막에 차감합니다. 최근 매도가 재매수 하락폭에도 예수금 매수 배율을 적용하고, 기존 예비 현금·위험 검사를 함께 통과해야 합니다.</p>${missing}${metrics(fields)}</section>`;
 }
 function cashTargetPanel(info) {
   if (!info || !info.cash_target_profit_enabled) return '';

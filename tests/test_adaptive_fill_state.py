@@ -192,13 +192,17 @@ def test_decay_is_subtracted_after_all_positive_multipliers(volatility, sell_cou
 
 
 def test_negative_profit_target_is_sellable_but_nonpositive_target_is_invalid():
-    _, lots, positions = managers()
-    buy(positions, at=datetime.now() - timedelta(weeks=50), quantity=1)
-    lot = lots.open_lots(CODE)[0]
-    assert lots.profit_take_lots(CODE, 9_800, 10_000) == [lot]
-    lot.buy_filled_at = (datetime.now() - timedelta(weeks=2_000)).isoformat()
-    assert lots.profit_take_lots(CODE, 9_800, 10_000) == []
-    assert lot.target_sell_price == 0
+    from kis_msj.arcg_backtest import historical_clock
+    # Include the final completed session independently of the test run's time.
+    end = NOW.replace(hour=16)
+    with historical_clock(end):
+        _, lots, positions = managers()
+        buy(positions, at=end - timedelta(weeks=50), quantity=1)
+        lot = lots.open_lots(CODE)[0]
+        assert lots.profit_take_lots(CODE, 9_800, 10_000) == [lot]
+        lot.buy_filled_at = (end - timedelta(weeks=2_000)).isoformat()
+        assert lots.profit_take_lots(CODE, 9_800, 10_000) == []
+        assert lot.target_sell_price == 0
 
 
 def test_lot_holding_time_uses_real_elapsed_time_across_timezone_offsets():

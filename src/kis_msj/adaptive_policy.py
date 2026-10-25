@@ -11,13 +11,26 @@ def trend_multiplier(consecutive_count: int) -> float:
     return 1.0 + 0.2 * max(0, min(consecutive_count, 12) - 1)
 
 
+def cash_multipliers(cash_available: int | float) -> tuple[float, float]:
+    """Return BUY gap / SELL profit multipliers for actual spendable KRW.
+
+    Connect (0, 2, .5), (100m, 1, 1), (200m, .5, 2) piecewise
+    linearly. Above 200m retain the endpoint. Missing/invalid cash is not zero.
+    """
+    if type(cash_available) not in (int, float) or not math.isfinite(cash_available) or cash_available < 0:
+        raise ValueError("adaptive_cash_snapshot_unavailable")
+    x = min(cash_available, 200_000_000) / 100_000_000
+    return (2.0 - x, 0.5 + 0.5 * x) if x <= 1.0 else (1.0 - 0.5 * (x - 1.0), x)
+
+
 def lot_decay_pp(buy_time: str | datetime, current_time: datetime, active_lot_count: int, calendar=None) -> float:
     from .trading_calendar import TradingCalendar
     return max(0, active_lot_count) * 0.1 * (calendar or TradingCalendar()).completed_since(buy_time, current_time) / 5.0
 
 
-def final_sell_profit_pct(vol_multiplier: float, consecutive_sell_count: int, decay_pp: float) -> float:
-    return 3.0 * vol_multiplier * trend_multiplier(consecutive_sell_count) - decay_pp
+def final_sell_profit_pct(vol_multiplier: float, consecutive_sell_count: int, decay_pp: float,
+                          cash_available: int | float = 100_000_000) -> float:
+    return 3.0 * vol_multiplier * trend_multiplier(consecutive_sell_count) * cash_multipliers(cash_available)[1] - decay_pp
 
 
 def lowest_lot_buy_target(active_lots, gap_pct: float) -> float:

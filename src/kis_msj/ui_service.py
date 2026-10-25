@@ -31,6 +31,7 @@ from .position_manager import PositionManager
 from .runtime_control import DEFAULT_RUNTIME_CONTROL_PATH, RuntimeControl, load_runtime_control, runtime_block_reason, save_runtime_control
 from .strategy import LotGridStrategy, StrategyAction
 from .volatility import DailyVolatilityCache
+from .adaptive_policy import cash_multipliers
 
 
 SENSITIVE_PARTS = ("account", "acct", "cano", "acnt", "appkey", "appsecret", "token", "authorization", "auth")
@@ -463,6 +464,9 @@ class UIService:
         runtime = load_runtime_control(self.runtime_path)
         policy = {
             "adaptive_lot_enabled": config.adaptive_lot_enabled,
+            "adaptive_cash_adjustment_enabled": config.adaptive_lot_enabled,
+            "cash_buy_multiplier": cash_multipliers(cash)[0] if config.adaptive_lot_enabled and cash is not None else None,
+            "cash_sell_multiplier": cash_multipliers(cash)[1] if config.adaptive_lot_enabled and cash is not None else None,
             "reentry_reserve_lots_per_symbol": config.reentry_reserve_lots_per_symbol,
             "reentry_cash_buffer_ratio": config.reentry_cash_buffer_ratio,
             "total_asset_for_reserve": total_asset,
@@ -1340,7 +1344,7 @@ class UIService:
         lot_states = {str(lot.get("lot_id") or ""): _lot_state_from_row(lot) for lot in open_lots}
         lot_manager = self._configured_lot_manager(lot_states)
         cash_policy = self.cash_target_policy()
-        cash_known = not cash_policy["cash_target_profit_active"] or cash_policy["cash_available_for_target"] is not None
+        cash_known = not (cash_policy["cash_target_profit_active"] or self.config.strategy.adaptive_lot_enabled) or cash_policy["cash_available_for_target"] is not None
         rows = []
         for lot in open_lots:
             code = str(lot.get("code") or "")
@@ -2033,7 +2037,7 @@ class UIService:
         current_price = int(position.get("current_price") or 0)
         cash_policy = self.cash_target_policy()
         snapshot = self._cash_target_snapshot(cash_policy)
-        cash_required = not config.strategy.adaptive_lot_enabled and (cash_policy["cash_target_profit_active"] or config.strategy.cash_capacity_reentry_enabled() or config.strategy.cash_buy_drop_enabled)
+        cash_required = config.strategy.adaptive_lot_enabled or cash_policy["cash_target_profit_active"] or config.strategy.cash_capacity_reentry_enabled() or config.strategy.cash_buy_drop_enabled
         cash_known = not cash_required or snapshot is not None
         context = strategy.context(position_state, current_price, snapshot) if current_price and cash_known else None
         return {
@@ -2379,14 +2383,22 @@ class UIService:
             row["sell_trigger_price"] = int(round(_actual_price(row.get("buy_price", 0)) * (1 + float(row.get("effective_target_profit_rate") or 0))))
             if adaptive and _to_int(row.get("remaining_quantity")) > 0 and str(row.get("status") or "") != "CLOSED":
                 state = manager.lots[str(row["lot_id"])]
-                manager.update_lot_target_metadata(state, current_price, now)
+                if cash_known:
+                    base, _, _ = manager.current_target_profit_info(row["code"], cash_available=cash_policy["cash_available_for_target"])
+                    manager.update_lot_target_metadata(state, current_price, now, base)
                 row.update({
                     "current_symbol_open_lot_count": len(manager.open_lots(row["code"])),
                     "effective_weekly_age_decay_rate": manager.age_decay_rate_for(row["code"], now),
-                    "current_base_target_profit_rate": state.base_target_profit_rate,
-                    "effective_target_profit_rate": state.effective_target_profit_rate,
-                    "age_weeks": state.age_weeks, "target_sell_price": state.target_sell_price,
-                    "sell_trigger_price": state.target_sell_price,
+                    "current_base_target_profit_rate": state.base_target_profit_rate if cash_known else None,
+                    "base_target_profit_rate": state.base_target_profit_rate if cash_known else None,
+                    "target_profit_pct": state.effective_target_profit_rate * 100 if cash_known else None,
+                    "effective_target_profit_rate": state.effective_target_profit_rate if cash_known else None,
+                    "age_weeks": state.age_weeks, "target_sell_price": state.target_sell_price if cash_known else None,
+                    "sell_trigger_price": state.target_sell_price if cash_known else None,
+                    "cash_available_for_target": cash_policy["cash_available_for_target"],
+                    "cash_buy_multiplier": cash_policy.get("cash_buy_multiplier"),
+                    "cash_sell_multiplier": cash_policy.get("cash_sell_multiplier"),
+                    "cash_snapshot_status": cash_policy["cash_snapshot_status"],
                     "volatility_multiplier": manager.volatility_multiplier_for(row["code"]),
                     "consecutive_sell_count": _to_int(positions.get(row["code"], {}).get("consecutive_sell_count")),
                     "cash_target_sell_candidate": False, "negative_target_high_cost_sell": False,
@@ -3171,7 +3183,7 @@ class UIService:
         strategy = self._configured_strategy(lot_manager)
         cash_policy = self.cash_target_policy()
         snapshot = self._cash_target_snapshot(cash_policy)
-        cash_required = not config.strategy.adaptive_lot_enabled and (cash_policy["cash_target_profit_active"] or config.strategy.cash_capacity_reentry_enabled() or config.strategy.cash_buy_drop_enabled)
+        cash_required = config.strategy.adaptive_lot_enabled or cash_policy["cash_target_profit_active"] or config.strategy.cash_capacity_reentry_enabled() or config.strategy.cash_buy_drop_enabled
         cash_known = not cash_required or snapshot is not None
         positions = [_position_state_from_row(row) for row in self.positions()]
         if code:

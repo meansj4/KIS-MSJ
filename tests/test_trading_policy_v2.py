@@ -43,7 +43,7 @@ def test_pnl_thresholds_and_max_lots(count, threshold):
         lm, pm, s = setup()
         for i in range(count): buy(pm,i,when=NOW-timedelta(days=10))
         p = pm.refresh_from_lots('111111',7000)
-        d = s.adaptive_buy_details(p,7000,AccountSnapshot(10000000,20000000,0,0))
+        d = s.adaptive_buy_details(p,7000,AccountSnapshot(100000000,200000000,0,0))
         assert d['effective_buy_pnl_threshold'] == threshold
         assert d['position_vwap'] == 10000
         if count==12: assert 'max_lots' in d['skip_reason']
@@ -78,7 +78,7 @@ def test_quantity_weighted_pnl_reentry_and_no_legacy_streak():
         p.consecutive_buy_count=12
         p.rebuy_restriction_active=True
         p.last_sell_price=9000
-        d=s.adaptive_buy_details(p,9000,AccountSnapshot(10000000,20000000,0,0))
+        d=s.adaptive_buy_details(p,9000,AccountSnapshot(100000000,200000000,0,0))
         assert d['position_vwap']==pytest.approx(32000/3)
         assert d['effective_buy_pnl_threshold']==-6
         assert d['buy_target_price']==8640
@@ -91,12 +91,12 @@ def test_vwap_after_addition_tightening_and_sale_restriction():
         buy(pm,0,10000,10,NOW-timedelta(days=10))
         buy(pm,1,9600,10)
         p=pm.refresh_from_lots('111111',9600)
-        d=s.adaptive_buy_details(p,9600,AccountSnapshot(10000000,20000000,0,0))
+        d=s.adaptive_buy_details(p,9600,AccountSnapshot(100000000,200000000,0,0))
         assert d['position_vwap']==9800
         assert d['normal_buy_target']==9212
         assert not d['buy_condition_met']
         pm.apply_fill(TradeFill('111111','test',OrderSide.SELL,10,9600,'S',NOW,'L0','ES'))
-        d=s.adaptive_buy_details(p,9600,AccountSnapshot(10000000,20000000,0,0))
+        d=s.adaptive_buy_details(p,9600,AccountSnapshot(100000000,200000000,0,0))
         assert d['buy_target_price']<=9216
         assert not d['buy_condition_met']
 
@@ -123,7 +123,7 @@ def test_unreachable_threshold_no_relaxation():
         buy(pm,11)
         lm.set_volatility_multiplier('111111',2.5)
         p=pm.refresh_from_lots('111111',1000)
-        d=s.adaptive_buy_details(p,1000,AccountSnapshot(10000000,20000000,0,0))
+        d=s.adaptive_buy_details(p,1000,AccountSnapshot(100000000,200000000,0,0))
         assert d['effective_buy_pnl_threshold']==pytest.approx(-208)
         assert d['normal_buy_target']==0
         assert not d['buy_condition_met']
