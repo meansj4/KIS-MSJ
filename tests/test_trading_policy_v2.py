@@ -10,6 +10,7 @@ from kis_msj.position_manager import PositionManager
 from kis_msj.models import TradeFill, OrderSide, AccountSnapshot
 from kis_msj.strategy import LotGridStrategy
 from kis_msj.arcg_backtest import historical_clock
+from kis_msj.lot_completion import completion_event
 
 NOW = datetime(2026, 10, 23, 16)
 
@@ -34,7 +35,7 @@ def setup():
 
 def buy(pm, number, price=10000, qty=2, when=NOW):
     return pm.apply_fill(TradeFill('111111','test',OrderSide.BUY,qty,price,str(number),when,
-                                 f'L{number}',f'E{number}'))
+                                 f'L{number}',f'E{number}',order_quantity=qty))
 
 
 @pytest.mark.parametrize('count,threshold', [(1,-4),(2,-6),(3,-8),(11,-24),(12,-26)])
@@ -51,13 +52,13 @@ def test_pnl_thresholds_and_max_lots(count, threshold):
 
 def test_score_partials_types_kst_window_restart_and_caps():
     cal = calendar()
-    events = [{'order':str(i),'side':side,'at':NOW.isoformat()} for i,side in enumerate(['BUY']*3+['SELL']+['BUY']*2)]
+    events = [completion_event(str(i),side,NOW.isoformat()) for i,side in enumerate(['BUY']*3+['SELL']+['BUY']*2)]
     events.append(dict(events[0]))
     assert trend_score(events, cal, NOW)==4
     assert trend_score(json.loads(json.dumps(events)), cal,NOW)==4
     assert trend_score(events,cal,NOW+timedelta(days=10))==0
-    assert trend_score([{'order':str(i),'side':'SELL','at':NOW.isoformat()} for i in range(20)],cal,NOW)==-12
-    assert trend_score([{'order':str(i),'side':'BUY','at':NOW.isoformat()} for i in range(20)],cal,NOW)==12
+    assert trend_score([completion_event(str(i),'SELL',NOW.isoformat()) for i in range(20)],cal,NOW)==-12
+    assert trend_score([completion_event(str(i),'BUY',NOW.isoformat()) for i in range(20)],cal,NOW)==12
 
 
 def test_completed_decay_not_buy_day_weekends_holiday_or_intraday():

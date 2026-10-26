@@ -873,6 +873,7 @@ class AutoTrader:
             f"AUTO_SYNC_REPAIR:{order.order_id}:{order.request.code}:{filled_quantity}->{filled_quantity + quantity}",
             order.request.sell_reason,
             order.request.reentry_type,
+            order_quantity=order.request.quantity,
         )
 
     def _mark_auto_repaired_order(self, order: OrderResult) -> None:
@@ -1337,6 +1338,9 @@ class AutoTrader:
             reentry_cash_available=context.reentry_cash_available,
             reentry_cash_condition_met=context.reentry_cash_condition_met,
             cash_buy_multiplier=context.cash_buy_multiplier,
+            trend_score=context.trend_score,
+            completed_buy_lot_count=context.completed_buy_lot_count,
+            completed_sell_lot_count=context.completed_sell_lot_count,
             cash_sell_multiplier=context.cash_sell_multiplier,
             cash_adjustment_known=context.cash_adjustment_known,
             pre_cash_buy_gap_pct=context.pre_cash_buy_gap_pct,

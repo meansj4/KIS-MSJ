@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from dataclasses import replace
 import sqlite3
 import logging
 
@@ -55,7 +56,7 @@ def test_requested_order_moves_to_filled_when_full_fill_arrives(tmp_path) -> Non
 
     fills = manager.reconcile_open_orders()
 
-    assert fills == (fill,)
+    assert fills == (replace(fill, order_quantity=store.find_order(fill.order_id).request.quantity),)
     assert not store.has_open_order("005930", OrderSide.BUY)
 
 
@@ -67,7 +68,7 @@ def test_requested_order_moves_to_partial_when_partial_fill_arrives(tmp_path) ->
 
     fills = manager.reconcile_open_orders()
 
-    assert fills == (fill,)
+    assert fills == (replace(fill, order_quantity=store.find_order(fill.order_id).request.quantity),)
     assert store.has_partial_order("005930")
     assert store.has_open_order("005930", OrderSide.BUY)
 
@@ -93,7 +94,7 @@ def test_cancel_request_then_full_fill_is_recorded_as_fill_after_cancel(tmp_path
 
     fills = manager.reconcile_open_orders()
 
-    assert fills == (fill,)
+    assert fills == (replace(fill, order_quantity=store.find_order(fill.order_id).request.quantity),)
     assert store.find_order("000001").status is OrderStatus.FILLED_AFTER_CANCEL_REQUEST
     assert store.filled_quantity_for_order("000001") == 6
     with store._connect() as connection:
@@ -114,7 +115,7 @@ def test_submit_timeout_cancel_then_fill_is_returned_for_position_apply(tmp_path
     result, returned_fill = manager.submit_and_confirm(request)
 
     assert result.status is OrderStatus.FILLED_AFTER_CANCEL_REQUEST
-    assert returned_fill == fill
+    assert returned_fill == replace(fill, order_quantity=request.quantity)
     assert store.filled_quantity_for_order("000001") == 6
 
 
@@ -127,7 +128,7 @@ def test_partial_fill_then_remaining_cancel_records_partial_cancel_status(tmp_pa
 
     fills = manager.reconcile_open_orders()
 
-    assert fills == (fill,)
+    assert fills == (replace(fill, order_quantity=store.find_order(fill.order_id).request.quantity),)
     assert store.filled_quantity_for_order("000001") == 4
     assert store.find_order("000001").status is OrderStatus.CANCELED_AFTER_PARTIAL_FILL
 
@@ -265,7 +266,7 @@ def test_cancel_rejected_no_cancelable_requery_records_late_fill(tmp_path) -> No
 
     fills = manager.reconcile_open_orders()
 
-    assert fills == (fill,)
+    assert fills == (replace(fill, order_quantity=store.find_order(fill.order_id).request.quantity),)
     assert store.find_order("000001").status is OrderStatus.FILLED_AFTER_CANCEL_REQUEST
     assert store.filled_quantity_for_order("000001") == 2
     assert not store.has_open_order("005930", OrderSide.BUY)

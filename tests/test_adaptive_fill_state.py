@@ -173,8 +173,10 @@ def test_decay_recomputes_retroactively_from_current_count_and_surviving_lots():
     middle, new = lots.open_lots(CODE)[1:]
     sell(positions, middle, "s-middle", at=NOW + timedelta(seconds=1))
     sell(positions, new, "s-new", at=NOW + timedelta(seconds=2))
-    # Two sells lift the base to 3.6%; one surviving LOT decays by 0.2 pp.
-    assert lots.effective_target_profit_rate(old, NOW) == pytest.approx(0.0282)
+    # Two whole LOTs closed: base 3.6%, minus 0.18 pp for the surviving LOT.
+    from kis_msj.arcg_backtest import historical_clock
+    with historical_clock(NOW + timedelta(minutes=1)):
+        assert lots.effective_target_profit_rate(old, NOW) == pytest.approx(0.0342)
 
 
 @pytest.mark.parametrize(("volatility", "sell_count", "weeks", "expected"), [

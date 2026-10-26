@@ -186,6 +186,8 @@ class StrategyContext:
     cash_adjustment_known: bool = False
     pre_cash_buy_gap_pct: float = 0.0
     pre_cash_sell_target_rate: float = 0.0
+    completed_buy_lot_count: int = 0
+    completed_sell_lot_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -266,6 +268,7 @@ class LotGridStrategy:
         self.lot_manager.set_symbol_trade_state(position.code, position.consecutive_sell_count)
         multiplier = self.lot_manager.volatility_multiplier_for(position.code)
         score = self.lot_manager.trend_score_for(position.code)
+        completed_buys, completed_sells = self.lot_manager.completed_lot_counts_for(position.code)
         pre_cash_gap = (4.0 + 2.0 * (len(lots) - 1)) * multiplier * trend_multiplier(score) if lots else 0.0
         gap = pre_cash_gap * buy_cash_multiplier if valid_cash else 0.0
         quantity = sum(lot.remaining_quantity for lot in lots)
@@ -309,6 +312,7 @@ class LotGridStrategy:
         return {**reserve, "buy_amount": amount, "buy_target_price": target,
                 "position_vwap": vwap, "position_pnl_pct": (current_price / vwap - 1) * 100 if valid_position and vwap else None,
                 "active_lot_count": len(lots), "trend_score": score,
+                "completed_buy_lot_count": completed_buys, "completed_sell_lot_count": completed_sells,
                 "effective_buy_pnl_threshold": -gap if lots else None,
                 "normal_buy_target": normal, "reentry_target": rebuy,
                 "effective_buy_gap_pct": gap, "effective_rebuy_gap_pct": rebuy_gap,
@@ -1070,6 +1074,8 @@ class LotGridStrategy:
             cash_sell_multiplier=details["cash_sell_multiplier"], cash_adjustment_known=known,
             pre_cash_buy_gap_pct=details["pre_cash_buy_gap_pct"],
             pre_cash_sell_target_rate=(base / details["cash_sell_multiplier"]) if known else 0.0,
+            completed_buy_lot_count=details["completed_buy_lot_count"],
+            completed_sell_lot_count=details["completed_sell_lot_count"],
         )
 
     def _position_state(self, position: PositionState) -> str:

@@ -1,0 +1,148 @@
+{
+  "snapshot_at": "2026-10-26T09:40:01.283872",
+  "cash_available": 38758445,
+  "cash_observed_at": "2026-10-26T09:38:55",
+  "config_sha256": "f7bc7c559d6449432d38d760b5957a66c8ae76417d2d08f26f5fb79ae720b640",
+  "operational_db_read_only": true,
+  "account_api_calls": 0,
+  "orders_sent": 0,
+  "window": [
+    "2026-10-20",
+    "2026-10-21",
+    "2026-10-22",
+    "2026-10-23",
+    "2026-10-26"
+  ],
+  "symbols": [
+    {
+      "code": "000990",
+      "old_buy_orders": 4,
+      "old_sell_orders": 16,
+      "old_score": -12,
+      "complete_buy_lots": 4,
+      "complete_sell_lots": 4,
+      "score": 0,
+      "old_sell_trend_multiplier": 3.2,
+      "sell_trend_multiplier": 1.0,
+      "volatility_multiplier": 1.7942667847571558,
+      "volatility_as_of": "2026-10-23",
+      "lots": [
+        {
+          "lot_id": "000990-20261006093859000000",
+          "bought": "2026-10-06T09:38:59.000000",
+          "buy_price": 140000,
+          "remaining_quantity": 5,
+          "completed_sessions": 12,
+          "decay_pp": 1.4400000000000002,
+          "stored_profit_pct": 10.510544110466528,
+          "stored_target_price": 155000,
+          "corrected_profit_pct": 2.29454503452079,
+          "corrected_target_price": 143500
+        },
+        {
+          "lot_id": "000990-20261014094355000000",
+          "bought": "2026-10-14T09:43:55.000000",
+          "buy_price": 122100,
+          "remaining_quantity": 6,
+          "completed_sessions": 7,
+          "decay_pp": 0.8400000000000002,
+          "stored_profit_pct": 11.110544110466526,
+          "stored_target_price": 136000,
+          "corrected_profit_pct": 2.89454503452079,
+          "corrected_target_price": 126000
+        },
+        {
+          "lot_id": "000990-20261014123133000000",
+          "bought": "2026-10-14T12:31:33.000000",
+          "buy_price": 119600,
+          "remaining_quantity": 6,
+          "completed_sessions": 7,
+          "decay_pp": 0.8400000000000002,
+          "stored_profit_pct": 11.110544110466526,
+          "stored_target_price": 133000,
+          "corrected_profit_pct": 2.89454503452079,
+          "corrected_target_price": 123500
+        },
+        {
+          "lot_id": "000990-20261015084930000000",
+          "bought": "2026-10-15T08:49:30.000000",
+          "buy_price": 108600,
+          "remaining_quantity": 3,
+          "completed_sessions": 6,
+          "decay_pp": 0.7200000000000001,
+          "stored_profit_pct": 11.230544110466527,
+          "stored_target_price": 121000,
+          "corrected_profit_pct": 3.0145450345207903,
+          "corrected_target_price": 112000
+        },
+        {
+          "lot_id": "000990-20261019192531000000",
+          "bought": "2026-10-19T19:25:31.000000",
+          "buy_price": 108000,
+          "remaining_quantity": 6,
+          "completed_sessions": 4,
+          "decay_pp": 0.4800000000000001,
+          "stored_profit_pct": 11.470544110466527,
+          "stored_target_price": 120500,
+          "corrected_profit_pct": 3.25454503452079,
+          "corrected_target_price": 112000
+        },
+        {
+          "lot_id": "000990-20261019194126000000",
+          "bought": "2026-10-19T19:41:26.000000",
+          "buy_price": 108400,
+          "remaining_quantity": 6,
+          "completed_sessions": 4,
+          "decay_pp": 0.4800000000000001,
+          "stored_profit_pct": 11.470544110466527,
+          "stored_target_price": 121000,
+          "corrected_profit_pct": 3.25454503452079,
+          "corrected_target_price": 112000
+        }
+      ],
+      "cash_sell_multiplier": 0.693792225,
+      "base_profit_pct": 3.73454503452079
+    },
+    {
+      "code": "064350",
+      "old_buy_orders": 0,
+      "old_sell_orders": 0,
+      "old_score": 0,
+      "complete_buy_lots": 0,
+      "complete_sell_lots": 0,
+      "score": 0,
+      "old_sell_trend_multiplier": 1.0,
+      "sell_trend_multiplier": 1.0,
+      "volatility_multiplier": 1.6392447096880203,
+      "volatility_as_of": "2026-10-23",
+      "lots": [
+        {
+          "lot_id": "064350-20261007134155000000",
+          "bought": "2026-10-07T13:41:55.000000",
+          "buy_price": 109000,
+          "remaining_quantity": 6,
+          "completed_sessions": 11,
+          "decay_pp": 0.44000000000000006,
+          "stored_profit_pct": 2.9718857033617923,
+          "stored_target_price": 112500,
+          "corrected_profit_pct": 2.9718857033617923,
+          "corrected_target_price": 112500
+        },
+        {
+          "lot_id": "064350-20261008154317000000",
+          "bought": "2026-10-08T15:43:17.000000",
+          "buy_price": 105100,
+          "remaining_quantity": 7,
+          "completed_sessions": 10,
+          "decay_pp": 0.4,
+          "stored_profit_pct": 3.0118857033617923,
+          "stored_target_price": 108500,
+          "corrected_profit_pct": 3.0118857033617923,
+          "corrected_target_price": 108500
+        }
+      ],
+      "cash_sell_multiplier": 0.693792225,
+      "base_profit_pct": 3.411885703361792
+    }
+  ]
+}

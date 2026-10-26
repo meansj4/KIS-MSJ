@@ -2333,7 +2333,23 @@ class UIService:
         ]
 
     def positions(self) -> list[dict[str, Any]]:
-        return self._table("positions")
+        rows = self._table("positions")
+        if not self.config.strategy.adaptive_lot_enabled or not rows:
+            return rows
+        from .lot_completion import read_completion_history, merge_completions
+        key = ("lot_completion_history", self._table_version("lots"),
+               self._table_version("fills"), self._table_version("orders"))
+        def load():
+            with closing(sqlite3.connect(self._db_path().resolve().as_uri() + "?mode=ro", uri=True)) as connection:
+                connection.row_factory = sqlite3.Row
+                connection.execute("BEGIN")
+                return read_completion_history(connection, include_progress=True)
+        history = self._cached_load(key, load, ttl_seconds=300.0)
+        for row in rows:
+            state = _position_state_from_row(row)
+            merge_completions(state, history.get(state.code, []))
+            row["actual_fill_events"] = state.actual_fill_events
+        return rows
 
     def lots(self, filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         rows = self._recent_table("lots", filters) if filters is not None else self._table("lots")

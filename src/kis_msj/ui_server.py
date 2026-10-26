@@ -352,9 +352,10 @@ Object.assign(LABELS, {
   adaptive_volatility_trend_cash:'변동성·추세·예수금 적용 목표',
   cash_sell_multiplier:'예수금 매도 목표 배율', cash_adjustment_known:'예수금 배율 근거 확인',
   pre_cash_buy_gap_pct:'예수금 반영 전 매수 간격(%)', pre_cash_sell_target_rate:'예수금 반영 전 매도 목표',
-  consecutive_buy_count:'연속 매수 체결 수', consecutive_sell_count:'연속 매도 체결 수',
+  consecutive_buy_count:'주문 기준 연속 매수 수(참고)', consecutive_sell_count:'주문 기준 연속 매도 수(참고)',
+  completed_buy_lot_count:'최근 5거래일 완전 매수 LOT 수', completed_sell_lot_count:'최근 5거래일 전량 매도 LOT 수',
   rebuy_restriction_active:'매도 후 재매수 제한', buy_target_price:'최종 매수 목표가',
-  normal_buy_target:'평가PnL 매수 기준가', trend_score:'최근 5거래일 순점수', effective_buy_pnl_threshold:'평가PnL 매수 기준(%)', reentry_target:'최근 매도가 재매수 기준가',
+  normal_buy_target:'평가PnL 매수 기준가', trend_score:'최근 5거래일 완료 LOT 순점수', effective_buy_pnl_threshold:'평가PnL 매수 기준(%)', reentry_target:'최근 매도가 재매수 기준가',
   effective_buy_gap_pct:'유효 매수 간격(%)', effective_rebuy_gap_pct:'매도 후 재매수 하락률(%)',
   reentry_reserve_lots_per_symbol:'종목별 예비 LOT 수', reentry_cash_buffer_ratio:'재매수 안전 현금 비율',
   reentry_future_lot_reserve:'추가 LOT 예비 현금', reentry_safety_cash_buffer:'안전 예수금',
@@ -852,7 +853,7 @@ function adaptiveLotPanel(info, details) {
     cash_snapshot_status:info.cash_snapshot_status
   };
   const missing = info.cash_available_for_target === null ? '<p class="warn">최근 주문가능현금이 없어 목표 표시와 자동 매매 판단을 보류합니다.</p>' : '';
-  return `<section class="manualBox"><h3>변동성·추세·예수금 LOT 전략</h3><p>추가매수 하락폭 -(4+2×(현재 LOT 수-1))%와 개별 LOT 매도 목표 3%에 변동성·최근 5거래일 순점수 배율을 적용한 뒤 예수금 배율을 곱합니다. 주문가능현금 0원은 매수 2배·매도 0.5배, 1억 원은 각각 1배, 2억 원 이상은 매수 0.5배·매도 2배이며 두 구간을 각각 선형으로 연결합니다. 매도에는 그 다음 현재 LOT 수 × 0.1%p × 완료 보유거래일/5의 Decay를 마지막에 차감합니다. 최근 매도가 재매수 하락폭에도 예수금 매수 배율을 적용하고, 기존 예비 현금·위험 검사를 함께 통과해야 합니다.</p>${missing}${metrics(fields)}</section>`;
+  return `<section class="manualBox"><h3>변동성·추세·예수금 LOT 전략</h3><p>추가매수 하락폭 -(4+2×(현재 LOT 수-1))%와 개별 LOT 매도 목표 3%에 변동성·최근 5거래일 완전 매수 LOT 수−전량 매도 LOT 수의 순점수 배율을 적용한 뒤 예수금 배율을 곱합니다. 주문가능현금 0원은 매수 2배·매도 0.5배, 1억 원은 각각 1배, 2억 원 이상은 매수 0.5배·매도 2배이며 두 구간을 각각 선형으로 연결합니다. 매도에는 그 다음 현재 LOT 수 × 0.1%p × 완료 보유거래일/5의 Decay를 마지막에 차감합니다. 최근 매도가 재매수 하락폭에도 예수금 매수 배율을 적용하고, 기존 예비 현금·위험 검사를 함께 통과해야 합니다.</p>${missing}${metrics(fields)}</section>`;
 }
 function cashTargetPanel(info) {
   if (!info || !info.cash_target_profit_enabled) return '';

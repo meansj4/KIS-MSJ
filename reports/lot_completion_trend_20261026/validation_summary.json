@@ -1,0 +1,13 @@
+{
+  "exit_code": 0,
+  "test_files": 35,
+  "operational_config_files_unchanged": true,
+  "changed_config_files": [],
+  "external_network_forbidden": true,
+  "sqlite_limited_to_pytest_tmp": true,
+  "operational_db_opened": false,
+  "orders_sent": 0,
+  "basetemp": "C:\\MSJ\\KIS-MSJ\\tmp\\pytest_adaptive_cash_468ae1879b",
+  "scope": "isolated_regression_tests",
+  "passed_tests": 773
+}

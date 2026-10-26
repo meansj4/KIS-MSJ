@@ -72,13 +72,20 @@ class TradingCalendar:
         return count
 
 
-def trend_score(events, calendar, now):
+def completed_lot_counts(events, calendar, now):
     window = calendar.window(now)
-    seen, score = set(), 0
+    seen = set()
     for event in sorted(events, key=lambda e: e['at']):
-        at = local(datetime.fromisoformat(event['at']))
-        if at > local(now) or at.date().isoformat() not in window or event['order'] in seen:
+        if event.get('kind') != 'LOT_COMPLETE' or not event.get('lot') or event.get('side') not in {'BUY', 'SELL'}:
             continue
-        seen.add(event['order'])
-        score += 1 if event['side'] == 'BUY' else -1
-    return max(-12, min(12, score))
+        at = local(datetime.fromisoformat(event['at']))
+        identity = (event['side'], event['lot'])
+        if at > local(now) or at.date().isoformat() not in window or identity in seen:
+            continue
+        seen.add(identity)
+    return sum(side == 'BUY' for side, _ in seen), sum(side == 'SELL' for side, _ in seen)
+
+
+def trend_score(events, calendar, now):
+    buys, sells = completed_lot_counts(events, calendar, now)
+    return max(-12, min(12, buys - sells))

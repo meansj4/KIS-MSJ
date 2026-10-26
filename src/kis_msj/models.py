@@ -269,3 +269,6 @@ class TradeFill:
     # OrderManager normalization and in persisted/application fills. Zero means
     # unavailable, so legacy fills use quantity * price.
     filled_amount: int = 0
+    # Original requested quantity, supplied by the matched local order.
+    # Zero means unknown; it must not turn a partial BUY into a completed LOT.
+    order_quantity: int = 0

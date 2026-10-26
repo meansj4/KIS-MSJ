@@ -35,6 +35,13 @@ class LotManager:
         events = actual_fill_events(position) if position is not None else []
         return trend_score(events, self.calendar, now or datetime.now())
 
+    def completed_lot_counts_for(self, code: str, now=None) -> tuple[int, int]:
+        from .fill_state import actual_fill_events
+        from .trading_calendar import completed_lot_counts
+        position = self.symbol_positions.get(code)
+        return completed_lot_counts(actual_fill_events(position) if position is not None else [],
+                                    self.calendar, now or datetime.now())
+
     def set_symbol_trade_state(self, code: str, consecutive_sell_count: int) -> None:
         self.consecutive_sell_counts[code] = max(0, consecutive_sell_count)
 

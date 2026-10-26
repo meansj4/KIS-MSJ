@@ -196,7 +196,8 @@ class OrderManager:
         if not self.config.order.live_trading:
             result = OrderResult(request, f"PAPER-{datetime.now().strftime('%Y%m%d%H%M%S%f')}", OrderStatus.FILLED)
             lot_id = request.lot_id or f"{request.code}-{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
-            fill = TradeFill(request.code, request.name, request.side, request.quantity, request.limit_price, result.order_id, datetime.now(), lot_id, result.order_id, request.sell_reason, request.reentry_type)
+            fill = TradeFill(request.code, request.name, request.side, request.quantity, request.limit_price, result.order_id, datetime.now(), lot_id, result.order_id, request.sell_reason, request.reentry_type,
+                             order_quantity=request.quantity)
             self.store.record_order(result)
             if not self._record_new_fill(fill, "paper_submit"):
                 return result, None
@@ -572,6 +573,7 @@ class OrderManager:
                 fill.reported_order_venue,
                 fill.timestamp_source,
                 fill.filled_amount,
+                order.request.quantity,
             )
             if order.request.session:
                 matched = self._matching_fills(order, (fill,))[0]
@@ -645,6 +647,7 @@ class OrderManager:
                 fill.reported_order_venue,
                 fill.timestamp_source,
                 delta_amount if fill.filled_amount else 0,
+                fill.order_quantity,
             )
         return fill
 
@@ -681,7 +684,8 @@ class OrderManager:
                 if identity and result.order_id.startswith("SESSION:"):
                     identity += ":" + result.order_id
                 matches.append(replace(fill, order_id=result.order_id, execution_id=identity,
-                                       lot_id=request.lot_id, sell_reason=request.sell_reason, reentry_type=request.reentry_type))
+                                       lot_id=request.lot_id, sell_reason=request.sell_reason, reentry_type=request.reentry_type,
+                                       order_quantity=request.quantity))
         return matches
 
     def _recover_acknowledged_intents(self) -> None:

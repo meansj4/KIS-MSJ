@@ -43,7 +43,7 @@ def setup(**settings):
 def add(positions, price=10_000, days=0, code=CODE, quantity=2):
     index = len(positions.lot_manager.lots)
     fill = TradeFill(code, code, OrderSide.BUY, quantity, price, f"buy{index}",
-                     NOW - timedelta(days=days), f"lot{index}", f"execution{index}")
+                     NOW - timedelta(days=days), f"lot{index}", f"execution{index}", order_quantity=quantity)
     positions.apply_fill(fill)
     return positions.lot_manager.lots[f"lot{index}"]
 

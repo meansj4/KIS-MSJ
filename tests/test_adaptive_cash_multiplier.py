@@ -17,6 +17,7 @@ from kis_msj.risk_manager import RiskDecision
 from kis_msj.strategy import LotGridStrategy
 from kis_msj.market_session import SessionUnavailable
 from kis_msj.trading_calendar import TradingCalendar
+from kis_msj.lot_completion import completion_event
 
 NOW=datetime(2026,10,26,16)
 CODE='005930'
@@ -33,7 +34,7 @@ def setup(count=1,days=0,score=0,volatility=1):
     bought=NOW.replace(hour=10) if days==0 else datetime.fromisoformat(before[-days]).replace(hour=10)
     for i in range(count):pm.apply_fill(TradeFill(CODE,'example',OrderSide.BUY,2,10000,f'B{i}',bought,f'L{i}',f'E{i}'))
     p=pm.refresh_from_lots(CODE,10000)
-    events=[{'order':str(i),'side':'BUY' if score>0 else 'SELL','at':NOW.replace(hour=10).isoformat()}
+    events=[completion_event(str(i),'BUY' if score>0 else 'SELL',NOW.replace(hour=10).isoformat())
             for i in range(abs(score))]
     p.actual_fill_events=json.dumps(events);lm.set_volatility_multiplier(CODE,volatility)
     return cfg,lm,pm,s,p

@@ -544,8 +544,11 @@ class StateStore:
         self._migration_backup_done = True
 
     def load_positions(self) -> dict[str, PositionState]:
+        from .lot_completion import read_completion_history, merge_completions
         with self._connect() as connection:
+            connection.execute("BEGIN")
             rows = connection.execute("SELECT * FROM positions").fetchall()
+            history = read_completion_history(connection, include_progress=True)
         positions = {}
         for row in rows:
             data = dict(row)
@@ -578,6 +581,8 @@ class StateStore:
             for row in fill_rows:
                 if row["code"] in missing_history and row["quantity"] > 0 and row["price"] > 0:
                     record_actual_fill_state(positions[row["code"]], _stored_trade_fill(row), applied=False)
+        for code, position in positions.items():
+            merge_completions(position, history.get(code, []))
         return positions
 
     def load_lots(self) -> dict[str, LotState]:

@@ -18,6 +18,7 @@ from kis_msj.risk_manager import RiskManager
 from kis_msj.strategy import LotGridStrategy
 from kis_msj.order_manager import OrderManager
 from kis_msj.trading_calendar import TradingCalendar
+from kis_msj.lot_completion import completion_event
 
 NOW=datetime(2026,10,26,16)
 EXAMPLES=[('175330','JB금융지주',10000),('024110','기업은행',20000),('035250','강원랜드',25000)]
@@ -77,7 +78,7 @@ def example(cfg,symbol,case):
     if a['reentry'] and not e:b+=1;e+=1
     if not a['reentry'] and e:b+=1;e+=1
     sides=(['BUY']*b+['SELL']*e) if a['reentry'] else (['SELL']*e+['BUY']*b)
-    p.actual_fill_events=json.dumps([{'order':f'H{i}','side':side,'at':NOW.replace(hour=15,minute=0,second=i).isoformat()}
+    p.actual_fill_events=json.dumps([completion_event(f'H{i}',side,NOW.replace(hour=15,minute=0,second=i).isoformat())
                                    for i,side in enumerate(sides)])
     p.rebuy_restriction_active=a['reentry'];p.last_sell_price=int(price*a['last_sale']) if a['reentry'] else 0
     lm.set_volatility_multiplier(code,a['vol'])
@@ -159,7 +160,7 @@ def main():
 
 `재진입 상한 = 최근 실제 매도가 × (1 − 4×m×예수금매수배율/100)`
 
-N은 현재 LOT 수, D는 각 LOT의 완료 보유거래일, s는 최근 5거래일 순점수다. 매수 추세는 s의 양수 방향, 매도 추세는 음수 방향을 사용한다. 재진입 상한에는 기존대로 추세를 넣지 않는다. 매수에는 Decay가 없고, 매도 Decay 금액에는 예수금 배율을 곱하지 않는다.
+N은 현재 LOT 수, D는 각 LOT의 완료 보유거래일, s는 최근 5거래일 완전 매수 LOT 수 − 전량 매도 LOT 수다. 부분체결·부분매도 주문 수는 추세에서 제외한다. 매수 추세는 s의 양수 방향, 매도 추세는 음수 방향을 사용한다. 재진입 상한에는 기존대로 추세를 넣지 않는다. 매수에는 Decay가 없고, 매도 Decay 금액에는 예수금 배율을 곱하지 않는다.
 
 예: N=6, D=20, m=1, s=0, 현금 1억 5천만 원이면 매도는 `3×1.5−2.4=2.1%`다. `(3−2.4)×1.5=0.9%`로 계산하지 않는다. 현금 0원에서는 `3×0.5−2.4=−0.9%`가 되어 기존 음수 Decay 매도 경로를 사용할 수 있다.
 

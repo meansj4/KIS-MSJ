@@ -6,7 +6,7 @@ import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 
-from .models import OrderSide, PositionState, TradeFill
+from .models import LotState, OrderSide, PositionState, TradeFill
 
 
 KOREA = timezone(timedelta(hours=9))
@@ -44,10 +44,11 @@ def fill_already_applied(position: PositionState, fill: TradeFill) -> bool:
     return any(event["key"] == key and event.get("applied", True) for event in actual_fill_events(position))
 
 
-def record_actual_fill_state(position: PositionState, fill: TradeFill, *, applied: bool = True) -> bool:
+def record_actual_fill_state(position: PositionState, fill: TradeFill, *, applied: bool = True, lot: LotState | None = None) -> bool:
     """Rebuild chronology from actual fills; ties retain persisted arrival order.
 
-    An order contributes to the direction streak at its first real execution.
+    An order contributes to the legacy compatibility streak at its first real
+    execution. Adaptive trend uses only the separate LOT_COMPLETE evidence.
     All executions contribute to the latest-sale price and rebuy restriction.
     """
     events = actual_fill_events(position)
@@ -61,9 +62,25 @@ def record_actual_fill_state(position: PositionState, fill: TradeFill, *, applie
         events.append({"key": key, "order": fill_order_key(fill), "side": fill.side.value,
                        "at": _local_time(fill.filled_at).isoformat(timespec="microseconds"),
                        "price": fill.price, "applied": applied})
+        existing = events[-1]
+    if lot is not None:
+        existing.update(lot=lot.lot_id, quantity=fill.quantity, order_quantity=fill.order_quantity)
+        completed = (fill.side is OrderSide.BUY and fill.order_quantity > 0 and lot.buy_quantity == fill.order_quantity
+                     and lot.buy_order_key == fill_order_key(fill)
+                     or fill.side is OrderSide.SELL and lot.remaining_quantity == 0 and lot.sell_completed)
+        if completed:
+            from .lot_completion import completion_event
+            times = [event["at"] for event in events if event.get("lot") == lot.lot_id
+                     and event["side"] == fill.side.value and event.get("kind") != "LOT_COMPLETE"]
+            at = max(times, key=lambda value: _local_time(datetime.fromisoformat(value)))
+            completion = completion_event(lot.lot_id, fill.side.value, at)
+            if not any(event["key"] == completion["key"] for event in events):
+                events.append(completion)
     seen_orders = set()
     buys = sells = 0
     for _, event in sorted(enumerate(events), key=lambda pair: (pair[1]["at"], pair[0])):
+        if event.get("kind") in {"LOT_COMPLETE", "LOT_PROGRESS"}:
+            continue
         if event["order"] not in seen_orders:
             if event["side"] == OrderSide.BUY.value:
                 buys, sells = buys + 1, 0

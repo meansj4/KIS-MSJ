@@ -334,7 +334,7 @@ class PositionManager:
         position.last_order_id = fill.order_id
         position.last_order_status = "FILLED"
         position.last_order_time = fill.filled_at.isoformat(timespec="seconds")
-        record_actual_fill_state(position, fill)
+        record_actual_fill_state(position, fill, lot=lot)
         self.lot_manager.set_symbol_trade_state(fill.code, position.consecutive_sell_count)
         updated = self.refresh_from_lots(fill.code, fill.price)
         if getattr(self.config, "adaptive_lot_enabled", False):
